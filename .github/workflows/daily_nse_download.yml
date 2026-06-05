@@ -13,8 +13,13 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     env:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
       GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
 
     steps:
@@ -48,8 +53,15 @@ jobs:
             python ranking_engine.py
           fi
 
+      - name: Authenticate to Google Cloud
+        if: ${{ env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER != '' && env.GOOGLE_SERVICE_ACCOUNT_EMAIL != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+
       - name: Update Google Sheets dashboard
-        if: ${{ env.GOOGLE_SERVICE_ACCOUNT_JSON != '' }}
+        if: ${{ env.GOOGLE_SERVICE_ACCOUNT_JSON != '' || (env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER != '' && env.GOOGLE_SERVICE_ACCOUNT_EMAIL != '') }}
         run: |
           if [ -n "${{ inputs.date }}" ]; then
             python google_sheets_updater.py --date "${{ inputs.date }}"

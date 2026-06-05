@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 import gspread
+import google.auth
 import pandas as pd
 from gspread.exceptions import APIError, WorksheetNotFound
 from google.oauth2.service_account import Credentials
@@ -59,9 +60,8 @@ def load_credentials() -> Credentials:
     if credentials_path:
         return Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
 
-    raise RuntimeError(
-        "Google credentials missing. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE."
-    )
+    credentials, _ = google.auth.default(scopes=SCOPES)
+    return credentials
 
 
 def get_or_create_worksheet(spreadsheet: Any, title: str, rows: int = 1000, cols: int = 20) -> Any:
