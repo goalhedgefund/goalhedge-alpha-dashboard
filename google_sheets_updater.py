@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -72,11 +73,26 @@ def get_or_create_worksheet(spreadsheet: Any, title: str, rows: int = 1000, cols
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
+def sanitize_cell(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else ""
+    if isinstance(value, (str, int, bool)):
+        return value
+    if pd.isna(value):
+        return ""
+    if hasattr(value, "item"):
+        return sanitize_cell(value.item())
+    return value
+
+
 def dataframe_to_rows(df: pd.DataFrame) -> list[list[Any]]:
-    clean_df = df.copy()
-    clean_df = clean_df.replace({pd.NA: None})
-    clean_df = clean_df.where(pd.notna(clean_df), None)
-    return [list(clean_df.columns)] + clean_df.values.tolist()
+    rows = [[str(column) for column in df.columns]]
+    rows.extend([[sanitize_cell(value) for value in row] for row in df.itertuples(index=False, name=None)])
+    return rows
 
 
 def merge_historical_rows(existing_values: list[list[Any]], new_rows: list[list[Any]], report_date: date) -> list[list[Any]]:
