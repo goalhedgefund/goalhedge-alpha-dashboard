@@ -194,6 +194,10 @@ def process_file(spec: ReportSpec, raw_path: Path, report_date: date, processed_
 
 
 def clean_old_raw_files(raw_dir: Path, keep_date: date) -> None:
+    clean_old_raw_data(raw_dir, keep_date)
+
+
+def clean_old_raw_data(raw_dir: Path, keep_date: date) -> None:
     if not raw_dir.exists():
         return
 
@@ -215,6 +219,19 @@ def clean_old_raw_files(raw_dir: Path, keep_date: date) -> None:
             LOGGER.info("Removed old raw data file: %s", path)
 
 
+def clean_old_processed_data(processed_dir: Path, keep_date: date) -> None:
+    if not processed_dir.exists():
+        return
+
+    keep_key = keep_date.strftime("%Y%m%d")
+    for path in processed_dir.iterdir():
+        if path.name == ".gitkeep":
+            continue
+        if path.is_file() and keep_key not in path.stem:
+            path.unlink()
+            LOGGER.info("Removed old processed data file: %s", path)
+
+
 def run_pipeline(target_date: date, lookback_days: int, raw_dir: Path, processed_dir: Path) -> date:
     session = build_session()
     errors: list[str] = []
@@ -229,6 +246,7 @@ def run_pipeline(target_date: date, lookback_days: int, raw_dir: Path, processed
                 output = process_file(spec, raw_path, report_date, processed_dir)
                 LOGGER.info("Processed %s to %s", spec.key, output)
             clean_old_raw_files(raw_dir, report_date)
+            clean_old_processed_data(processed_dir, report_date)
             LOGGER.info("NSE EOD pipeline completed for %s", report_date.isoformat())
             return report_date
         except Exception as exc:
@@ -244,7 +262,7 @@ def run_pipeline(target_date: date, lookback_days: int, raw_dir: Path, processed
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download and process NSE EOD reports.")
     parser.add_argument("--date", help="Target report date in YYYY-MM-DD format. Defaults to today in IST.")
-    parser.add_argument("--lookback-days", type=int, default=5, help="Previous weekdays to try if the target date has no reports.")
+    parser.add_argument("--lookback-days", type=int, default=0, help="Previous weekdays to try if the target date has no reports.")
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
     parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
     args = parser.parse_args()

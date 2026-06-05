@@ -6,6 +6,7 @@ import re
 import zipfile
 from datetime import date
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 
@@ -37,6 +38,10 @@ def read_csv_from_path(path: Path) -> pd.DataFrame:
         raise
 
 
+def empty_dataframe(columns: Sequence[str]) -> pd.DataFrame:
+    return pd.DataFrame(columns=list(columns))
+
+
 def read_csv_from_zip(path: Path) -> pd.DataFrame:
     with zipfile.ZipFile(path) as archive:
         csv_members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
@@ -61,7 +66,22 @@ def process_bhavcopy_file(raw_path: Path, output_path: Path, source_report: str,
 
 
 def process_csv_file(raw_path: Path, output_path: Path, source_report: str, report_date: date) -> Path:
-    df = read_csv_from_path(raw_path)
+    try:
+        df = read_csv_from_path(raw_path)
+    except pd.errors.ParserError:
+        if source_report == "week_52_high_low":
+            df = empty_dataframe(
+                [
+                    "symbol",
+                    "series",
+                    "adjusted_52_week_high",
+                    "52_week_high_date",
+                    "adjusted_52_week_low",
+                    "52_week_low_dt",
+                ]
+            )
+        else:
+            raise
     normalized = normalize_dataframe(df, source_report, report_date)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     normalized.to_csv(output_path, index=False)
