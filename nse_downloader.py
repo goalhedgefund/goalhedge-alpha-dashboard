@@ -101,6 +101,20 @@ def candidate_dates(target_date: date, lookback_days: int) -> Iterable[date]:
             yield current
 
 
+def previous_trading_date(target_date: date) -> date:
+    current = target_date - timedelta(days=1)
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def retained_dates(target_date: date, keep_previous_day: bool) -> set[date]:
+    dates = {target_date}
+    if keep_previous_day:
+        dates.add(previous_trading_date(target_date))
+    return dates
+
+
 def build_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -161,10 +175,19 @@ def resolve_report_url(session: requests.Session, spec: ReportSpec, report_date:
 
 
 def download_file(session: requests.Session, spec: ReportSpec, report_date: date, raw_dir: Path) -> Path:
-    filename, url = resolve_report_url(session, spec, report_date)
     target_dir = raw_dir / report_date.strftime("%Y%m%d")
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    cached_path = target_dir / spec.filename_for(report_date)
+    if cached_path.exists() and cached_path.stat().st_size > 0:
+        LOGGER.info("Using cached %s raw file: %s", spec.key, cached_path)
+        return cached_path
+
+    filename, url = resolve_report_url(session, spec, report_date)
     target_path = target_dir / filename
+    if target_path.exists() and target_path.stat().st_size > 0:
+        LOGGER.info("Using cached %s raw file: %s", spec.key, target_path)
+        return target_path
 
     LOGGER.info("Downloading %s from %s", spec.key, url)
     headers = {"referer": spec.section_url}
@@ -194,16 +217,16 @@ def process_file(spec: ReportSpec, raw_path: Path, report_date: date, processed_
 
 
 def clean_old_raw_files(raw_dir: Path, keep_date: date) -> None:
-    clean_old_raw_data(raw_dir, keep_date)
+    clean_old_raw_data(raw_dir, {keep_date})
 
 
-def clean_old_raw_data(raw_dir: Path, keep_date: date) -> None:
+def clean_old_raw_data(raw_dir: Path, keep_dates: set[date]) -> None:
     if not raw_dir.exists():
         return
 
-    keep_dir_name = keep_date.strftime("%Y%m%d")
+    keep_dir_names = {keep_date.strftime("%Y%m%d") for keep_date in keep_dates}
     for path in raw_dir.iterdir():
-        if path.name == ".gitkeep" or path.name == keep_dir_name:
+        if path.name == ".gitkeep" or path.name in keep_dir_names:
             continue
         if path.is_dir():
             for child in path.rglob("*"):
@@ -219,34 +242,71 @@ def clean_old_raw_data(raw_dir: Path, keep_date: date) -> None:
             LOGGER.info("Removed old raw data file: %s", path)
 
 
-def clean_old_processed_data(processed_dir: Path, keep_date: date) -> None:
+def clean_old_processed_data(processed_dir: Path, keep_dates: set[date]) -> None:
     if not processed_dir.exists():
         return
 
-    keep_key = keep_date.strftime("%Y%m%d")
+    keep_keys = {keep_date.strftime("%Y%m%d") for keep_date in keep_dates}
     for path in processed_dir.iterdir():
         if path.name == ".gitkeep":
             continue
-        if path.is_file() and keep_key not in path.stem:
+        if path.is_file() and not any(keep_key in path.stem for keep_key in keep_keys):
             path.unlink()
             LOGGER.info("Removed old processed data file: %s", path)
 
 
-def run_pipeline(target_date: date, lookback_days: int, raw_dir: Path, processed_dir: Path) -> date:
+def download_and_process_date(
+    session: requests.Session,
+    report_date: date,
+    raw_dir: Path,
+    processed_dir: Path,
+) -> None:
+    LOGGER.info("Trying NSE EOD reports for %s", report_date.isoformat())
+    downloaded: list[tuple[ReportSpec, Path]] = []
+    for spec in REPORTS:
+        downloaded.append((spec, download_file(session, spec, report_date, raw_dir)))
+    for spec, raw_path in downloaded:
+        output = process_file(spec, raw_path, report_date, processed_dir)
+        LOGGER.info("Processed %s to %s", spec.key, output)
+
+
+def ensure_previous_day_cache(
+    session: requests.Session,
+    target_date: date,
+    raw_dir: Path,
+    processed_dir: Path,
+    keep_previous_day: bool,
+) -> None:
+    if not keep_previous_day:
+        return
+
+    previous_date = previous_trading_date(target_date)
+    try:
+        download_and_process_date(session, previous_date, raw_dir, processed_dir)
+    except Exception as exc:
+        LOGGER.warning(
+            "Could not refresh previous trading day cache for %s: %s",
+            previous_date.isoformat(),
+            exc,
+        )
+
+
+def run_pipeline(
+    target_date: date,
+    lookback_days: int,
+    raw_dir: Path,
+    processed_dir: Path,
+    keep_previous_day: bool = True,
+) -> date:
     session = build_session()
     errors: list[str] = []
-
     for report_date in candidate_dates(target_date, lookback_days):
-        LOGGER.info("Trying NSE EOD reports for %s", report_date.isoformat())
-        downloaded: list[tuple[ReportSpec, Path]] = []
         try:
-            for spec in REPORTS:
-                downloaded.append((spec, download_file(session, spec, report_date, raw_dir)))
-            for spec, raw_path in downloaded:
-                output = process_file(spec, raw_path, report_date, processed_dir)
-                LOGGER.info("Processed %s to %s", spec.key, output)
-            clean_old_raw_files(raw_dir, report_date)
-            clean_old_processed_data(processed_dir, report_date)
+            ensure_previous_day_cache(session, report_date, raw_dir, processed_dir, keep_previous_day)
+            download_and_process_date(session, report_date, raw_dir, processed_dir)
+            keep_dates = retained_dates(report_date, keep_previous_day)
+            clean_old_raw_data(raw_dir, keep_dates)
+            clean_old_processed_data(processed_dir, keep_dates)
             LOGGER.info("NSE EOD pipeline completed for %s", report_date.isoformat())
             return report_date
         except Exception as exc:
@@ -265,11 +325,22 @@ def main() -> None:
     parser.add_argument("--lookback-days", type=int, default=0, help="Previous weekdays to try if the target date has no reports.")
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
     parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
+    parser.add_argument(
+        "--no-previous-day",
+        action="store_true",
+        help="Do not keep/download the previous trading day's cache.",
+    )
     args = parser.parse_args()
 
     configure_logging()
     report_date = parse_run_date(args.date)
-    completed_date = run_pipeline(report_date, args.lookback_days, args.raw_dir, args.processed_dir)
+    completed_date = run_pipeline(
+        report_date,
+        args.lookback_days,
+        args.raw_dir,
+        args.processed_dir,
+        keep_previous_day=not args.no_previous_day,
+    )
     LOGGER.info("Completed date: %s", completed_date.isoformat())
 
 
