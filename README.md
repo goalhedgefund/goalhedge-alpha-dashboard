@@ -11,7 +11,7 @@ This repository downloads and processes NSE end-of-day files from the official N
 - F&O UDiFF bhavcopy
 - 52 week high/low report
 
-Raw files are saved under `data/raw/YYYYMMDD/`. After a successful run, older raw folders and older processed files are removed so the repository workspace only keeps the latest completed report date. Google Sheets preserves historical dashboard rows separately.
+Raw files are saved under `data/raw/YYYYMMDD/`. After a successful run, older raw folders and older processed files are removed so the repository workspace only keeps the latest completed report date plus the previous trading day. Existing non-empty raw files are reused, so rerunning the same date does not download the same NSE files again. Google Sheets preserves historical dashboard rows separately.
 
 ## Local Setup
 
