@@ -83,10 +83,17 @@ The dashboard updater writes daily snapshots to these tabs:
 
 Historical rows are preserved. If the same report date is run again, rows for that date are replaced so the dashboard does not duplicate the day.
 
-Create a Google Cloud service account with Google Sheets API access, share the `GoalHedge Alpha Dashboard` sheet with the service account email as an editor, then add these GitHub repository secrets:
+Create a Google Cloud service account with Google Sheets API access, share the `GoalHedge Alpha Dashboard` sheet with the service account email as an editor, then configure GitHub authentication.
+
+Recommended keyless GitHub Actions authentication uses Workload Identity Federation. Add these GitHub repository secrets:
+
+- `GOOGLE_WORKLOAD_IDENTITY_PROVIDER`: provider resource name, for example `projects/162548456743/locations/global/workloadIdentityPools/github-actions/providers/goalhedge-github`
+- `GOOGLE_SERVICE_ACCOUNT_EMAIL`: service account email shared on the Google Sheet
+- `GOOGLE_SHEET_ID`: optional; defaults to `1-8pJRIEiKZpaJyXoeK9sjQC9EIgcuyVhtAUp8xEBylA`
+
+JSON-key authentication is also supported for environments that allow service account keys:
 
 - `GOOGLE_SERVICE_ACCOUNT_JSON`: the full service account JSON content
-- `GOOGLE_SHEET_ID`: optional; defaults to `1-8pJRIEiKZpaJyXoeK9sjQC9EIgcuyVhtAUp8xEBylA`
 
 Run locally after the NSE pipeline:
 
