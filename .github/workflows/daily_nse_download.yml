@@ -1,0 +1,66 @@
+name: Daily NSE EOD Download
+
+on:
+  schedule:
+    - cron: "30 13 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Optional NSE report date in YYYY-MM-DD format"
+        required: false
+        type: string
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest
+
+      - name: Download and process NSE EOD data
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            python nse_downloader.py --date "${{ inputs.date }}"
+          else
+            python nse_downloader.py
+          fi
+
+      - name: Build Alpha rankings
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            python ranking_engine.py --date "${{ inputs.date }}"
+          else
+            python ranking_engine.py
+          fi
+
+      - name: Update Google Sheets dashboard
+        if: ${{ env.GOOGLE_SERVICE_ACCOUNT_JSON != '' }}
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            python google_sheets_updater.py --date "${{ inputs.date }}"
+          else
+            python google_sheets_updater.py
+          fi
+
+      - name: Upload NSE data artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-eod-data
+          path: |
+            data/raw/**
+            data/processed/**

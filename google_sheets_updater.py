@@ -1,0 +1,149 @@
+"""Update GoalHedge Alpha Dashboard tabs in Google Sheets."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import time
+from datetime import date
+from pathlib import Path
+from typing import Any, Callable, TypeVar
+
+import gspread
+import pandas as pd
+from gspread.exceptions import APIError, WorksheetNotFound
+from google.oauth2.service_account import Credentials
+
+from dashboard_builder import PROCESSED_DIR, TAB_NAMES, build_dashboard_tables, parse_run_date
+from ranking_engine import CONFIG_DIR, build_alpha_outputs
+
+
+LOGGER = logging.getLogger("google_sheets_updater")
+DEFAULT_SPREADSHEET_ID = "1-8pJRIEiKZpaJyXoeK9sjQC9EIgcuyVhtAUp8xEBylA"
+SCOPES = ("https://www.googleapis.com/auth/spreadsheets",)
+F = TypeVar("F", bound=Callable[..., Any])
+ALPHA_TAB_NAMES = {
+    "Top 20 Stocks for Tomorrow": "top_20_for_tomorrow",
+    "Daily Ranking": "daily_ranking",
+    "Sector Leaders": "sector_leaders",
+}
+
+
+def retry(operation: F, attempts: int = 3, delay_seconds: float = 2.0) -> F:
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return operation(*args, **kwargs)
+            except (APIError, TimeoutError, ConnectionError) as exc:
+                last_error = exc
+                if attempt == attempts:
+                    break
+                sleep_for = delay_seconds * attempt
+                LOGGER.warning("%s failed on attempt %d/%d: %s", operation.__name__, attempt, attempts, exc)
+                time.sleep(sleep_for)
+        raise RuntimeError(f"{operation.__name__} failed after {attempts} attempts") from last_error
+
+    return wrapped  # type: ignore[return-value]
+
+
+def load_credentials() -> Credentials:
+    raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    credentials_path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+
+    if raw_json:
+        info = json.loads(raw_json)
+        return Credentials.from_service_account_info(info, scopes=SCOPES)
+    if credentials_path:
+        return Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
+
+    raise RuntimeError(
+        "Google credentials missing. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE."
+    )
+
+
+def get_or_create_worksheet(spreadsheet: Any, title: str, rows: int = 1000, cols: int = 20) -> Any:
+    try:
+        return spreadsheet.worksheet(title)
+    except WorksheetNotFound:
+        LOGGER.info("Creating worksheet: %s", title)
+        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+
+
+def dataframe_to_rows(df: pd.DataFrame) -> list[list[Any]]:
+    clean_df = df.copy()
+    clean_df = clean_df.replace({pd.NA: None})
+    clean_df = clean_df.where(pd.notna(clean_df), None)
+    return [list(clean_df.columns)] + clean_df.values.tolist()
+
+
+def merge_historical_rows(existing_values: list[list[Any]], new_rows: list[list[Any]], report_date: date) -> list[list[Any]]:
+    if not new_rows:
+        return existing_values
+
+    header = new_rows[0]
+    date_value = report_date.isoformat()
+    existing_data = existing_values[1:] if existing_values else []
+    retained = [row for row in existing_data if row and row[0] != date_value]
+    return [header] + retained + new_rows[1:]
+
+
+def update_worksheet(worksheet: Any, table: pd.DataFrame, report_date: date) -> None:
+    new_rows = dataframe_to_rows(table)
+    existing_values = retry(worksheet.get_all_values)()
+    merged_rows = merge_historical_rows(existing_values, new_rows, report_date)
+    retry(worksheet.clear)()
+    if merged_rows:
+        retry(worksheet.update)("A1", merged_rows, value_input_option="USER_ENTERED")
+
+
+def update_google_sheet(processed_dir: Path, report_date: date, spreadsheet_id: str, config_dir: Path = CONFIG_DIR) -> None:
+    credentials = load_credentials()
+    client = gspread.authorize(credentials)
+    spreadsheet = retry(client.open_by_key)(spreadsheet_id)
+    tables = build_dashboard_tables(processed_dir, report_date)
+    alpha_outputs = build_alpha_outputs(processed_dir, config_dir, report_date)
+
+    for tab_name in TAB_NAMES:
+        table = tables[tab_name]
+        worksheet = get_or_create_worksheet(
+            spreadsheet,
+            tab_name,
+            rows=max(len(table) + 250, 1000),
+            cols=max(len(table.columns) + 5, 20),
+        )
+        LOGGER.info("Updating %s with %d rows for %s", tab_name, len(table), report_date.isoformat())
+        update_worksheet(worksheet, table, report_date)
+
+    for tab_name, output_key in ALPHA_TAB_NAMES.items():
+        table = alpha_outputs[output_key]
+        worksheet = get_or_create_worksheet(
+            spreadsheet,
+            tab_name,
+            rows=max(len(table) + 250, 1000),
+            cols=max(len(table.columns) + 5, 20),
+        )
+        LOGGER.info("Updating %s with %d rows for %s", tab_name, len(table), report_date.isoformat())
+        update_worksheet(worksheet, table, report_date)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Update GoalHedge Alpha Dashboard in Google Sheets.")
+    parser.add_argument("--date", help="Report date in YYYY-MM-DD format. Defaults to today in IST.")
+    parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
+    parser.add_argument("--config-dir", type=Path, default=CONFIG_DIR)
+    parser.add_argument(
+        "--spreadsheet-id",
+        default=os.environ.get("GOOGLE_SHEET_ID", DEFAULT_SPREADSHEET_ID),
+        help="Google Sheet ID. Defaults to GoalHedge Alpha Dashboard.",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+    update_google_sheet(args.processed_dir, parse_run_date(args.date), args.spreadsheet_id, args.config_dir)
+
+
+if __name__ == "__main__":
+    main()
