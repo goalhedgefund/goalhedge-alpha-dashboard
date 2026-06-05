@@ -11,7 +11,7 @@ This repository downloads and processes NSE end-of-day files from the official N
 - F&O UDiFF bhavcopy
 - 52 week high/low report
 
-Raw files are saved under `data/raw/YYYYMMDD/`. After a successful run, older raw folders are removed so `data/raw/` only keeps the latest completed report date. Normalized processed CSVs are saved under `data/processed/`.
+Raw files are saved under `data/raw/YYYYMMDD/`. After a successful run, older raw folders and older processed files are removed so the repository workspace only keeps the latest completed report date. Google Sheets preserves historical dashboard rows separately.
 
 ## Local Setup
 
@@ -43,7 +43,7 @@ Run for a specific NSE report date:
 python nse_downloader.py --date 2026-05-22
 ```
 
-If the requested date has no complete bundle, the downloader tries previous weekdays using `--lookback-days`:
+By default, the downloader only processes the requested date. If you intentionally want fallback during local investigation, use `--lookback-days`:
 
 ```bash
 python nse_downloader.py --date 2026-05-25 --lookback-days 7

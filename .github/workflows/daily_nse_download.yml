@@ -41,9 +41,9 @@ jobs:
       - name: Download and process NSE EOD data
         run: |
           if [ -n "${{ inputs.date }}" ]; then
-            python nse_downloader.py --date "${{ inputs.date }}"
+            python nse_downloader.py --date "${{ inputs.date }}" --lookback-days 0
           else
-            python nse_downloader.py
+            python nse_downloader.py --lookback-days 0
           fi
 
       - name: Build Alpha rankings

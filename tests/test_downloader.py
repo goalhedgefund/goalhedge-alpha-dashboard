@@ -1,6 +1,12 @@
 from datetime import date
 
-from nse_downloader import REPORTS, clean_old_raw_files, find_report_in_metadata, resolve_report_url
+from nse_downloader import (
+    REPORTS,
+    clean_old_processed_data,
+    clean_old_raw_files,
+    find_report_in_metadata,
+    resolve_report_url,
+)
 
 
 class DummySession:
@@ -50,4 +56,20 @@ def test_clean_old_raw_files_keeps_only_requested_date(tmp_path):
     assert keep_dir.exists()
     assert (keep_dir / "today.csv").exists()
     assert not old_dir.exists()
+    assert (tmp_path / ".gitkeep").exists()
+
+
+def test_clean_old_processed_data_keeps_only_requested_date(tmp_path):
+    (tmp_path / "cm_bhavcopy_20260602.csv").write_text("today", encoding="utf-8")
+    (tmp_path / "cm_bhavcopy_20260601.csv").write_text("old", encoding="utf-8")
+    (tmp_path / "top_20_for_tomorrow_20260602.csv").write_text("today", encoding="utf-8")
+    (tmp_path / "top_20_for_tomorrow_20260601.csv").write_text("old", encoding="utf-8")
+    (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
+
+    clean_old_processed_data(tmp_path, date(2026, 6, 2))
+
+    assert (tmp_path / "cm_bhavcopy_20260602.csv").exists()
+    assert (tmp_path / "top_20_for_tomorrow_20260602.csv").exists()
+    assert not (tmp_path / "cm_bhavcopy_20260601.csv").exists()
+    assert not (tmp_path / "top_20_for_tomorrow_20260601.csv").exists()
     assert (tmp_path / ".gitkeep").exists()

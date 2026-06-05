@@ -66,3 +66,29 @@ def test_process_csv_file_handles_nse_preamble_rows(tmp_path: Path):
     result = pd.read_csv(output_path)
     assert "adjusted_52_week_high" in result.columns
     assert result.loc[0, "symbol"] == "SBIN"
+
+
+def test_process_csv_file_outputs_empty_52w_file_for_malformed_nse_response(tmp_path: Path):
+    raw_path = tmp_path / "malformed_high_low.csv"
+    output_path = tmp_path / "high_low_processed.csv"
+    raw_path.write_text(
+        "temporary response\n"
+        "line two\n"
+        "line,with,two,extra,fields\n",
+        encoding="utf-8",
+    )
+
+    process_csv_file(raw_path, output_path, "week_52_high_low", date(2026, 6, 5))
+
+    result = pd.read_csv(output_path)
+    assert list(result.columns) == [
+        "trade_date",
+        "source_report",
+        "symbol",
+        "series",
+        "adjusted_52_week_high",
+        "52_week_high_date",
+        "adjusted_52_week_low",
+        "52_week_low_dt",
+    ]
+    assert result.empty
