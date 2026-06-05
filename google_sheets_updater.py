@@ -112,6 +112,10 @@ def sanitize_rows(rows: list[list[Any]]) -> list[list[Any]]:
     return [[sanitize_cell(value) for value in row] for row in rows]
 
 
+def validate_json_safe_rows(rows: list[list[Any]]) -> None:
+    json.dumps(rows, allow_nan=False)
+
+
 def merge_historical_rows(existing_values: list[list[Any]], new_rows: list[list[Any]], report_date: date) -> list[list[Any]]:
     if not new_rows:
         return sanitize_rows(existing_values)
@@ -127,6 +131,7 @@ def update_worksheet(worksheet: Any, table: pd.DataFrame, report_date: date) -> 
     new_rows = dataframe_to_rows(table)
     existing_values = retry(worksheet.get_all_values)()
     merged_rows = merge_historical_rows(existing_values, new_rows, report_date)
+    validate_json_safe_rows(merged_rows)
     retry(worksheet.clear)()
     if merged_rows:
         retry(worksheet.update)(range_name="A1", values=merged_rows, value_input_option="USER_ENTERED")
