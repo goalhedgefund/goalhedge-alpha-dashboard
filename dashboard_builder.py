@@ -168,7 +168,9 @@ def build_breakouts(delivery: pd.DataFrame, week_52: pd.DataFrame, report_date: 
     )
     breakouts = merged[
         (merged["distance_from_52w_high_pct"] <= 2.0)
+        & (merged["distance_from_52w_high_pct"] >= 0)
         & (merged["turnover_lacs_num"] >= 100)
+        & (~merged["series"].isin(["BE", "IV"]))
     ]
     breakouts = breakouts.sort_values(
         ["distance_from_52w_high_pct", "turnover_lacs_num"],
@@ -203,7 +205,7 @@ def build_delivery_leaders(delivery: pd.DataFrame) -> pd.DataFrame:
     leaders["deliv_per_num"] = to_number(leaders["deliv_per"])
     leaders["turnover_lacs_num"] = to_number(leaders["turnover_lacs"])
     leaders["close_price_num"] = to_number(leaders["close_price"])
-    leaders = leaders[leaders["deliv_qty_num"] > 0]
+    leaders = leaders[(leaders["series"].eq("EQ")) & (leaders["deliv_qty_num"] > 0)]
     leaders = leaders.sort_values(["deliv_per_num", "deliv_qty_num"], ascending=[False, False]).head(100)
     return leaders[
         [
