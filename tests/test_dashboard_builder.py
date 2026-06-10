@@ -35,6 +35,16 @@ def sample_delivery():
                 "deliv_qty": 5000,
                 "deliv_per": 55,
             },
+            {
+                "trade_date": "2026-06-02",
+                "symbol": "LOWTURN",
+                "series": "EQ",
+                "prev_close": 48,
+                "close_price": 50,
+                "turnover_lacs": 99,
+                "deliv_qty": 3000,
+                "deliv_per": 95,
+            },
         ]
     )
 
@@ -60,6 +70,15 @@ def sample_week_52():
                 "adjusted_52_week_low": 180,
                 "52_week_low_dt": "02-Jun-2026",
             },
+            {
+                "trade_date": "2026-06-02",
+                "symbol": "LOWTURN",
+                "series": "EQ",
+                "adjusted_52_week_high": 50,
+                "52_week_high_date": "02-Jun-2026",
+                "adjusted_52_week_low": 25,
+                "52_week_low_dt": "01-Jan-2026",
+            },
         ]
     )
 
@@ -68,15 +87,15 @@ def test_market_pulse_builds_daily_summary():
     result = build_market_pulse(sample_delivery(), sample_week_52(), date(2026, 6, 2))
 
     assert result.loc[0, "trade_date"] == "2026-06-02"
-    assert result.loc[0, "advances"] == 1
+    assert result.loc[0, "advances"] == 2
     assert result.loc[0, "declines"] == 1
-    assert result.loc[0, "new_52w_high_count"] == 1
+    assert result.loc[0, "new_52w_high_count"] == 2
 
 
 def test_52w_high_scan_filters_current_highs():
     result = build_52w_high_scan(sample_week_52(), date(2026, 6, 2))
 
-    assert list(result["symbol"]) == ["AAA"]
+    assert list(result["symbol"]) == ["AAA", "LOWTURN"]
 
 
 def test_breakouts_finds_symbols_near_52w_high():
@@ -84,12 +103,13 @@ def test_breakouts_finds_symbols_near_52w_high():
 
     assert list(result["symbol"]) == ["AAA"]
     assert result.loc[0, "distance_from_52w_high_pct"] < 2
+    assert "LOWTURN" not in set(result["symbol"])
 
 
-def test_delivery_leaders_sort_by_delivery_qty():
+def test_delivery_leaders_sort_by_delivery_percent():
     result = build_delivery_leaders(sample_delivery())
 
-    assert list(result["symbol"]) == ["AAA", "BBB"]
+    assert list(result["symbol"]) == ["LOWTURN", "AAA", "BBB"]
 
 
 def test_fo_long_buildup_filters_futures_with_price_and_oi_gain():

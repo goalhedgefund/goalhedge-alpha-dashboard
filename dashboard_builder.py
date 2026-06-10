@@ -99,6 +99,18 @@ def build_market_pulse(delivery: pd.DataFrame, week_52: pd.DataFrame, report_dat
 
 def build_52w_high_scan(week_52: pd.DataFrame, report_date: date) -> pd.DataFrame:
     scan = normalize_symbol_series(week_52)
+    if scan.empty:
+        return pd.DataFrame(
+            columns=[
+                "trade_date",
+                "symbol",
+                "series",
+                "adjusted_52_week_high",
+                "52_week_high_date",
+                "adjusted_52_week_low",
+                "52_week_low_dt",
+            ]
+        )
     scan["high_date"] = parse_nse_date_series(scan["52_week_high_date"])
     scan["adjusted_52_week_high_num"] = to_number(scan["adjusted_52_week_high"])
     scan = scan[scan["high_date"] == report_date]
@@ -119,6 +131,21 @@ def build_52w_high_scan(week_52: pd.DataFrame, report_date: date) -> pd.DataFram
 def build_breakouts(delivery: pd.DataFrame, week_52: pd.DataFrame, report_date: date) -> pd.DataFrame:
     delivery = normalize_symbol_series(delivery)
     week_52 = normalize_symbol_series(week_52)
+    if week_52.empty:
+        return pd.DataFrame(
+            columns=[
+                "trade_date",
+                "symbol",
+                "series",
+                "close_price",
+                "adjusted_52_week_high",
+                "distance_from_52w_high_pct",
+                "close_change_pct",
+                "turnover_lacs",
+                "delivery_percent",
+                "52_week_high_date",
+            ]
+        )
     delivery["close_price_num"] = to_number(delivery["close_price"])
     delivery["prev_close_num"] = to_number(delivery["prev_close"])
     delivery["turnover_lacs_num"] = to_number(delivery["turnover_lacs"])
@@ -139,10 +166,13 @@ def build_breakouts(delivery: pd.DataFrame, week_52: pd.DataFrame, report_date: 
     merged["close_change_pct"] = (
         (merged["close_price_num"] - merged["prev_close_num"]) / merged["prev_close_num"] * 100
     )
-    breakouts = merged[merged["distance_from_52w_high_pct"] <= 2.0]
+    breakouts = merged[
+        (merged["distance_from_52w_high_pct"] <= 2.0)
+        & (merged["turnover_lacs_num"] >= 100)
+    ]
     breakouts = breakouts.sort_values(
         ["distance_from_52w_high_pct", "turnover_lacs_num"],
-        ascending=[True, False],
+        ascending=[False, False],
     ).head(200)
     return breakouts[
         [
@@ -174,7 +204,7 @@ def build_delivery_leaders(delivery: pd.DataFrame) -> pd.DataFrame:
     leaders["turnover_lacs_num"] = to_number(leaders["turnover_lacs"])
     leaders["close_price_num"] = to_number(leaders["close_price"])
     leaders = leaders[leaders["deliv_qty_num"] > 0]
-    leaders = leaders.sort_values(["deliv_qty_num", "deliv_per_num"], ascending=[False, False]).head(100)
+    leaders = leaders.sort_values(["deliv_per_num", "deliv_qty_num"], ascending=[False, False]).head(100)
     return leaders[
         [
             "trade_date",
