@@ -185,6 +185,11 @@ def score_ranking(universe: pd.DataFrame, config_dir: Path) -> pd.DataFrame:
         ranking["close_price_num"],
         ranking["adjusted_52_week_high_num"],
     )
+    ranking["distance_from_52w_high_pct"] = (
+        (ranking["adjusted_52_week_high_num"] - ranking["close_price_num"])
+        / ranking["adjusted_52_week_high_num"]
+        * 100
+    ).clip(lower=0)
     if ranking["volume_expansion_ratio"].notna().any():
         ranking["volume_expansion_score"] = percentile_score(ranking["volume_expansion_ratio"])
     else:
@@ -232,19 +237,15 @@ def select_output_columns(ranking: pd.DataFrame) -> pd.DataFrame:
         "trade_date",
         "rank",
         "symbol",
-        "sector",
         "alpha_score",
         "close_price_num",
         "volume_num",
         "delivery_qty_num",
         "delivery_percent_num",
-        "near_52w_high_score",
+        "distance_from_52w_high_pct",
         "volume_expansion_score",
         "delivery_strength_score",
-        "earnings_growth_score",
-        "roce_score",
-        "sector_leadership_score",
-        "commentary_score_component",
+        "sector",
     ]
     return output[columns].rename(
         columns={

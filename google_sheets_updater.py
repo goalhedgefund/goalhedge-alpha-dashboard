@@ -74,6 +74,12 @@ def get_or_create_worksheet(spreadsheet: Any, title: str, rows: int = 1000, cols
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
+def clear_all_worksheets(spreadsheet: Any) -> None:
+    for worksheet in retry(spreadsheet.worksheets)():
+        LOGGER.info("Clearing worksheet: %s", worksheet.title)
+        retry(worksheet.clear)()
+
+
 def sanitize_cell(value: Any) -> Any:
     if value is None:
         return ""
@@ -119,31 +125,19 @@ def validate_json_safe_rows(rows: list[list[Any]]) -> None:
     json.dumps(rows, allow_nan=False)
 
 
-def merge_historical_rows(existing_values: list[list[Any]], new_rows: list[list[Any]], report_date: date) -> list[list[Any]]:
-    if not new_rows:
-        return sanitize_rows(existing_values)
-
-    header = new_rows[0]
-    date_value = report_date.isoformat()
-    existing_data = existing_values[1:] if existing_values else []
-    retained = [row for row in existing_data if row and row[0] != date_value]
-    return sanitize_rows([header] + retained + new_rows[1:])
-
-
 def update_worksheet(worksheet: Any, table: pd.DataFrame, report_date: date) -> None:
-    new_rows = dataframe_to_rows(table)
-    existing_values = retry(worksheet.get_all_values)()
-    merged_rows = merge_historical_rows(existing_values, new_rows, report_date)
-    validate_json_safe_rows(merged_rows)
+    rows = sanitize_rows(dataframe_to_rows(table))
+    validate_json_safe_rows(rows)
     retry(worksheet.clear)()
-    if merged_rows:
-        retry(worksheet.update)(range_name="A1", values=merged_rows, value_input_option="USER_ENTERED")
+    if rows:
+        retry(worksheet.update)(range_name="A1", values=rows, value_input_option="USER_ENTERED")
 
 
 def update_google_sheet(processed_dir: Path, report_date: date, spreadsheet_id: str, config_dir: Path = CONFIG_DIR) -> None:
     credentials = load_credentials()
     client = gspread.authorize(credentials)
     spreadsheet = retry(client.open_by_key)(spreadsheet_id)
+    clear_all_worksheets(spreadsheet)
     tables = build_dashboard_tables(processed_dir, report_date)
     alpha_outputs = build_alpha_outputs(processed_dir, config_dir, report_date)
 

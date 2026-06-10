@@ -7,8 +7,8 @@ import pytest
 from google_sheets_updater import (
     ALPHA_TAB_NAMES,
     dataframe_to_rows,
-    merge_historical_rows,
     sanitize_cell,
+    sanitize_rows,
     validate_json_safe_rows,
 )
 
@@ -40,25 +40,13 @@ def test_dataframe_to_rows_outputs_json_safe_values():
     json.dumps(dataframe_to_rows(df), allow_nan=False)
 
 
-def test_merge_historical_rows_outputs_json_safe_values():
-    existing_rows = [
-        ["trade_date", "symbol", "bad_value"],
-        ["2026-06-04", "OLD", float("inf")],
-        ["2026-06-05", "REPLACED", float("nan")],
-    ]
-    new_rows = [
-        ["trade_date", "symbol", "bad_value"],
-        ["2026-06-05", "NEW", float("-inf")],
-    ]
+def test_sanitize_rows_outputs_json_safe_values():
+    rows = [["trade_date", "symbol", "bad_value"], ["2026-06-05", "NEW", float("-inf")]]
 
-    merged_rows = merge_historical_rows(existing_rows, new_rows, date(2026, 6, 5))
+    sanitized = sanitize_rows(rows)
 
-    assert merged_rows == [
-        ["trade_date", "symbol", "bad_value"],
-        ["2026-06-04", "OLD", ""],
-        ["2026-06-05", "NEW", ""],
-    ]
-    json.dumps(merged_rows, allow_nan=False)
+    assert sanitized == [["trade_date", "symbol", "bad_value"], ["2026-06-05", "NEW", ""]]
+    json.dumps(sanitized, allow_nan=False)
 
 
 def test_sanitize_cell_recurses_through_nested_values():
