@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
+import numbers
 import os
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -72,31 +74,67 @@ def get_or_create_worksheet(spreadsheet: Any, title: str, rows: int = 1000, cols
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
+def sanitize_cell(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (str, int)):
+        return value
+    if hasattr(value, "item"):
+        try:
+            return sanitize_cell(value.item())
+        except ValueError:
+            pass
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, numbers.Real):
+        return value if math.isfinite(float(value)) else ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, (list, tuple)):
+        return [sanitize_cell(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_cell(item) for key, item in value.items()}
+    return value
+
+
 def dataframe_to_rows(df: pd.DataFrame) -> list[list[Any]]:
-    clean_df = df.copy()
-    clean_df = clean_df.replace({pd.NA: None})
-    clean_df = clean_df.where(pd.notna(clean_df), None)
-    return [list(clean_df.columns)] + clean_df.values.tolist()
+    rows = [[str(column) for column in df.columns]]
+    rows.extend([[sanitize_cell(value) for value in row] for row in df.itertuples(index=False, name=None)])
+    return rows
+
+
+def sanitize_rows(rows: list[list[Any]]) -> list[list[Any]]:
+    return [[sanitize_cell(value) for value in row] for row in rows]
+
+
+def validate_json_safe_rows(rows: list[list[Any]]) -> None:
+    json.dumps(rows, allow_nan=False)
 
 
 def merge_historical_rows(existing_values: list[list[Any]], new_rows: list[list[Any]], report_date: date) -> list[list[Any]]:
     if not new_rows:
-        return existing_values
+        return sanitize_rows(existing_values)
 
     header = new_rows[0]
     date_value = report_date.isoformat()
     existing_data = existing_values[1:] if existing_values else []
     retained = [row for row in existing_data if row and row[0] != date_value]
-    return [header] + retained + new_rows[1:]
+    return sanitize_rows([header] + retained + new_rows[1:])
 
 
 def update_worksheet(worksheet: Any, table: pd.DataFrame, report_date: date) -> None:
     new_rows = dataframe_to_rows(table)
     existing_values = retry(worksheet.get_all_values)()
     merged_rows = merge_historical_rows(existing_values, new_rows, report_date)
+    validate_json_safe_rows(merged_rows)
     retry(worksheet.clear)()
     if merged_rows:
-        retry(worksheet.update)("A1", merged_rows, value_input_option="USER_ENTERED")
+        retry(worksheet.update)(range_name="A1", values=merged_rows, value_input_option="USER_ENTERED")
 
 
 def update_google_sheet(processed_dir: Path, report_date: date, spreadsheet_id: str, config_dir: Path = CONFIG_DIR) -> None:
