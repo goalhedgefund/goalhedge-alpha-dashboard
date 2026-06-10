@@ -57,7 +57,7 @@ pytest
 
 ## GitHub Actions
 
-The workflow `.github/workflows/daily_nse_download.yml` runs Monday to Friday at `13:30 UTC`, which is after the NSE market close. It can also be run manually from the GitHub Actions tab with an optional `YYYY-MM-DD` date.
+The workflow `.github/workflows/daily_nse_download.yml` runs Monday to Friday at `17:15 UTC` / `22:45 IST`, which gives NSE end-of-day files more time to publish after market close. It can also be run manually from the GitHub Actions tab with an optional `YYYY-MM-DD` date.
 
 The workflow:
 
@@ -78,7 +78,6 @@ The dashboard updater writes daily snapshots to these tabs:
 - `Delivery Leaders`
 - `F&O Long Build-up`
 - `Top 20 Stocks for Tomorrow`
-- `Daily Ranking`
 - `Sector Leaders`
 
 Historical rows are preserved. If the same report date is run again, rows for that date are replaced so the dashboard does not duplicate the day.

@@ -29,9 +29,9 @@ SCOPES = ("https://www.googleapis.com/auth/spreadsheets",)
 F = TypeVar("F", bound=Callable[..., Any])
 ALPHA_TAB_NAMES = {
     "Top 20 Stocks for Tomorrow": "top_20_for_tomorrow",
-    "Daily Ranking": "daily_ranking",
     "Sector Leaders": "sector_leaders",
 }
+OBSOLETE_TAB_NAMES = ("Daily Ranking",)
 
 
 def retry(operation: F, attempts: int = 3, delay_seconds: float = 2.0) -> F:
@@ -89,7 +89,10 @@ def sanitize_cell(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, numbers.Real):
-        return value if math.isfinite(float(value)) else ""
+        numeric_value = float(value)
+        if not math.isfinite(numeric_value):
+            return ""
+        return int(numeric_value) if numeric_value.is_integer() else round(numeric_value, 2)
     try:
         if pd.isna(value):
             return ""
@@ -143,6 +146,14 @@ def update_google_sheet(processed_dir: Path, report_date: date, spreadsheet_id: 
     spreadsheet = retry(client.open_by_key)(spreadsheet_id)
     tables = build_dashboard_tables(processed_dir, report_date)
     alpha_outputs = build_alpha_outputs(processed_dir, config_dir, report_date)
+
+    for tab_name in OBSOLETE_TAB_NAMES:
+        try:
+            worksheet = spreadsheet.worksheet(tab_name)
+        except WorksheetNotFound:
+            continue
+        LOGGER.info("Deleting obsolete worksheet: %s", tab_name)
+        retry(spreadsheet.del_worksheet)(worksheet)
 
     for tab_name in TAB_NAMES:
         table = tables[tab_name]

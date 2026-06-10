@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from google_sheets_updater import (
+    ALPHA_TAB_NAMES,
     dataframe_to_rows,
     merge_historical_rows,
     sanitize_cell,
@@ -25,7 +26,7 @@ def test_dataframe_to_rows_outputs_json_safe_values():
             {
                 "trade_date": date(2026, 6, 5),
                 "symbol": "AAA",
-                "finite": 10.5,
+                "finite": 10.23455,
                 "nan_value": float("nan"),
                 "inf_value": float("inf"),
             }
@@ -34,7 +35,7 @@ def test_dataframe_to_rows_outputs_json_safe_values():
 
     assert dataframe_to_rows(df) == [
         ["trade_date", "symbol", "finite", "nan_value", "inf_value"],
-        ["2026-06-05", "AAA", 10.5, "", ""],
+        ["2026-06-05", "AAA", 10.23, "", ""],
     ]
     json.dumps(dataframe_to_rows(df), allow_nan=False)
 
@@ -75,3 +76,7 @@ def test_sanitize_cell_recurses_through_nested_values():
 def test_validate_json_safe_rows_rejects_non_json_numbers():
     with pytest.raises(ValueError):
         validate_json_safe_rows([["header"], [float("inf")]])
+
+
+def test_daily_ranking_tab_is_not_written():
+    assert "Daily Ranking" not in ALPHA_TAB_NAMES
