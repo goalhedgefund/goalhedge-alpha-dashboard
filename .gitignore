@@ -1,0 +1,7 @@
+trades.db
+live_feed.log
+logs/
+outputs/
+__pycache__/
+*.pyc
+.env
