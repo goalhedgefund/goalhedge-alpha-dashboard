@@ -1,6 +1,7 @@
 param(
     [string]$Date = "",
     [string]$MarketReadyTime = "18:00",
+    [switch]$SkipSheets,
     [string]$SheetId = "1-8pJRIEiKZpaJyXoeK9sjQC9EIgcuyVhtAUp8xEBylA"
 )
 
@@ -87,6 +88,10 @@ Write-Step "Report date: $ResolvedDate"
 
 Invoke-Step "Download and process NSE EOD data" (@("nse_downloader.py") + $DateArgs + @("--lookback-days", "0"))
 Invoke-Step "Build Alpha rankings" (@("ranking_engine.py") + $DateArgs)
-Invoke-Step "Update Google Sheets dashboard" (@("google_sheets_updater.py") + $DateArgs)
+if ($SkipSheets) {
+    Write-Step "Skipping Google Sheets dashboard update"
+} else {
+    Invoke-Step "Update Google Sheets dashboard" (@("google_sheets_updater.py") + $DateArgs)
+}
 
 Write-Step "GoalHedge local daily run completed"
