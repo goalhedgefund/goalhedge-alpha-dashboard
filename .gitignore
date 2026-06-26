@@ -19,3 +19,8 @@ backtest/*.json
 .DS_Store
 Thumbs.db
 *.log
+server.err
+data/backtest-cache.json
+data/watchlist.json
+server*.log
+server-test*.log
