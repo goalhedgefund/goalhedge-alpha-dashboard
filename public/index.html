@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLAUDE — NSE Scalping System</title>
+  <link rel="stylesheet" href="css/styles.css?v=8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="app">
+  <div id="globalToast" class="global-toast"></div>
+
+  <!-- ── Top bar ─────────────────────────────────────────────────────── -->
+  <div class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-logo">CLAUDE</span>
+      <div class="mode-toggle" id="modeToggle">
+        <button class="mode-toggle-btn active" id="btnModeLive" data-mode="live">● LIVE</button>
+        <button class="mode-toggle-btn" id="btnModeBacktest" data-mode="backtest">▣ BACKTEST &amp; OPTIMIZE</button>
+      </div>
+    </div>
+
+    <div class="topbar-divider"></div>
+
+    <div class="topbar-price-block">
+      <span class="topbar-sym" id="topSym">SIMULATION</span>
+      <span class="topbar-price up" id="topPrice">₹2,450.00</span>
+      <span class="topbar-delta up" id="topDelta">▲ +0.00</span>
+      <span class="topbar-ohlc" id="topOHLC">O— H— L— C—</span>
+    </div>
+
+    <span class="badge badge-wait" id="sbadge">SCANNING</span>
+
+    <div class="topbar-right">
+      <span id="mktClock" class="mkt-clock-text"></span>
+      <select id="tfSel" style="width:60px">
+        <option value="1" selected>1m</option>
+        <option value="3">3m</option>
+        <option value="5">5m</option>
+      </select>
+      <button class="btn" id="btnPause">⏸ Pause</button>
+      <button class="btn" id="btnExportCSV">↓ CSV</button>
+    </div>
+  </div>
+
+  <!-- ── 3-column layout ─────────────────────────────────────────────── -->
+  <div class="main" id="mainLayout">
+
+    <!-- ═══ LEFT SIDEBAR (same content in both modes) ═══════════════════ -->
+    <div class="sidebar-left" id="sidebarLeft">
+      <button class="panel-maximize-btn" id="btnMaximizeLeft" title="Maximize this panel">⤢</button>
+
+      <!-- Connection card -->
+      <div class="card">
+        <div class="card-title">
+          Dhan API
+          <span class="badge badge-sim" id="connStatus"><span class="dot dot-grey"></span> Simulation</span>
+        </div>
+        <div style="margin-bottom:8px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Client ID</div>
+          <input type="text" id="credClientId" placeholder="Your Dhan client ID" style="width:100%">
+        </div>
+        <div style="margin-bottom:8px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Access token</div>
+          <input type="password" id="credToken" placeholder="Paste access token" style="width:100%">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn primary" id="btnConnect" style="flex:1">Connect</button>
+          <button class="btn danger" id="btnDisconnect" style="flex:1;display:none">Disconnect</button>
+        </div>
+        <div id="connMsg" style="font-size:10px;color:var(--text3);margin-top:6px">
+          Enter credentials then select a symbol below.
+        </div>
+      </div>
+
+      <!-- Symbol search -->
+      <div class="card">
+        <div class="card-title">Symbol</div>
+        <div style="margin-bottom:6px">
+          <select id="exchFilter" style="width:100%;margin-bottom:6px">
+            <option value="NSE_EQ" selected>NSE Equity</option>
+          </select>
+        </div>
+        <div class="search-wrap" id="symSearchWrap">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input type="text" id="symSearch" placeholder="Search symbol or name…" autocomplete="off">
+          <div id="symbolDropdown" style="display:none"></div>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:var(--bg4);border-radius:var(--radius)">
+          <div style="font-size:10px;color:var(--text3)">Selected</div>
+          <div style="font-weight:600;font-size:13px;margin-top:2px" id="selectedName">—</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px;display:flex;gap:10px">
+            <span>ID: <span id="selectedSecId" style="color:var(--text2)">—</span></span>
+            <span>Exch: <span id="selectedExch" style="color:var(--text2)">NSE_EQ</span></span>
+          </div>
+          <div id="selectedConfigStatus" style="font-size:10px;margin-top:5px;display:none;color:var(--green)">✓ Tuned config saved for this stock</div>
+          <button class="btn" id="btnAddToWatchlist" style="width:100%;margin-top:8px;font-size:11px" disabled title="Select a symbol first">+ Add to watchlist</button>
+        </div>
+      </div>
+
+      <!-- Target R:R (shared — drives live engine, and pre-fills the backtest optimizer target) -->
+      <div class="card">
+        <div class="card-title" title="The optimizer searches for configs achieving this reward-to-risk ratio. In Live mode this also shows what your currently-applied tuned config (if any) targets.">Target R:R</div>
+        <select id="targetRR" style="width:100%">
+          <option value="2">2:1 (default)</option>
+          <option value="3" selected>3:1 — win 3R for every 1R risked</option>
+          <option value="4">4:1</option>
+          <option value="5">5:1</option>
+        </select>
+      </div>
+
+      <!-- Position sizing settings -->
+      <div class="card">
+        <div class="card-title">Position sizing</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Account (₹)</div>
+            <input type="number" id="acctSize" value="100000" style="width:100%">
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Max risk %</div>
+            <input type="number" id="maxRiskPct" value="1" min="0.1" max="5" step="0.1" style="width:100%">
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Kelly fraction</div>
+          <select id="kellyFrac" style="width:100%">
+            <option value="1">Full Kelly</option>
+            <option value="0.5" selected>Half Kelly</option>
+            <option value="0.25">Quarter Kelly</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- News filter -->
+      <div class="card">
+        <div class="card-title">Filters</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--text2)">News filter</span>
+          <select id="newsFilter" style="width:70px">
+            <option value="1">On</option>
+            <option value="0">Off</option>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Min indicators</span>
+          <select id="minSignal" style="width:70px">
+            <option value="5">5/8</option>
+            <option value="6" selected>6/8</option>
+            <option value="7">7/8</option>
+            <option value="8">8/8</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Kelly panel -->
+      <div class="card">
+        <div class="card-title">Kelly criterion</div>
+        <div class="kelly-grid">
+          <div class="kelly-cell"><div class="kelly-label">Win prob (p)</div><div class="kelly-val" id="kWinP">—</div></div>
+          <div class="kelly-cell"><div class="kelly-label">Win/loss (b)</div><div class="kelly-val">2.0</div></div>
+          <div class="kelly-cell"><div class="kelly-label">Raw Kelly %</div><div class="kelly-val" id="kRaw">—</div></div>
+          <div class="kelly-cell"><div class="kelly-label">Fractional %</div><div class="kelly-val" id="kFrac">—</div></div>
+          <div class="kelly-cell"><div class="kelly-label">₹ risk/trade</div><div class="kelly-val" id="kDollar">—</div></div>
+          <div class="kelly-cell"><div class="kelly-label">Shares</div><div class="kelly-val" id="kShares">—</div></div>
+        </div>
+        <div style="font-size:9px;color:var(--text3);margin-top:6px">Activates after 3 trades · capped at max risk %</div>
+      </div>
+
+    </div>
+    <!-- ═══ END LEFT SIDEBAR ══════════════════════════════════════════ -->
+
+
+    <!-- ═══ CENTER PANEL ══════════════════════════════════════════════ -->
+    <div class="center-panel" id="centerPanel">
+      <button class="panel-maximize-btn" id="btnMaximizeCenter" title="Maximize this panel">⤢</button>
+
+      <!-- Metrics row — content swapped per mode by app.js -->
+      <div class="metrics-row">
+        <div class="metric"><div class="metric-label" id="mPnlLabel">Session P&amp;L</div><div class="metric-value up" id="mPnl">₹0</div></div>
+        <div class="metric"><div class="metric-label">Win rate</div><div class="metric-value neu" id="mWr">—</div></div>
+        <div class="metric"><div class="metric-label">Avg R:R <span id="liveConfigBadge" class="badge badge-live" style="display:none;font-size:8px;padding:1px 5px;margin-left:3px" title="">tuned</span></div><div class="metric-value neu" id="mRR">2.0:1</div></div>
+        <div class="metric"><div class="metric-label">Trades</div><div class="metric-value neu" id="mTrades">0</div></div>
+        <div class="metric"><div class="metric-label">Max drawdown</div><div class="metric-value dn" id="mDD">0.0R</div></div>
+        <div class="metric"><div class="metric-label">Expectancy</div><div class="metric-value neu" id="mExp">—</div></div>
+        <div class="metric"><div class="metric-label">Kelly %</div><div class="metric-value neu" id="mKelly">—</div></div>
+        <div class="metric"><div class="metric-label">Pos size</div><div class="metric-value neu" id="mSize">—</div></div>
+      </div>
+
+      <!-- News bar — LIVE mode only -->
+      <div class="news-bar" id="liveNewsBar">
+        <span class="news-tag">NEWS</span>
+        <span id="ntext" style="color:var(--text2)">Market open — no events scheduled</span>
+      </div>
+
+      <!-- Backtest range bar — BACKTEST mode only, shows what's currently displayed -->
+      <div class="news-bar" id="backtestRangeBar" style="display:none">
+        <span class="news-tag" style="background:var(--blue-bg);color:var(--blue)">RANGE</span>
+        <span id="backtestRangeText" style="color:var(--text2)">No backtest run yet — set a date range on the right and click Run Backtest.</span>
+      </div>
+
+      <!-- Chart toolbar: candlestick/line toggle + volume toggle -->
+      <div class="chart-toolbar">
+        <div class="chart-type-toggle">
+          <button class="chart-type-btn active" id="btnChartCandle" data-type="candle" title="Candlestick view">▦ Candles</button>
+          <button class="chart-type-btn" id="btnChartLine" data-type="line" title="Line view">📈 Line</button>
+        </div>
+        <div class="dma-toggles">
+          <label class="vol-toggle" style="color:#E0C341"><input type="checkbox" id="chkDma10"> 10 DMA</label>
+          <label class="vol-toggle" style="color:#D4537E"><input type="checkbox" id="chkDma20"> 20 DMA</label>
+          <label class="vol-toggle" style="color:#7F77DD"><input type="checkbox" id="chkDma50"> 50 DMA</label>
+          <label class="vol-toggle" style="color:#3DBFC4"><input type="checkbox" id="chkDma200"> 200 DMA</label>
+        </div>
+        <label class="vol-toggle"><input type="checkbox" id="chkShowVolume" checked> Volume</label>
+      </div>
+
+      <!-- Candlestick / line chart -->
+      <div class="chart-wrap" id="chartCard" style="margin-bottom:10px">
+        <canvas id="candleChart" style="display:block;width:100%;height:250px"></canvas>
+      </div>
+      <div id="backtestScrubberWrap" style="display:none;margin:-2px 0 10px 0">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--text3);margin-bottom:4px">
+          <span>Backtest range</span>
+          <span id="backtestScrubberLabel">Start → End</span>
+        </div>
+        <input type="range" id="backtestScrubber" min="0" max="0" value="0" step="1" style="width:100%">
+      </div>
+      <div class="chart-legend">
+        <div class="leg"><span class="leg-line" style="background:#1D9E75"></span>EMA 9</div>
+        <div class="leg"><span class="leg-line" style="background:#D85A30;border-top:2px dashed #D85A30;height:0;margin:1px 0"></span>EMA 21</div>
+        <div class="leg"><span class="leg-line" style="background:#888780;border-top:1px dashed #888780;height:0;margin:1px 0"></span>Bollinger Bands</div>
+        <div class="leg"><span class="leg-box" style="background:rgba(29,158,117,0.25);border-color:#1D9E75"></span>Bull candle</div>
+        <div class="leg"><span class="leg-box" style="background:rgba(226,75,74,0.25);border-color:#E24B4A"></span>Bear candle</div>
+        <div class="leg" style="margin-left:auto"><span style="font-size:10px;color:var(--text3)">Shaded zones = active S/L &amp; T/P levels</span></div>
+      </div>
+      <div class="chart-legend" id="chartMarkerLegend" style="display:none;margin-top:-6px">
+        <div class="leg"><span style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:7px solid #378ADD;display:inline-block"></span>Long entry</div>
+        <div class="leg"><span style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #D4537E;display:inline-block"></span>Short entry</div>
+        <div class="leg"><span style="width:8px;height:8px;border-radius:50%;background:#1D9E75;display:inline-block"></span>Win exit</div>
+        <div class="leg"><span style="width:8px;height:8px;border-radius:50%;background:#E24B4A;display:inline-block"></span>Loss exit</div>
+        <div class="leg" style="margin-left:auto"><span style="font-size:10px;color:var(--text3)">Click a Trade Log row to highlight + jump to that trade</span></div>
+      </div>
+
+      <!-- Active signal — LIVE mode only -->
+      <div class="card" id="liveActiveSignalCard" style="margin-top:8px">
+        <div class="card-title">
+          Active signal
+          <span id="sigStr" style="font-size:10px;color:var(--text2);font-weight:400">Waiting for setup</span>
+        </div>
+        <div class="signal-levels">
+          <div><div class="sig-lbl">Entry</div><div class="sig-price" style="color:var(--text)" id="sEntry">—</div></div>
+          <div><div class="sig-lbl">Stop loss (1R)</div><div class="sig-price" style="color:var(--red)" id="sSL">—</div></div>
+          <div><div class="sig-lbl">Target (2R)</div><div class="sig-price" style="color:var(--green)" id="sTP">—</div></div>
+        </div>
+        <div class="rr-bar">
+          <div style="width:33.3%;background:var(--red)"></div>
+          <div style="width:66.7%;background:var(--green)"></div>
+        </div>
+        <div style="font-size:9px;color:var(--text3);margin-top:4px;text-align:right">Risk : Reward = 1 : 2 · enforced on every signal</div>
+      </div>
+
+      <!-- LIVE Trade log -->
+      <div class="card" id="liveTradeLogCard">
+        <div class="card-title">
+          Trade log — Live
+          <span id="liveLogCount" style="font-weight:400;color:var(--text2)">0 trades</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="trade-table">
+            <thead>
+              <tr>
+                <th>#</th><th>Dir</th><th>Entry</th><th>Exit</th>
+                <th>R</th><th>Result</th><th>Indic</th><th>₹ P&amp;L</th><th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="liveTradeBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- BACKTEST Trade log -->
+      <div class="card" id="backtestTradeLogCard" style="display:none">
+        <div class="card-title">
+          Trade log — <span id="backtestLogSource">Backtest</span>
+          <span id="backtestLogCount" style="font-weight:400;color:var(--text2)">0 trades</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="trade-table">
+            <thead>
+              <tr>
+                <th>#</th><th>Dir</th><th>Entry</th><th>Exit</th>
+                <th>R</th><th>Result</th><th>Indic</th><th>₹ P&amp;L</th><th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="backtestTradeBody"></tbody>
+          </table>
+        </div>
+        <div style="font-size:9px;color:var(--text3);margin-top:6px">Click any row to highlight that trade on the chart above.</div>
+      </div>
+
+      <!-- LIVE Equity curve -->
+      <div class="card" id="liveEquityCard">
+        <div class="card-title">Equity curve — Live session</div>
+        <div style="position:relative;height:90px">
+          <canvas id="liveEqChart" role="img" aria-label="Live equity curve in R multiples">Equity curve.</canvas>
+        </div>
+      </div>
+
+      <!-- BACKTEST Equity curve -->
+      <div class="card" id="backtestEquityCard" style="display:none">
+        <div class="card-title">Equity curve — <span id="backtestEqSource">Backtest</span></div>
+        <div style="position:relative;height:90px">
+          <canvas id="backtestEqChart" role="img" aria-label="Backtest equity curve in R multiples">Equity curve.</canvas>
+        </div>
+      </div>
+
+    </div>
+    <!-- ═══ END CENTER PANEL ═══════════════════════════════════════════ -->
+
+
+    <!-- ═══ RIGHT SIDEBAR ═════════════════════════════════════════════ -->
+    <div class="sidebar-right" id="sidebarRight">
+      <button class="panel-maximize-btn" id="btnMaximizeRight" title="Maximize this panel">⤢</button>
+
+      <!-- 12 Indicators (both modes) -->
+      <div class="card">
+        <div class="card-title" id="indicatorsCardHeader" style="cursor:pointer;user-select:none">
+          Indicators
+          <span id="indicatorsToggleIcon" style="font-size:11px;color:var(--text3)">▾ hide</span>
+        </div>
+        <div class="ind-grid" id="indicatorsGridBody">
+          <div class="ind-card">
+            <div class="ind-name">RSI (14)</div>
+            <div class="ind-val up" id="rsiVal">50.0</div>
+            <div class="ind-bar"><div class="ind-fill" id="rsiBar" style="width:50%;background:#378ADD"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">MACD</div>
+            <div class="ind-val" id="macdVal">0.00</div>
+            <div class="ind-bar"><div class="ind-fill" id="macdBar" style="width:50%;background:#378ADD"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">Stoch %K</div>
+            <div class="ind-val" id="stochVal">50.0</div>
+            <div class="ind-bar"><div class="ind-fill" id="stochBar" style="width:50%;background:#1D9E75"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">ATR (14)</div>
+            <div class="ind-val" id="atrVal">—</div>
+            <div class="ind-bar"><div class="ind-fill" id="atrBar" style="width:40%;background:#EF9F27"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">CCI (20)</div>
+            <div class="ind-val" id="cciVal">0.0</div>
+            <div class="ind-bar"><div class="ind-fill" id="cciBar" style="width:50%;background:#D4537E"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">Williams %R</div>
+            <div class="ind-val" id="willrVal">-50</div>
+            <div class="ind-bar"><div class="ind-fill" id="willrBar" style="width:50%;background:#7F77DD"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">EMA 9/21</div>
+            <div class="ind-val" id="emaVal">Neutral</div>
+            <div class="ind-bar"><div class="ind-fill" id="emaBar" style="width:50%;background:#565d6a"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">BB %B</div>
+            <div class="ind-val" id="bbVal">0.50</div>
+            <div class="ind-bar"><div class="ind-fill" id="bbBar" style="width:50%;background:#0F6E56"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">ADX (14)</div>
+            <div class="ind-val" id="adxVal">20</div>
+            <div class="ind-bar"><div class="ind-fill" id="adxBar" style="width:40%;background:#D85A30"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">MFI (14)</div>
+            <div class="ind-val" id="mfiVal">50</div>
+            <div class="ind-bar"><div class="ind-fill" id="mfiBar" style="width:50%;background:#185FA5"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">Momentum</div>
+            <div class="ind-val" id="momVal">0.00</div>
+            <div class="ind-bar"><div class="ind-fill" id="momBar" style="width:50%;background:#639922"></div></div>
+          </div>
+          <div class="ind-card">
+            <div class="ind-name">VWAP Dev</div>
+            <div class="ind-val" id="vwapVal">0.00</div>
+            <div class="ind-bar"><div class="ind-fill" id="vwapBar" style="width:50%;background:#993556"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─────────────────────────────────────────────────────────────
+           LIVE-MODE-ONLY right sidebar content: Watchlist + Batch
+           ───────────────────────────────────────────────────────────── -->
+      <div id="liveRightContent">
+        <div class="card">
+          <div class="card-title">
+            Watchlist
+            <span id="watchlistCount" style="font-size:9px;color:var(--text3);font-weight:400">0 symbols</span>
+          </div>
+          <div id="watchlistItems" style="max-height:160px;overflow-y:auto;margin-bottom:8px">
+            <div style="font-size:10px;color:var(--text3);padding:8px 0;text-align:center">No symbols yet — use "+ Add to watchlist" on the left</div>
+          </div>
+
+          <div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;border-top:1px solid var(--border);padding-top:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <span>NSE live feed</span>
+              <button class="btn" id="btnToggleNewsFeed" style="padding:2px 8px;font-size:10px">Pause</button>
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--text2);margin-bottom:8px;line-height:1.5">
+            Polls NSE announcements every 30 seconds. Recent items are shown below and can be opened directly from the feed.
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--text3);margin-bottom:6px">
+            <span id="nseFeedStatus">Waiting for first NSE refresh…</span>
+            <span id="nseFeedUpdated">—</span>
+          </div>
+          <div id="nseFeedItems" style="max-height:220px;overflow-y:auto;padding-right:2px">
+            <div style="font-size:10px;color:var(--text3);padding:8px 0;text-align:center">Loading NSE announcements…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─────────────────────────────────────────────────────────────
+           BACKTEST-MODE-ONLY right sidebar content: Backtest + Optimizer
+           ───────────────────────────────────────────────────────────── -->
+      <div id="backtestRightContent" style="display:none">
+
+        <!-- Backtest panel -->
+        <div class="card">
+          <div class="card-title">
+            Backtest
+            <span style="font-size:9px;color:var(--text3);font-weight:400">Tests your strategy on past price data</span>
+          </div>
+          <div style="font-size:10px;color:var(--text2);margin-bottom:8px;line-height:1.5">
+            Pick a date range and candle interval below. Claude pulls real historical candles for <b id="btSymbolLabel">the selected stock</b> from Dhan, then replays every bar through the same 8-indicator signal logic the live engine uses.
+          </div>
+          <div class="bt-row">
+            <span class="bt-label">From</span>
+            <input type="date" id="btFrom" style="flex:1">
+          </div>
+          <div class="bt-row">
+            <span class="bt-label">To</span>
+            <input type="date" id="btTo" style="flex:1">
+          </div>
+          <div class="bt-row">
+            <span class="bt-label" title="Daily bars only return ~1 candle per trading day — fine for swing strategies, but a scalping strategy needs intraday minute bars to generate meaningful signal counts">Candle size</span>
+            <select id="btTimeframe" style="flex:1">
+              <option value="1">1 minute</option>
+              <option value="5" selected>5 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="60">60 minutes</option>
+              <option value="D">Daily</option>
+            </select>
+          </div>
+          <div id="btTfHint" style="font-size:9px;color:var(--amber);margin-bottom:8px;display:none">⚠ Daily bars rarely produce enough trades for a scalping strategy. Use 1–15 min for meaningful results.</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+            <button class="btn primary" id="btnRunBacktest">▶ 1. Run Backtest</button>
+            <button class="btn" id="btnRunOptimize" disabled title="Run a backtest first">⚙ 2. Run Optimizer</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text2);margin:2px 0 4px 0;cursor:pointer">
+            <input type="checkbox" id="chkIncludeTradingCost" checked>
+            Include exchange charges
+          </label>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:8px">Intraday 0.03521% turnover · Daily 0.2222%</div>
+          <div id="btStatus" style="font-size:10px;color:var(--text3);margin-bottom:8px;min-height:14px">Connect to Dhan and pick a symbol to enable backtesting.</div>
+
+          <div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;border-top:1px solid var(--border);padding-top:8px">
+            Step 1 result — Baseline <span style="font-weight:400;text-transform:none">(your current 2:1 settings, unchanged)</span>
+          </div>
+          <div class="bt-result-grid">
+            <div class="bt-cell" title="How many complete trades fired during the backtest period">
+              <div class="bt-cell-label">Trades fired</div><div class="bt-cell-value neu" id="btTotal">—</div>
+            </div>
+            <div class="bt-cell" title="Percentage of trades that hit the take-profit target instead of the stop loss">
+              <div class="bt-cell-label">Win rate</div><div class="bt-cell-value" id="btWinRate">—</div>
+            </div>
+            <div class="bt-cell" title="Average R gained or lost per trade. Positive = profitable on average">
+              <div class="bt-cell-label">Avg R / trade</div><div class="bt-cell-value" id="btExpectancy">—</div>
+            </div>
+          </div>
+          <a id="btnExportBaseline" href="#" style="display:none;align-items:center;gap:4px;font-size:11px;color:var(--blue);text-decoration:none;margin-top:8px">📊 Export baseline trades to Excel</a>
+        </div>
+
+        <!-- Optimizer feedback loop -->
+        <div class="card" id="optimizerCard" style="display:none">
+          <div class="card-title">
+            Step 2 — Optimizer result
+            <span id="optSearchInfo" style="font-size:9px;color:var(--text3);font-weight:400">—</span>
+          </div>
+          <div style="font-size:10px;color:var(--text2);margin-bottom:8px;line-height:1.5">
+            Claude tried <span id="optComboCount" style="color:var(--text)">—</span> different combinations of stop-loss size, take-profit size, and indicator strictness — all targeting <b id="optTargetRRLabel" style="color:var(--blue)">3:1</b> R:R — and kept the one with the best risk-adjusted result below.
+          </div>
+          <div class="bt-result-grid" style="margin-bottom:8px">
+            <div class="bt-cell" title="How many trades this specific config would have fired">
+              <div class="bt-cell-label">Trades</div><div class="bt-cell-value neu" id="optTotal">—</div>
+            </div>
+            <div class="bt-cell" title="Percentage of trades that won">
+              <div class="bt-cell-label">Win rate</div><div class="bt-cell-value up" id="optWinRate">—</div>
+            </div>
+            <div class="bt-cell" title="Average R gained per trade with this config">
+              <div class="bt-cell-label">Avg R / trade</div><div class="bt-cell-value up" id="optExpectancy">—</div>
+            </div>
+            <div class="bt-cell" title="Total money won divided by total money lost. Above 1 = profitable overall">
+              <div class="bt-cell-label">Profit factor</div><div class="bt-cell-value" id="optPF">—</div>
+            </div>
+            <div class="bt-cell" title="The worst losing streak, measured in R. Lower is safer">
+              <div class="bt-cell-label">Worst losing streak</div><div class="bt-cell-value dn" id="optMaxDD">—</div>
+            </div>
+            <div class="bt-cell" title="Optimizer score shown in human-friendly points">
+              <div class="bt-cell-label">Robust score</div><div class="bt-cell-value neu" id="optScore">—</div>
+            </div>
+            <div class="bt-cell" title="How much better (or worse) this is vs your current 2:1 baseline above">
+              <div class="bt-cell-label">Improvement</div><div class="bt-cell-value up" id="optDelta">—</div>
+            </div>
+          </div>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">What changed vs your current settings</div>
+          <div id="optConfigDetail" style="font-size:11px;color:var(--text2);background:var(--bg4);border-radius:var(--radius);padding:10px;margin-bottom:8px;line-height:1.7"></div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:10px">
+            <button class="btn primary" id="btnApplyOptimized">✓ Apply this config to live engine</button>
+            <button class="btn" id="btnResetConfig" title="Revert this stock to default 2:1 settings">↺ Reset</button>
+          </div>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:10px;margin-top:-4px">Applying saves this tuning for <b id="optSymbolApplyLabel" style="color:var(--text2)">this stock</b> only — other symbols keep their own settings (or the 2:1 default) and switching back here later restores this exact config.</div>
+          <a id="btnExportOptimized" href="#" style="display:none;align-items:center;gap:4px;font-size:11px;color:var(--blue);text-decoration:none;margin-bottom:12px">📊 Export optimizer trades to Excel</a>
+
+          <div id="optLeaderboardWrap" style="max-height:220px;overflow-y:auto">
+            <div style="font-size:9px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Other strong alternatives Claude considered</div>
+            <table class="trade-table" style="font-size:10px">
+              <thead><tr>
+                <th title="Stop loss distance, as a multiple of ATR">Stop ×ATR</th>
+                <th title="Take profit distance, as a multiple of ATR">Target ×ATR</th>
+                <th title="Minimum indicators (out of 8) that must agree before a trade fires">Min indic.</th>
+                <th title="Win rate for this combination">Win rate</th>
+                <th title="Average R per trade">Avg R</th>
+                <th title="Number of trades fired">Trades</th>
+                <th title="Human-readable optimizer score">Score</th>
+              </tr></thead>
+              <tbody id="optLeaderboardBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+    <!-- ═══ END RIGHT SIDEBAR ════════════════════════════════════════ -->
+
+  </div><!-- end .main -->
+</div><!-- end .app -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="js/indicators.js?v=8"></script>
+<script src="js/chart.js?v=8"></script>
+<script src="js/dhan.js?v=8"></script>
+<script src="js/app.js?v=8"></script>
+</body>
+</html>

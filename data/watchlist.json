@@ -1,0 +1,50 @@
+[
+  {
+    "secId": "2263",
+    "symbol": "BANDHANBNK",
+    "name": "BANDHAN BANK LIMITED",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "9599",
+    "symbol": "DELHIVERY",
+    "name": "DELHIVERY LIMITED",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "14366",
+    "symbol": "IDEA",
+    "name": "VODAFONE IDEA LIMITED",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "10217",
+    "symbol": "ADANIENSOL",
+    "name": "ADANI ENERGY SOLUTION LTD",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "12018",
+    "symbol": "SUZLON",
+    "name": "SUZLON ENERGY LIMITED",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "438",
+    "symbol": "BHEL",
+    "name": "BHEL",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "10738",
+    "symbol": "OFSS",
+    "name": "ORACLE FIN SERV SOFT LTD.",
+    "exchange": "NSE_EQ"
+  },
+  {
+    "secId": "3045",
+    "symbol": "SBIN",
+    "name": "STATE BANK OF INDIA",
+    "exchange": "NSE_EQ"
+  }
+]

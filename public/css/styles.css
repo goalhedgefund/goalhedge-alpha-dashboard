@@ -1,0 +1,448 @@
+/* ── CLAUDE Scalping System — Styles ─────────────────────────────── */
+:root {
+  --bg:        #0d0f11;
+  --bg2:       #13161a;
+  --bg3:       #1a1e24;
+  --bg4:       #222730;
+  --border:    rgba(255,255,255,0.07);
+  --border2:   rgba(255,255,255,0.13);
+  --text:      #e8eaed;
+  --text2:     #8a9099;
+  --text3:     #565d6a;
+  --green:     #1D9E75;
+  --green-bg:  rgba(29,158,117,0.12);
+  --red:       #E24B4A;
+  --red-bg:    rgba(226,75,74,0.12);
+  --blue:      #378ADD;
+  --blue-bg:   rgba(55,138,221,0.12);
+  --amber:     #EF9F27;
+  --amber-bg:  rgba(239,159,39,0.12);
+  --purple:    #7F77DD;
+  --purple-bg: rgba(127,119,221,0.10);
+  --radius:    6px;
+  --radius-lg: 10px;
+  --font:      'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ── Layout ──────────────────────────────────────────────────────── */
+.app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+.global-toast {
+  position: fixed;
+  top: 54px;
+  right: 16px;
+  z-index: 500;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-left: 3px solid var(--blue);
+  border-radius: var(--radius);
+  padding: 9px 14px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity .2s, transform .2s;
+  pointer-events: none;
+  max-width: 360px;
+}
+.global-toast.show { opacity: 1; transform: translateY(0); }
+.global-toast.error { border-left-color: var(--red); }
+
+.topbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 9px 16px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.topbar-brand { display: flex; align-items: center; gap: 12px; }
+.brand-logo {
+  font-size: 13px; font-weight: 700; color: #378ADD;
+  letter-spacing: .1em;
+}
+.topbar-divider {
+  width: 1px; height: 22px;
+  background: var(--border2);
+  flex-shrink: 0;
+}
+.topbar-price-block {
+  display: flex; align-items: baseline; gap: 9px;
+  flex-wrap: wrap;
+}
+.topbar-right {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
+}
+.mkt-clock-text {
+  font-size: 11px; color: var(--text2);
+  font-variant-numeric: tabular-nums;
+  padding-right: 4px;
+}
+
+/* ── Mode toggle (LIVE / BACKTEST & OPTIMIZE) ───────────────────────── */
+.mode-toggle {
+  display: flex;
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 2px;
+  gap: 2px;
+}
+.mode-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+.mode-toggle-btn:hover { color: var(--text2); }
+.mode-toggle-btn.active {
+  background: var(--blue);
+  color: #fff;
+}
+.mode-toggle-btn[data-mode="backtest"].active { background: #7F77DD; }
+
+/* ── Chart toolbar (candlestick/line toggle + volume checkbox) ─────── */
+.chart-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.chart-type-toggle { display: flex; gap: 4px; }
+.chart-type-btn {
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.chart-type-btn:hover { background: var(--bg3); }
+.chart-type-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.vol-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--text2);
+  cursor: pointer; user-select: none;
+}
+.vol-toggle input { cursor: pointer; }
+
+/* ── Mode-based panel visibility ─────────────────────────────────────
+   app.js toggles a `data-mode` attribute on <body>. LIVE-only elements
+   carry no inline style (visible by default); BACKTEST-only elements
+   start with inline display:none in the HTML and get explicitly turned
+   back on here when in backtest mode — !important is required to beat
+   the inline style's specificity. */
+body[data-mode="live"] #backtestRangeBar,
+body[data-mode="live"] #backtestTradeLogCard,
+body[data-mode="live"] #backtestEquityCard,
+body[data-mode="live"] #backtestRightContent { display: none !important; }
+
+body[data-mode="backtest"] #liveNewsBar,
+body[data-mode="backtest"] #liveActiveSignalCard,
+body[data-mode="backtest"] #liveTradeLogCard,
+body[data-mode="backtest"] #liveEquityCard,
+body[data-mode="backtest"] #liveRightContent { display: none !important; }
+
+body[data-mode="backtest"] #backtestRangeBar { display: flex !important; }
+body[data-mode="backtest"] #backtestTradeLogCard,
+body[data-mode="backtest"] #backtestEquityCard,
+body[data-mode="backtest"] #backtestRightContent { display: block !important; }
+
+.main {
+  display: grid;
+  grid-template-columns: 260px 1fr 280px;
+  gap: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Panel maximize/restore ──────────────────────────────────────────
+   Clicking the ⤢ button on any panel collapses the OTHER two columns to
+   zero width and hides their content entirely (display:none), so the
+   maximized panel fills the screen. Clicking ⤢ again (now showing as ⤡)
+   restores the original 3-column layout. */
+.main.maximized-left   { grid-template-columns: 1fr 0 0; }
+.main.maximized-center  { grid-template-columns: 0 1fr 0; }
+.main.maximized-right  { grid-template-columns: 0 0 1fr; }
+
+.main.maximized-left   .center-panel,
+.main.maximized-left   .sidebar-right,
+.main.maximized-center .sidebar-left,
+.main.maximized-center .sidebar-right,
+.main.maximized-right  .sidebar-left,
+.main.maximized-right  .center-panel {
+  display: none;
+}
+
+.panel-maximize-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 20;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.55;
+  transition: opacity .15s, background .15s, color .15s;
+}
+.panel-maximize-btn:hover { opacity: 1; background: var(--bg4); color: var(--text); }
+
+/* Give the first card in each panel room so it never sits under the
+   floating maximize button in the corner. */
+.sidebar-left > .card:first-of-type,
+.sidebar-right > .card:first-of-type,
+.center-panel > .metrics-row { margin-right: 30px; }
+
+/* Panel headers/cards need relative positioning for the absolute-positioned button */
+.sidebar-left, .center-panel, .sidebar-right { position: relative; min-height: 0; }
+
+.sidebar-left  { background: var(--bg2); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+.center-panel  { background: var(--bg);  overflow-y: auto; padding: 12px 14px; }
+.sidebar-right { background: var(--bg2); border-left:  1px solid var(--border); overflow-y: auto; padding: 12px; }
+
+/* ── Cards ───────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.card-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── Metric chips ─────────────────────────────────────────────────── */
+.metrics-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.metric {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+.metric-label { font-size: 10px; color: var(--text3); margin-bottom: 2px; }
+.metric-value { font-size: 16px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.metric-value.up  { color: var(--green); }
+.metric-value.dn  { color: var(--red);   }
+.metric-value.neu { color: var(--text2); }
+
+/* ── Badges ──────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: 20px;
+  letter-spacing: 0.03em;
+}
+.badge-long   { background: var(--green-bg);  color: var(--green);  border: 1px solid rgba(29,158,117,0.3); }
+.badge-short  { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(226,75,74,0.3);  }
+.badge-wait   { background: var(--bg4);       color: var(--text2);  border: 1px solid var(--border);        }
+.badge-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid rgba(29,158,117,0.3); }
+.badge-sim    { background: var(--bg4);       color: var(--text2);  border: 1px solid var(--border);        }
+.badge-err    { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(226,75,74,0.3);  }
+.badge-conn   { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(55,138,221,0.3); }
+.badge-news   { background: var(--amber-bg);  color: var(--amber);  border: 1px solid rgba(239,159,39,0.3); }
+
+.dot { width: 6px; height: 6px; border-radius: 50%; }
+.dot-green  { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.dot-red    { background: var(--red);   }
+.dot-grey   { background: var(--text3); }
+.dot-blue   { background: var(--blue);  }
+.dot-pulse  { animation: pulse 1.4s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Inputs & Buttons ────────────────────────────────────────────── */
+input, select, textarea {
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color .15s;
+}
+input:focus, select:focus { border-color: var(--blue); }
+input[type=password] { letter-spacing: 0.12em; }
+
+select option { background: var(--bg3); }
+
+.btn {
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  transition: background .15s, border-color .15s;
+  white-space: nowrap;
+}
+.btn:hover   { background: var(--bg3); border-color: var(--border2); }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.primary:hover { background: #2978c8; }
+.btn.danger  { background: var(--red-bg); border-color: rgba(226,75,74,.4); color: var(--red); }
+.btn.active  { background: var(--bg3); border-color: var(--border2); }
+.btn-icon    { padding: 5px 8px; }
+
+/* ── Symbol search ───────────────────────────────────────────────── */
+.search-wrap { position: relative; }
+.search-wrap input { width: 100%; padding-left: 28px; }
+.search-icon { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 14px; pointer-events: none; }
+#symbolDropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 200;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--radius); max-height: 220px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.sym-item {
+  padding: 7px 10px; cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.sym-item:hover { background: var(--bg4); }
+.sym-item:last-child { border-bottom: none; }
+.sym-name  { font-weight: 600; font-size: 12px; }
+.sym-full  { font-size: 10px; color: var(--text2); margin-top: 1px; }
+.sym-exch  { font-size: 9px; color: var(--text3); background: var(--bg4); padding: 1px 5px; border-radius: 3px; }
+.sym-sector{ font-size: 10px; color: var(--text3); }
+
+/* ── Candlestick Chart ───────────────────────────────────────────── */
+#candleChart { display: block; width: 100%; }
+.chart-wrap { position: relative; border-radius: var(--radius); overflow: hidden; background: var(--bg); }
+.chart-legend {
+  display: flex; gap: 14px; padding: 6px 0;
+  font-size: 10px; color: var(--text2); flex-wrap: wrap;
+}
+.leg { display: flex; align-items: center; gap: 5px; }
+.leg-line { width: 16px; height: 2px; border-radius: 1px; }
+.leg-box  { width: 9px; height: 9px; border-radius: 2px; border: 1px solid; }
+
+/* ── Indicator grid ──────────────────────────────────────────────── */
+.ind-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ind-card { background: var(--bg4); border-radius: var(--radius); padding: 7px 9px; }
+.ind-name { font-size: 9px; color: var(--text3); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .04em; }
+.ind-val  { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ind-bar  { height: 2px; background: var(--border); border-radius: 1px; margin-top: 5px; overflow: hidden; }
+.ind-fill { height: 100%; border-radius: 1px; transition: width .4s; }
+
+/* ── Signal box ──────────────────────────────────────────────────── */
+.signal-levels { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin: 10px 0; }
+.sig-lbl  { font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: .05em; }
+.sig-price{ font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.rr-bar   { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; display: flex; }
+
+/* ── Trade log ───────────────────────────────────────────────────── */
+.trade-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.trade-table th { font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: .04em; padding: 4px 6px; text-align: left; border-bottom: 1px solid var(--border); }
+.trade-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.trade-table tr:last-child td { border-bottom: none; }
+.trade-table tr:hover td { background: var(--bg4); }
+.win  { color: var(--green); font-weight: 600; }
+.loss { color: var(--red);   font-weight: 600; }
+
+/* ── Kelly panel ─────────────────────────────────────────────────── */
+.kelly-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.kelly-cell { background: var(--bg4); border-radius: var(--radius); padding: 7px 9px; }
+.kelly-label{ font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: .04em; }
+.kelly-val  { font-size: 14px; font-weight: 600; color: var(--text); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+/* ── Equity chart ────────────────────────────────────────────────── */
+#eqChart { display: block; width: 100%; }
+
+/* ── Backtest panel ──────────────────────────────────────────────── */
+.bt-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.bt-label { font-size: 11px; color: var(--text2); white-space: nowrap; }
+.bt-result-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-top: 8px; }
+.bt-cell { background: var(--bg4); border-radius: var(--radius); padding: 8px; text-align: center; }
+.bt-cell-label { font-size: 9px; color: var(--text3); }
+.bt-cell-value { font-size: 14px; font-weight: 600; margin-top: 2px; }
+
+/* ── News ticker ─────────────────────────────────────────────────── */
+.news-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px 10px;
+  margin-bottom: 10px; font-size: 11px;
+}
+.news-tag { font-size: 9px; font-weight: 700; color: var(--amber); background: var(--amber-bg); padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+
+/* ── Market clock ────────────────────────────────────────────────── */
+#mktClock { font-family: var(--font-mono); font-size: 11px; color: var(--text2); }
+.mkt-open   { color: var(--green); }
+.mkt-closed { color: var(--text3); }
+.mkt-pre    { color: var(--blue);  }
+
+/* ── Topbar elements ─────────────────────────────────────────────── */
+.topbar-sym   { font-size: 16px; font-weight: 700; color: var(--text); }
+.topbar-price { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.topbar-delta { font-size: 12px; font-variant-numeric: tabular-nums; }
+.topbar-ohlc  { font-size: 10px; color: var(--text2); font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+.ml-auto { margin-left: auto; }
+.flex    { display: flex; }
+.gap-6   { gap: 6px; }
+.gap-8   { gap: 8px; }
+.items-center { align-items: center; }
+.flex-wrap    { flex-wrap: wrap; }
+
+/* ── Scrollbar ───────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .main { grid-template-columns: 220px 1fr; }
+  .sidebar-right { display: none; }
+}
+@media (max-width: 700px) {
+  .main { grid-template-columns: 1fr; }
+  .sidebar-left { display: none; }
+}

@@ -1,0 +1,21 @@
+# ── Credentials — NEVER commit these ─────────────────────────────────
+.env
+*.env
+.env.local
+.env.production
+
+# ── Dependencies ──────────────────────────────────────────────────────
+node_modules/
+
+# ── Downloaded data (regenerated on startup) ─────────────────────────
+data/api-scrip-master.csv
+data/securities-master.json
+
+# ── Backtest outputs ──────────────────────────────────────────────────
+backtest/*.csv
+backtest/*.json
+
+# ── OS / editor junk ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
