@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multiscript Standalone</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Standalone Local Web App</div>
+        <h1>Multiscript Dashboard</h1>
+        <p class="sub">Live Dhan feed, selected timeframe legs, and separate Excel logs per timeframe.</p>
+      </div>
+      <div class="status-panel">
+        <div class="status-item">
+          <span>Mode</span>
+          <strong id="modeState">LIVE</strong>
+        </div>
+        <div class="status-item"><span>Feed</span><strong id="feedState">DISCONNECTED</strong></div>
+        <div class="status-item"><span>Active Legs</span><strong id="activeLegs">0</strong></div>
+        <div class="status-item"><span>Running</span><strong id="runnerState">IDLE</strong></div>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <label class="searchbox">
+        <span>Search</span>
+        <input id="searchInput" type="search" placeholder="Symbol or name" />
+      </label>
+      <label class="mode-toggle">
+        <span>Run Mode</span>
+        <button id="modeToggle" type="button" class="mode-switch" aria-pressed="false">
+          <span class="mode-pill live">LIVE</span>
+          <span class="mode-pill replay">REPLAY</span>
+          <span class="mode-knob" aria-hidden="true"></span>
+        </button>
+      </label>
+      <div class="trade-mode-select">
+        <span>Trade Mode</span>
+        <div class="trade-mode-pills">
+          <label class="tf-pill" id="pill-intraday">
+            <input type="radio" name="tradeMode" value="INTRADAY" id="tradeModeIntraday" checked />
+            <span>Intraday</span>
+          </label>
+          <label class="tf-pill" id="pill-carryforward">
+            <input type="radio" name="tradeMode" value="CARRY_FORWARD" id="tradeModeCarryForward" />
+            <span>Carry Forward</span>
+          </label>
+        </div>
+      </div>
+      <div class="range-panel">
+        <label>
+          <span>Replay From</span>
+          <input id="replayFrom" type="datetime-local" />
+        </label>
+        <label>
+          <span>Replay To</span>
+          <input id="replayTo" type="datetime-local" />
+        </label>
+        <button id="applyRangeBtn" type="button" class="muted">Apply Range</button>
+        <div id="rangeStatus" class="range-status">No replay range applied</div>
+      </div>
+      <div class="toolbar-actions">
+        <div class="tf-filter">
+          <span>Timeframes</span>
+          <div class="tf-checks">
+            <label class="tf-pill"><input type="checkbox" value="1" id="tf1" checked /><span>1m</span></label>
+            <label class="tf-pill"><input type="checkbox" value="5" id="tf5" checked /><span>5m</span></label>
+            <label class="tf-pill"><input type="checkbox" value="15" id="tf15" checked /><span>15m</span></label>
+            <label class="tf-pill"><input type="checkbox" value="60" id="tf60" /><span>60m</span></label>
+            <label class="tf-pill"><input type="checkbox" value="D" id="tfD" /><span>1D</span></label>
+          </div>
+        </div>
+        <button id="startBtn">Start</button>
+        <button id="pauseBtn" class="muted">Pause</button>
+        <button id="resetBtn" class="muted">Reset</button>
+      </div>
+    </section>
+
+    <section class="summary-grid" id="summaryGrid"></section>
+
+    <section class="trades-section">
+      <div class="section-title trades-title">
+        <div class="trades-title-left">
+          <h2>Trade Log</h2>
+          <p>Filter by entry timestamp and timeframe.</p>
+        </div>
+        <div class="trades-filters">
+          <label>
+            <span>From</span>
+            <input id="tradeFrom" type="datetime-local" lang="en-GB" />
+          </label>
+          <label>
+            <span>To</span>
+            <input id="tradeTo" type="datetime-local" lang="en-GB" />
+          </label>
+          <label>
+            <span>Timeframe</span>
+            <select id="tradeTf">
+              <option value="all">All</option>
+              <option value="1">1m</option>
+              <option value="5">5m</option>
+              <option value="15">15m</option>
+              <option value="60">60m</option>
+              <option value="D">Daily</option>
+            </select>
+          </label>
+          <button id="loadTradesBtn" type="button">Load</button>
+          <button id="tradeLogToggle" type="button" class="collapse-btn" title="Collapse">▲</button>
+        </div>
+      </div>
+      <div id="tradeLogBody">
+        <div id="tradesWrap" class="trades-wrap">
+          <div class="trades-empty">Set filters and click Load to view trades.</div>
+        </div>
+      </div>
+    </section>
+
+    <main>
+      <div class="section-title">
+        <h2>Symbol Watchlist</h2>
+        <p>Tick the timeframes you want each symbol to run.</p>
+      </div>
+      <section id="cards" class="cards"></section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

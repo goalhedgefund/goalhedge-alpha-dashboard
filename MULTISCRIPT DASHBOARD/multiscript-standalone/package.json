@@ -1,0 +1,19 @@
+{
+  "name": "multiscript-standalone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone local web app for multiscript live dashboard and runner.",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js",
+    "probe": "node scripts/probe.js",
+    "test": "node scripts/selftest.js",
+    "setup": "powershell -ExecutionPolicy Bypass -File setup.ps1"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2"
+  }
+}

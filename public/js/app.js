@@ -356,6 +356,13 @@ function simTick() {
     State.newsBlocked = false;
   }
 
+  if (State.selectedSec) {
+    // When a symbol is selected, keep the top bar anchored to that symbol
+    // instead of letting the generic demo ticker drift away from it.
+    refreshTopBarFromHover(null);
+    return;
+  }
+
   const prev = State.simPrice;
   const vol  = State.simPrice * 0.0007;
   State.simPrice = Math.max(State.simPrice * 0.85, Math.min(State.simPrice * 1.15,
@@ -1238,7 +1245,8 @@ function renderWatchlist() {
     wrap.innerHTML = '';
     watchlist.forEach(s => {
       const row = document.createElement('div');
-      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px';
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;cursor:pointer';
+      row.title = `Load ${s.symbol} into the live chart`;
       const hasConfig = State.symbolConfigs[s.secId];
       const tunedTag = hasConfig
         ? `<span style="color:var(--green);font-size:9px;margin-left:5px">✓ ${(hasConfig.tpMultiplier/hasConfig.slMultiplier).toFixed(1)}:1</span>`
@@ -1247,6 +1255,10 @@ function renderWatchlist() {
         <span>${s.symbol}${tunedTag}</span>
         <button class="btn-icon" style="padding:2px 6px;font-size:10px;border:none;background:transparent;color:var(--text3);cursor:pointer" title="Remove from watchlist">✕</button>`;
       row.querySelector('button').addEventListener('click', () => removeFromWatchlist(s.secId));
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        selectSecurity(s);
+      });
       wrap.appendChild(row);
     });
   }

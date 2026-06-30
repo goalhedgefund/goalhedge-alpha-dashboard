@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.env
+data/trade-logs/*.xlsx
+data/trade-logs/*.json
+*.tmp
+.DS_Store
