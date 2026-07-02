@@ -14,6 +14,12 @@ export type {
   RiskProfile,
   StrategyConfig,
 } from './config/schemas.js';
+export {
+  aggregateCharges,
+  computeCharges,
+  computeTradeNet,
+} from './charges/engine.js';
+export type { FillForCharges } from './charges/engine.js';
 export { logger } from './logger.js';
 export type { Logger } from './logger.js';
 
