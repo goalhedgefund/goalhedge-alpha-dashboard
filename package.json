@@ -1,0 +1,17 @@
+{
+  "name": "scalper",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "core",
+    "ui"
+  ],
+  "scripts": {
+    "test": "npm run test -w core",
+    "typecheck": "npm run typecheck -w core",
+    "lint": "npm run lint -w core"
+  }
+}

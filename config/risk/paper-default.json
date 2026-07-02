@@ -1,0 +1,13 @@
+{
+  "profileId": "paper-default",
+  "version": 1,
+  "mode": "paper",
+  "capitalPaise": 100000000,
+  "perTradeRiskPct": 0.25,
+  "dailyMaxLossPct": 1.0,
+  "giveBack": { "armAtPct": 0.5, "retainPct": 50 },
+  "lossStreak": { "count": 3, "cooldownMin": 30 },
+  "maxTradesPerDay": 15,
+  "maxConcurrentPositions": 1,
+  "maxLotsPerOrder": 24
+}

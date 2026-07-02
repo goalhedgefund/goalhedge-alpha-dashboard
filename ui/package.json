@@ -1,0 +1,9 @@
+{
+  "name": "@scalper/ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Mission-control console — built at milestone M8",
+  "scripts": {
+    "test": "echo ui arrives at M8"
+  }
+}

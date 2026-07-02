@@ -1,0 +1,14 @@
+{
+  "strategyId": "s1-momentum-burst",
+  "version": "0.1.0",
+  "enabled": false,
+  "params": {
+    "impulseZ": 2.0,
+    "confirmTicks": 3,
+    "timeStopSec": 90,
+    "hardStopPremiumPct": 25,
+    "breakevenAtPct": 12,
+    "trailStepPct": 8,
+    "trailLockPct": 50
+  }
+}
