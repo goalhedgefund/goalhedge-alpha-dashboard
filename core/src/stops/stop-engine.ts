@@ -102,6 +102,15 @@ export class StopEngine {
     return this.managed.get(positionId)?.state;
   }
 
+  /**
+   * Stop managing a position. The caller MUST disarm as soon as it acts on a
+   * trigger (or the position closes) — otherwise every subsequent update()
+   * re-fires the trigger and mints a duplicate exit intent (oversell risk).
+   */
+  disarm(positionId: string): boolean {
+    return this.managed.delete(positionId);
+  }
+
   private raiseStop(state: StopState, candidatePaise: number, layer: StopState['layer'], nowMs: number): StopState {
     if (candidatePaise <= state.stopPremiumPaise) return state;
     return {

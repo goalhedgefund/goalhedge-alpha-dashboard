@@ -37,6 +37,19 @@ export interface RiskGateContext {
   throttleAvailable?: number;
 }
 
+/**
+ * Pre-trade risk gate. Purpose-aware by design:
+ *
+ * - ENTRY intents run the full eligibility stack (session stops, entry
+ *   cutoff, whitelist, strike band, spread, liquidity, stop-plan budget,
+ *   position/trade limits, throttle headroom).
+ * - Everything else (EXIT / STOP / SQUARE_OFF / KILL) is an exit: it must
+ *   NEVER be trapped by entry eligibility. A latched daily-loss stop, a
+ *   spread blowout, the entry cutoff, or an exhausted trade count all still
+ *   allow flattening. Exits are bounded by the session close, not the entry
+ *   cutoff, and only hard exchange sanity (lot integrity, freeze quantity)
+ *   applies.
+ */
 export class RiskGate {
   constructor(
     private readonly market: MarketProfile,
@@ -52,8 +65,24 @@ export class RiskGate {
       ...(riskPaise !== undefined ? { riskPaise } : {}),
     });
 
+    // Universal exchange sanity — applies to every purpose.
+    const lots = intent.qty / this.market.contract.lotSize;
+    if (!Number.isInteger(lots) || lots <= 0) return reject('MAX_LOTS_PER_ORDER');
+    if (intent.qty > this.market.contract.freezeQty) return reject('FREEZE_QTY');
+
+    if (intent.purpose !== 'ENTRY') {
+      // Exit lane: bounded by session close only.
+      if (ctx.nowHHMM < this.market.session.open || ctx.nowHHMM > this.market.session.close) {
+        return reject('MARKET_CLOSED');
+      }
+      return { intentId: intent.intentId, ts: ctx.nowMs, approved: true };
+    }
+
+    // ---- ENTRY lane ----
     if (ctx.session.latchedStop !== undefined) return reject('SESSION_STOP_LATCHED');
-    if (ctx.nowHHMM < this.market.session.open || ctx.nowHHMM > this.market.entryCutoff) return reject('MARKET_CLOSED');
+    if (ctx.nowHHMM < this.market.session.open || ctx.nowHHMM > this.market.entryCutoff) {
+      return reject('MARKET_CLOSED');
+    }
     if (!ctx.allowedInstruments.has(intent.instrumentId)) return reject('INSTRUMENT_NOT_WHITELISTED');
 
     const row = ctx.optionRows.get(intent.instrumentId);
@@ -72,31 +101,24 @@ export class RiskGate {
       if (row.oi < (ctx.minOi ?? 0) || row.volume < (ctx.minVolume ?? 0)) return reject('LIQUIDITY_FLOOR');
     }
 
-    if (intent.purpose === 'ENTRY') {
-      if (intent.stopPlan === undefined) return reject('MISSING_STOP_PLAN');
-      const entry = intent.limitPricePaise ?? row?.askPaise ?? row?.ltpPaise ?? 0;
-      const riskPaise = Math.max(0, entry - intent.stopPlan.hardStopPremiumPaise) * intent.qty;
-      if (entry <= 0 || intent.stopPlan.hardStopPremiumPaise >= entry) return reject('INVALID_STOP_PLAN', riskPaise);
-      const budget = Math.round(this.risk.capitalPaise * (this.risk.perTradeRiskPct / 100));
-      if (riskPaise > budget) return reject('PER_TRADE_RISK', riskPaise);
-    }
+    if (intent.stopPlan === undefined) return reject('MISSING_STOP_PLAN');
+    const entry = intent.limitPricePaise ?? row?.askPaise ?? row?.ltpPaise ?? 0;
+    const riskPaise = Math.max(0, entry - intent.stopPlan.hardStopPremiumPaise) * intent.qty;
+    if (entry <= 0 || intent.stopPlan.hardStopPremiumPaise >= entry) return reject('INVALID_STOP_PLAN', riskPaise);
+    const budget = Math.round(this.risk.capitalPaise * (this.risk.perTradeRiskPct / 100));
+    if (riskPaise > budget) return reject('PER_TRADE_RISK', riskPaise);
 
     const openCount = ctx.openPositions.filter((p) => p.state !== 'CLOSED' && p.qty > 0).length;
-    if (intent.purpose === 'ENTRY' && openCount >= this.risk.maxConcurrentPositions) return reject('POSITION_LIMIT');
-    const lots = intent.qty / this.market.contract.lotSize;
-    if (!Number.isInteger(lots) || lots > this.risk.maxLotsPerOrder) return reject('MAX_LOTS_PER_ORDER');
-    if (intent.qty > this.market.contract.freezeQty) return reject('FREEZE_QTY');
+    if (openCount >= this.risk.maxConcurrentPositions) return reject('POSITION_LIMIT');
+    if (lots > this.risk.maxLotsPerOrder) return reject('MAX_LOTS_PER_ORDER');
     if (ctx.session.tradesTaken >= this.risk.maxTradesPerDay) return reject('TRADE_COUNT');
     if ((ctx.throttleAvailable ?? 1) < 1) return reject('THROTTLE_HEADROOM');
 
-    const riskPaise = intent.purpose === 'ENTRY' && intent.stopPlan !== undefined
-      ? Math.max(0, (intent.limitPricePaise ?? row?.askPaise ?? row?.ltpPaise ?? 0) - intent.stopPlan.hardStopPremiumPaise) * intent.qty
-      : undefined;
     return {
       intentId: intent.intentId,
       ts: ctx.nowMs,
       approved: true,
-      ...(riskPaise !== undefined ? { riskPaise } : {}),
+      riskPaise,
     };
   }
 }
