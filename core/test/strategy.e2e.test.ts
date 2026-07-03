@@ -377,6 +377,35 @@ describe('M7 E2E: signal → gate → fill → trail → exit (scripted replay)'
     await h.trades.close();
   }, 30_000);
 
+  it('DISARM while holding: stops keep protecting the open position (never abandoned)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scalper-e2e-d-'));
+    const h = buildHarness(START_10AM_IST, dir);
+
+    for (let i = 0; i < 10; i++) await h.stepSpot(0);
+    await h.stepSpot(2_500);
+    await h.stepSpot(2_500); // entry fills @ 15000, stop armed at 11250
+
+    h.runner.disarm(); // operator disarms mid-position
+    expect(h.runner.state()).toBe('DISARMED');
+
+    // Premium collapses through the hard stop — protection must still fire.
+    h.paper.setQuote(CE_ID, { bidPaise: 11_190, askPaise: 11_210, ltpPaise: 11_200 });
+    await h.stepPremium(11_200);
+
+    const trigger = h.events.find((e) => e.type === 'stop.triggered');
+    expect(trigger).toBeDefined();
+    if (trigger?.type === 'stop.triggered') expect(trigger.payload.layer).toBe('L1_HARD_PREMIUM');
+    const trade = h.events.find((e) => e.type === 'trade.completed');
+    expect(trade).toBeDefined();
+
+    // Closed under protection, and we STAY disarmed (no cooldown re-arm).
+    h.clock.advance(30_000);
+    await h.runner.onTimer(h.clock.now());
+    expect(h.runner.state()).toBe('DISARMED');
+    await h.writer.close();
+    await h.trades.close();
+  }, 30_000);
+
   it('outside the entry window: exactly one deduplicated ENTRY_WINDOW no-trade', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'scalper-e2e-w-'));
     const start916 = Date.UTC(2026, 6, 3, 3, 46, 0); // 09:16 IST — inside opening chaos

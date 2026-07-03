@@ -12,7 +12,7 @@ export default defineConfig({
       '@proto': fileURLToPath(new URL('../core/src/gateway/protocol.ts', import.meta.url)),
     },
   },
-  server: { port: 5173, strictPort: true },
+  server: { host: '127.0.0.1', port: 5173, strictPort: true },
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',

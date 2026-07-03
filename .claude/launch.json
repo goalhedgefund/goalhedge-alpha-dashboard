@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo-gateway",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["core/dist/demo/demo-gateway.js"],
+      "port": 8787
+    },
+    {
+      "name": "ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@scalper/ui"],
+      "port": 5173
+    }
+  ]
+}

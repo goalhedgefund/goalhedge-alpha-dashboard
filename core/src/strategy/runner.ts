@@ -195,7 +195,9 @@ export class StrategyRunner {
   // ---------------------------------------------------------------------
 
   private async driveStops(nowMs: number): Promise<void> {
-    if (this.exitInFlight || this.lifecycle !== 'ACTIVE') return;
+    // NOT gated on lifecycle: DISARM stops new entries, never stop
+    // protection — an open position's stops are driven until it closes.
+    if (this.exitInFlight) return;
     const pos = this.openPosition();
     if (pos === undefined || pos.instrumentId !== this.trackedInstrumentId) return;
     const premium = this.lastPremiumPaise;
@@ -261,16 +263,20 @@ export class StrategyRunner {
       return;
     }
 
-    if (pos === undefined && this.lifecycle === 'ACTIVE') {
-      if (this.trackedPositionId !== undefined) this.opts.stopEngine.disarm(this.trackedPositionId);
+    if (pos === undefined && this.trackedPositionId !== undefined) {
+      this.opts.stopEngine.disarm(this.trackedPositionId);
       this.trackedPositionId = undefined;
       this.trackedInstrumentId = undefined;
       this.activeStopPlan = undefined;
       this.lastPremiumPaise = undefined;
-      this.lifecycle = 'COOLDOWN';
-      this.cooldownUntilMs = nowMs + this.cooldownMs;
-      this.lastNoTradeReason = undefined;
-      this.noTrade('COOLDOWN');
+      if (this.lifecycle === 'ACTIVE') {
+        // Normal close → cooldown. If we were DISARMED mid-position, the
+        // position closed under continued stop protection; stay DISARMED.
+        this.lifecycle = 'COOLDOWN';
+        this.cooldownUntilMs = nowMs + this.cooldownMs;
+        this.lastNoTradeReason = undefined;
+        this.noTrade('COOLDOWN');
+      }
       this.applyParamsIfFlat();
       this.opts.strategy.reset();
     }
