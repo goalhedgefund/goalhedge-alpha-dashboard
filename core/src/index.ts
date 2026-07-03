@@ -108,5 +108,11 @@ export { PositionKeeper } from './oms/position-keeper.js';
 export { IllegalOrderTransitionError, canTransition, transitionOrder } from './oms/state-machine.js';
 export { TokenBucket } from './oms/throttle.js';
 export type { TokenBucketOptions } from './oms/throttle.js';
+export { RiskGate } from './risk/risk-gate.js';
+export type { RiskGateContext, RiskRejectReason } from './risk/risk-gate.js';
+export { SessionRiskState } from './risk/session-risk.js';
+export type { SessionRiskSnapshot } from './risk/session-risk.js';
+export { StopEngine } from './stops/stop-engine.js';
+export type { StopDecision, StopEngineOptions, StopTick, StopTriggerReason } from './stops/stop-engine.js';
 
 export const CORE_VERSION = '0.1.0';
