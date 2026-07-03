@@ -115,4 +115,35 @@ export type { SessionRiskSnapshot } from './risk/session-risk.js';
 export { StopEngine } from './stops/stop-engine.js';
 export type { StopDecision, StopEngineOptions, StopTick, StopTriggerReason } from './stops/stop-engine.js';
 
+export type {
+  EntryProposal,
+  IStrategy,
+  NoSignal,
+  OptionView,
+  StrategyDecision,
+  StrategyLifecycle,
+  StrategyParams,
+  StrategyView,
+} from './strategy/types.js';
+export { none, numParam } from './strategy/types.js';
+export { buildLongOptionStopPlan } from './strategy/stop-plan.js';
+export type { StopPlanPcts, UnderlyingInvalidation } from './strategy/stop-plan.js';
+export { checkGlobal, checkOption } from './strategy/eligibility.js';
+export type {
+  EligibilityConfig,
+  EligibilityResult,
+  GlobalEligibilityInput,
+  NoTradeReason,
+  OptionEligibilityInput,
+  RegimeTrend,
+} from './strategy/eligibility.js';
+export { StrategyRunner } from './strategy/runner.js';
+export type {
+  MarketViewProvider,
+  RegimeProvider,
+  StrategyRunnerOptions,
+} from './strategy/runner.js';
+export { S1MomentumBurst } from './strategy/strategies/s1-momentum-burst.js';
+export { S2VwapFade } from './strategy/strategies/s2-vwap-fade.js';
+
 export const CORE_VERSION = '0.1.0';
