@@ -71,7 +71,8 @@ test('(d) command round trip: DISARM then ARM, acked and reflected in the banner
   });
 });
 
-test('(e) kill switch is two-step: a click never fires; hold fires and surfaces the ack', async ({ page }) => {
+test('(e) kill switch is two-step: a click never fires; hold KILLS, locks, and ARM is refused', async ({ page }) => {
+  // Runs LAST (serial): it locks the demo session for good.
   await page.goto('/');
   const kill = page.getByTestId('kill-switch');
   await expect(kill).toBeVisible();
@@ -81,15 +82,19 @@ test('(e) kill switch is two-step: a click never fires; hold fires and surfaces 
   await page.waitForTimeout(600);
   await expect(page.getByTestId('kill-result')).toHaveText('');
 
-  // Click + 1s hold fires. Until M9 registers KILL, the gateway rejects it —
-  // and the UI must SHOW that rejection, never pretend success.
+  // Click + 1s hold fires: M9a registered KILL — the switch trips for real.
   const box = await kill.boundingBox();
   if (box === null) throw new Error('kill switch has no bounding box');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.waitForTimeout(1_300);
   await page.mouse.up();
-  await expect(page.getByTestId('kill-result')).toContainText('REJECTED: UNKNOWN_COMMAND', {
+  await expect(page.getByTestId('kill-result')).toContainText('KILLED — TRADING LOCKED', {
     timeout: 5_000,
   });
+
+  // Locked means locked: the algo is disarmed and ARM is refused.
+  await expect(page.getByTestId('banner-lifecycle')).toHaveText('DISARMED', { timeout: 10_000 });
+  await page.getByTestId('arm-btn').click();
+  await expect(page.getByTestId('cmd-result')).toContainText('KILL_LOCKED', { timeout: 5_000 });
 });

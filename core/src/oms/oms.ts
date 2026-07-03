@@ -24,6 +24,11 @@ export interface OmsOptions {
   journal?: JournalSink;
   tradesWriter?: TradesWriter;
   throttle?: TokenBucket;
+  /**
+   * Reserved lane for exits (STOP/EXIT/SQUARE_OFF/KILL): a stop exit must
+   * never be starved because entries drained the main bucket.
+   */
+  exitThrottle?: TokenBucket;
   unackedTimeoutMs?: number;
 }
 
@@ -40,6 +45,7 @@ export class Oms {
   private readonly journal: JournalSink | undefined;
   private readonly tradesWriter: TradesWriter | undefined;
   private readonly throttle: TokenBucket;
+  private readonly exitThrottle: TokenBucket;
   private readonly unackedTimeoutMs: number;
   private readonly positionKeeper: PositionKeeper;
   private readonly orders = new Map<ClientOrderId, Order>();
@@ -54,6 +60,8 @@ export class Oms {
     this.journal = opts.journal;
     this.tradesWriter = opts.tradesWriter;
     this.throttle = opts.throttle ?? new TokenBucket({ capacity: 10, refillPerSec: 10, clock: this.clock });
+    this.exitThrottle =
+      opts.exitThrottle ?? new TokenBucket({ capacity: 20, refillPerSec: 20, clock: this.clock });
     this.unackedTimeoutMs = opts.unackedTimeoutMs ?? 1000;
     this.positionKeeper = new PositionKeeper(opts.sessionId, opts.marketProfile, this.ids);
     this.adapter.onOrderEvent((ev) => this.onBrokerEvent(ev));
@@ -61,7 +69,8 @@ export class Oms {
 
   async submit(intent: OrderIntent, verdict: RiskVerdict): Promise<SubmitResult> {
     if (!verdict.approved) return { order: this.draftOrder(intent), accepted: false, reason: verdict.reason ?? 'RISK_REJECTED' };
-    if (!this.throttle.tryTake()) return { order: this.draftOrder(intent), accepted: false, reason: 'THROTTLED' };
+    const bucket = intent.purpose === 'ENTRY' ? this.throttle : this.exitThrottle;
+    if (!bucket.tryTake()) return { order: this.draftOrder(intent), accepted: false, reason: 'THROTTLED' };
 
     const draft = this.draftOrder(intent);
     this.orders.set(draft.clientOrderId, draft);

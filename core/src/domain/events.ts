@@ -49,6 +49,7 @@ export interface JournalPayloads {
   'risk.sessionStop': { kind: SessionStopKind; detail?: string };
   'kill.tripped': { source: 'MANUAL' | 'AUTO'; reason: string };
   'kill.completed': { durationMs: number; cancelledOrders: number; flattenedPositions: number };
+  'kill.rearmed': { reason: string };
   'recon.result': { ok: boolean; diffs?: Record<string, unknown> };
   'command.received': {
     commandId: string;
@@ -92,6 +93,7 @@ const ALL_EVENT_TYPES = [
   'risk.sessionStop',
   'kill.tripped',
   'kill.completed',
+  'kill.rearmed',
   'recon.result',
   'command.received',
   'command.acked',

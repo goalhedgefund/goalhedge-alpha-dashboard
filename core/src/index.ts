@@ -159,7 +159,20 @@ export type {
   ServerMsg,
   StateChange,
 } from './gateway/protocol.js';
-export { registerRunnerCommands } from './gateway/commands.js';
-export type { RunnerCommandTarget } from './gateway/commands.js';
+export { registerKillCommands, registerRunnerCommands } from './gateway/commands.js';
+export type {
+  KillCommandTarget,
+  RunnerCommandOptions,
+  RunnerCommandTarget,
+} from './gateway/commands.js';
+export { KillSwitch } from './killswitch/kill-switch.js';
+export type {
+  KillOmsPort,
+  KillReport,
+  KillSource,
+  KillState,
+  KillSwitchOptions,
+  SelfTestCheck,
+} from './killswitch/kill-switch.js';
 
 export const CORE_VERSION = '0.1.0';

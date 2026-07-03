@@ -21,9 +21,12 @@ import { PaperBroker } from '../exec/paper-broker.js';
 import { Gateway } from '../gateway/gateway.js';
 import { registerRunnerCommands } from '../gateway/commands.js';
 import type { GatewayState } from '../gateway/protocol.js';
+import { KillSwitch } from '../killswitch/kill-switch.js';
+import { registerKillCommands } from '../gateway/commands.js';
 import { computeUnderlyingFeatures } from '../marketdata/features/library.js';
+import { formatHHMMIst } from '../domain/time.js';
 import { Oms } from '../oms/oms.js';
-import { RiskGate } from '../risk/risk-gate.js';
+import { RiskGate, type RiskGateContext } from '../risk/risk-gate.js';
 import { SessionRiskState } from '../risk/session-risk.js';
 import { StopEngine } from '../stops/stop-engine.js';
 import { StrategyRunner, type MarketViewProvider } from '../strategy/runner.js';
@@ -186,6 +189,7 @@ async function main(): Promise<void> {
     journal: sink,
   });
 
+  const gate = new RiskGate(market, riskProfile);
   const runner = new StrategyRunner({
     sessionId,
     strategy: new S1MomentumBurst(),
@@ -202,7 +206,7 @@ async function main(): Promise<void> {
       trailLockPct: 50,
     },
     market,
-    gate: new RiskGate(market, riskProfile),
+    gate,
     oms,
     stopEngine: new StopEngine({ ids, tickSizePaise: 5 }),
     sessionRisk,
@@ -224,7 +228,32 @@ async function main(): Promise<void> {
     cooldownSec: 5,
   });
   runnerBox.runner = runner;
-  registerRunnerCommands(gateway, runner);
+
+  const killGateCtx = (): RiskGateContext => ({
+    nowMs: Date.now(),
+    nowHHMM: formatHHMMIst(Date.now()),
+    allowedInstruments: provider.allowedInstruments(),
+    optionRows: provider.optionRows(),
+    openPositions: oms.getPositions(),
+    session: sessionRisk.current(),
+  });
+  const kill = new KillSwitch({
+    sessionId,
+    target: runner,
+    oms,
+    gate,
+    gateContext: killGateCtx,
+    ids,
+    market,
+    markPrice: (id) => {
+      const row = provider.optionRows().get(id);
+      if (row === undefined) return undefined;
+      return row.bidPaise > 0 ? row.bidPaise : row.ltpPaise > 0 ? row.ltpPaise : undefined;
+    },
+    journal: sink,
+  });
+  registerRunnerCommands(gateway, runner, { isLocked: () => kill.isLocked() });
+  registerKillCommands(gateway, kill);
   runner.arm();
 
   // Seed an hour of synthetic 1m bars so the chart is never empty.
