@@ -12,8 +12,8 @@
   "tickSizePaise": 5,
   "contract": {
     "underlying": "NIFTY",
-    "lotSize": 75,
-    "freezeQty": 1800,
+    "lotSize": 65,
+    "freezeQty": 1950,
     "weeklyExpiryDay": "TUE",
     "strikeStepPaise": 5000
   },

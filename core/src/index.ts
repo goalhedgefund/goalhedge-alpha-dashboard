@@ -20,6 +20,45 @@ export {
   computeTradeNet,
 } from './charges/engine.js';
 export type { FillForCharges } from './charges/engine.js';
+
+export type { IFeedAdapter, FeedHealth, FeedStatus, SubscribeRequest } from './feed/interface.js';
+export { Recorder } from './feed/recorder.js';
+export type { RecorderCompression, RecorderOptions } from './feed/recorder.js';
+export { ReplayFeed } from './feed/replay.js';
+export type { ReplayFeedOptions } from './feed/replay.js';
+export { SynthFeed } from './feed/synth.js';
+export type { SynthFeedOptions, SynthRegime } from './feed/synth.js';
+export { BarBuilder } from './feed/bar-builder.js';
+export { decodeDhanBuffer } from './feed/dhan/packet-decoder.js';
+export type {
+  DhanDepthLevel,
+  DhanExchangeSegment,
+  DhanFullPacket,
+  DhanLtpPacket,
+  DhanOiPacket,
+  DhanPacket,
+  DhanPrevClosePacket,
+  DhanQuotePacket,
+} from './feed/dhan/packet-decoder.js';
+export { DhanFeed, dhanPacketToTick } from './feed/dhan/feed.js';
+export type { DhanFeedOptions } from './feed/dhan/feed.js';
+
+export {
+  buildOptionChain,
+  filterOptions,
+  getChainStrikes,
+  getExpiryDates,
+  loadScripMaster,
+  nextMonthlyExpiry,
+  nextWeeklyExpiry,
+  resolveNiftyWeeklyChain,
+  toInstrument,
+} from './marketdata/instrument-master.js';
+export type {
+  ChainEntry,
+  ScripRow,
+  WeeklyChainResult,
+} from './marketdata/instrument-master.js';
 export { logger } from './logger.js';
 export type { Logger } from './logger.js';
 

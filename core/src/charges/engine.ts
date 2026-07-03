@@ -7,6 +7,8 @@ export interface FillForCharges {
   qty: number;
   /** Premium price per unit, integer paise. */
   pricePaise: number;
+  /** Optional order id used to count flat per-order charges through partial fills. */
+  orderId?: string;
 }
 
 /**
@@ -31,7 +33,13 @@ export function computeCharges(
     else sellTurnover += t;
   }
   const bothTurnover = buyTurnover + sellTurnover;
-  const orderCount = fills.length;
+  const orderIds = new Set<string>();
+  let fillsWithoutOrderId = 0;
+  for (const f of fills) {
+    if (f.orderId !== undefined) orderIds.add(f.orderId);
+    else fillsWithoutOrderId++;
+  }
+  const orderCount = orderIds.size + fillsWithoutOrderId;
 
   let gstBase = 0;
   const components: Array<{ name: string; paise: number }> = [];

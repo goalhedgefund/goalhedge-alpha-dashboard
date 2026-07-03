@@ -321,6 +321,55 @@ describe('example 7 — generic second market profile (proves config-driven)', (
   });
 });
 
+describe('per-order flat charges', () => {
+  it('charges one flat fee for multiple partial fills from the same order', () => {
+    const feeProfile = {
+      profileId: 'flat-fee-market',
+      version: 1,
+      asOf: '2026-01-01',
+      exchange: 'TEST',
+      segment: 'OPTIONS',
+      currency: 'INR',
+      timezone: 'Asia/Kolkata',
+      session: { open: '09:15', close: '15:30' },
+      entryCutoff: '15:00',
+      hardSquareOff: '15:12',
+      tickSizePaise: 5,
+      contract: {
+        underlying: 'NIFTY',
+        lotSize: 65,
+        freezeQty: 1950,
+        weeklyExpiryDay: 'TUE' as const,
+        strikeStepPaise: 5000,
+      },
+      charges: {
+        gstRate: 0,
+        components: [
+          {
+            name: 'brokerage',
+            basis: 'per_order' as const,
+            flatPaise: 2000,
+            gstApplicable: false,
+            verifyAtGoLive: false,
+          },
+        ],
+      },
+    };
+
+    const bd = computeCharges(
+      [
+        { side: 'BUY' as const, qty: 65, pricePaise: 10000, orderId: 'entry-1' },
+        { side: 'BUY' as const, qty: 65, pricePaise: 10050, orderId: 'entry-1' },
+        { side: 'SELL' as const, qty: 130, pricePaise: 11000, orderId: 'exit-1' },
+      ],
+      feeProfile,
+    );
+
+    expect(component('brokerage', bd)).toBe(4000);
+    expect(bd.totalPaise).toBe(4000);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // aggregateCharges
 // ---------------------------------------------------------------------------
