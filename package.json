@@ -10,8 +10,11 @@
     "ui"
   ],
   "scripts": {
-    "test": "npm run test -w core",
-    "typecheck": "npm run typecheck -w core",
-    "lint": "npm run lint -w core"
+    "test": "npm run test -w core && npm run test -w ui",
+    "typecheck": "npm run typecheck -w core && npm run build -w ui",
+    "lint": "npm run lint -w core && npm run lint -w ui",
+    "demo": "npm run build -w @scalper/core && npm run demo -w @scalper/core",
+    "ui": "npm run dev -w @scalper/ui",
+    "e2e": "npm run e2e -w @scalper/ui"
   }
 }
