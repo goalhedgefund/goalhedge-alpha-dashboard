@@ -59,6 +59,32 @@ export type {
   ScripRow,
   WeeklyChainResult,
 } from './marketdata/instrument-master.js';
+export { AtmTracker } from './marketdata/atm-tracker.js';
+export type { AtmTrackerOptions, AtmUpdate } from './marketdata/atm-tracker.js';
+export { OptionChainState } from './marketdata/chain-state.js';
+export type { AnalyticsContext, ChainStateOptions } from './marketdata/chain-state.js';
+export {
+  black76Greeks,
+  black76Price,
+  impliedVolBlack76,
+  normalCdf,
+  normalPdf,
+} from './marketdata/black76.js';
+export type { Black76Greeks, Black76Input, ImpliedVolOptions } from './marketdata/black76.js';
+export {
+  DEFAULT_CODEX_THRESHOLDS,
+  scoreCodexSeries,
+} from './marketdata/features/codex-score.js';
+export type {
+  CodexScore,
+  CodexScoreConfig,
+  CodexThresholds,
+} from './marketdata/features/codex-score.js';
+export {
+  computeOptionFeatures,
+  computeUnderlyingFeatures,
+} from './marketdata/features/library.js';
+export type { OptionFeatures, UnderlyingFeatures } from './marketdata/features/library.js';
 export { logger } from './logger.js';
 export type { Logger } from './logger.js';
 

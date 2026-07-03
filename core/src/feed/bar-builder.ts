@@ -13,6 +13,10 @@ export class BarBuilder {
     ['1s', null],
     ['1m', null],
   ]);
+  private lastTickTs = new Map<Timeframe, number>([
+    ['1s', -Infinity],
+    ['1m', -Infinity],
+  ]);
 
   private readonly windowMs: Record<Timeframe, number> = {
     '1s': 1_000,
@@ -48,15 +52,19 @@ export class BarBuilder {
         volume: tick.qty,
         tickCount: 1,
       };
+      this.lastTickTs.set(tf, tick.ts);
     } else {
+      const lastTs = this.lastTickTs.get(tf) ?? -Infinity;
+      const close = tick.ts >= lastTs ? tick.ltpPaise : bar.c;
       bar = {
         ...bar,
         h: Math.max(bar.h, tick.ltpPaise),
         l: Math.min(bar.l, tick.ltpPaise),
-        c: tick.ltpPaise,
+        c: close,
         volume: bar.volume + tick.qty,
         tickCount: bar.tickCount + 1,
       };
+      if (tick.ts >= lastTs) this.lastTickTs.set(tf, tick.ts);
     }
     this.bars.set(tf, bar);
   }
@@ -67,6 +75,7 @@ export class BarBuilder {
       if (bar !== null) {
         this.onBar(bar);
         this.bars.set(tf, null);
+        this.lastTickTs.set(tf, -Infinity);
       }
     }
   }
