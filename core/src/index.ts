@@ -97,5 +97,16 @@ export { hashEventStream } from './journal/hash.js';
 export { mirrorEvent } from './journal/mirror.js';
 export { Persistence } from './persistence/db.js';
 export type { TableCounts } from './persistence/db.js';
+export { PaperBroker } from './exec/paper-broker.js';
+export type { PaperBrokerOptions, PaperQuote } from './exec/paper-broker.js';
+export type { BrokerOrderEvent, IBrokerAdapter } from './exec/adapter.js';
+export { TradesWriter } from './exec/trades-writer.js';
+export type { TradesWriterOptions } from './exec/trades-writer.js';
+export { Oms } from './oms/oms.js';
+export type { JournalSink, OmsOptions, SubmitResult } from './oms/oms.js';
+export { PositionKeeper } from './oms/position-keeper.js';
+export { IllegalOrderTransitionError, canTransition, transitionOrder } from './oms/state-machine.js';
+export { TokenBucket } from './oms/throttle.js';
+export type { TokenBucketOptions } from './oms/throttle.js';
 
 export const CORE_VERSION = '0.1.0';
