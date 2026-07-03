@@ -10,7 +10,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "demo": "node dist/demo/demo-gateway.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",

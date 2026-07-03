@@ -146,6 +146,13 @@ export class Gateway {
       case 'trade.completed':
         this.set('trades', [...this.state.trades, ev.payload.trade]);
         break;
+      case 'md.bar': {
+        if (ev.payload.bar.tf !== '1m') break; // chart shows 1m only
+        const bars = [...this.state.bars, ev.payload.bar];
+        if (bars.length > 390) bars.splice(0, bars.length - 390); // full session + buffer
+        this.set('bars', bars);
+        break;
+      }
       case 'strategy.noTrade':
         this.set('algo', { ...this.state.algo, lastNoTradeReason: ev.payload.reason });
         break;

@@ -1,6 +1,6 @@
 import type { JournalEvent } from '../domain/events.js';
 import type { Order } from '../domain/orders.js';
-import type { OptionChainRow } from '../domain/marketdata.js';
+import type { Bar, OptionChainRow } from '../domain/marketdata.js';
 import type { Position, Trade } from '../domain/positions.js';
 import type { SessionRiskSnapshot } from '../risk/session-risk.js';
 import type { StrategyLifecycle, StrategyParams } from '../strategy/types.js';
@@ -46,6 +46,8 @@ export interface GatewayState {
   orders: Order[];
   trades: Trade[];
   chain: OptionChainRow[];
+  /** Underlying 1m bars for the chart (capped ring, newest last). */
+  bars: Bar[];
   /** Ring buffer of the most recent journal events (UI event stream). */
   events: JournalEvent[];
 }

@@ -29,6 +29,7 @@ function initialState(): GatewayState {
     orders: [],
     trades: [],
     chain: [],
+    bars: [],
     events: [],
   };
 }
@@ -331,6 +332,30 @@ describe('journal ingestion into the state tree', () => {
 
     g.ingestJournal(ev(6, 'strategy.noTrade', { strategyId: 's1', reason: 'COOLDOWN' }));
     expect(g.currentState().algo.lastNoTradeReason).toBe('COOLDOWN');
+  });
+
+  it('md.bar 1m bars land in the bars slice, capped at 390; 1s bars are ignored', () => {
+    const g = makeGateway();
+    const bar = (seq: number, tf: '1s' | '1m'): JournalEvent =>
+      ev(seq, 'md.bar', {
+        bar: {
+          instrumentId: INSTR,
+          tf,
+          startTs: seq * 60_000,
+          o: 100,
+          h: 110,
+          l: 95,
+          c: 105,
+          volume: 65,
+          tickCount: 3,
+        },
+      });
+    g.ingestJournal(bar(1, '1s'));
+    expect(g.currentState().bars.length).toBe(0);
+    for (let i = 1; i <= 395; i++) g.ingestJournal(bar(i, '1m'));
+    const bars = g.currentState().bars;
+    expect(bars.length).toBe(390);
+    expect(bars[bars.length - 1]?.startTs).toBe(395 * 60_000);
   });
 
   it('event ring is capped at eventRingSize keeping the newest', () => {
