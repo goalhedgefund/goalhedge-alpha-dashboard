@@ -146,4 +146,20 @@ export type {
 export { S1MomentumBurst } from './strategy/strategies/s1-momentum-burst.js';
 export { S2VwapFade } from './strategy/strategies/s2-vwap-fade.js';
 
+export { Gateway } from './gateway/gateway.js';
+export type { CommandHandler, CommandResult, GatewayOptions } from './gateway/gateway.js';
+export { applyChanges } from './gateway/protocol.js';
+export type {
+  ClientMsg,
+  CommandType,
+  GatewayAlgoState,
+  GatewayHealth,
+  GatewayRiskState,
+  GatewayState,
+  ServerMsg,
+  StateChange,
+} from './gateway/protocol.js';
+export { registerRunnerCommands } from './gateway/commands.js';
+export type { RunnerCommandTarget } from './gateway/commands.js';
+
 export const CORE_VERSION = '0.1.0';
