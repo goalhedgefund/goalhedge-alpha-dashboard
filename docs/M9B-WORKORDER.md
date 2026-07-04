@@ -120,8 +120,22 @@ check, and the reserved exit throttle lane in the OMS. Read `01-DESIGN.md`
    DEFERRED to step 6: watchdog + clock-skew trips (scope item 5) — they are
      KillSwitch AUTO trips, natural to add alongside the chaos tests that
      exercise them.
-6. Chaos suite (core/test/chaos.test.ts) per 03 §4 + watchdog/clock-skew trips
-   on the KillSwitch; then tag `m9b`.
+6. ✅ DONE (commit b1f9752, tag `m9b`): watchdog + clock-skew AUTO trips on the
+   KillSwitch (petWatchdog/checkWatchdog, checkClockSkew — future-stamped or
+   in-window skew; large positive gap stays feed-staleness); JournalWriter.healthy()
+   + StrategyRunner.journalHealthy? guard (refuses NEW entries as
+   JOURNAL_UNHEALTHY, never gates driveStops protection); core/test/chaos.test.ts
+   (10 tests: feed-freeze flat+locked, reject storm, watchdog, clock skew, recon
+   RED→RECON_MISMATCH, crash→exact rebuild + gap-free resume, disk-full latch→
+   entries refused). Dup/out-of-order acks covered in oms.test. 244 core tests green.
+
+**M9b COMPLETE (tag `m9b`). NEXT: M10 hardening** — latency instrumentation
+(hop timestamps → latency.sample + HUD histograms, CI budget < 5ms p99 internal),
+soak test, daily digest (markdown/xlsx: trades, hit rate, gross→charges→net
+waterfall, per-strategy attribution, latency, MAE), runbook (04-RUNBOOK), and the
+first live-DATA paper session. Also wire Reconciler + recovery into the real
+live/paper host (they are library-tested but not yet in a runtime; the demo is
+not the place). Then M11 = live broker adapter (IBrokerAdapter + conformance).
 
 ## Cautions
 - Do not let square-off LOCK the session (only kill locks).
