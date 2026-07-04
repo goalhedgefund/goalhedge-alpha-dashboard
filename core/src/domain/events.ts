@@ -3,7 +3,7 @@ import type { Fill, Order, OrderIntent, OrderState } from './orders.js';
 import type { Position, Trade } from './positions.js';
 import type { RiskVerdict, SessionStopKind, StopState } from './risk.js';
 import type { PositionId, SessionId } from './ids.js';
-import type { SessionPhase, SessionState } from './session.js';
+import type { PreflightCheck, SessionPhase, SessionState } from './session.js';
 
 /**
  * Every event the platform can journal, as a single discriminated union.
@@ -14,6 +14,7 @@ import type { SessionPhase, SessionState } from './session.js';
 export interface JournalPayloads {
   'session.started': { session: SessionState };
   'session.phase': { sessionId: SessionId; phase: SessionPhase; reason?: string };
+  'session.preflight': { sessionId: SessionId; ok: boolean; checks: PreflightCheck[] };
   'session.closed': { sessionId: SessionId; summary?: Record<string, unknown> };
   'config.loaded': { sessionId: SessionId; name: string; hash: string; path: string };
   'feed.status': {
@@ -79,6 +80,7 @@ export type JournalEventOf<K extends JournalEventType> = Extract<JournalEvent, {
 const ALL_EVENT_TYPES = [
   'session.started',
   'session.phase',
+  'session.preflight',
   'session.closed',
   'config.loaded',
   'feed.status',

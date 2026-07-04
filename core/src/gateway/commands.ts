@@ -19,9 +19,16 @@ export interface KillCommandTarget {
   isLocked(): boolean;
 }
 
+/** The slice of SessionManager the command channel needs (ACK_PREFLIGHT). */
+export interface SessionCommandTarget {
+  acknowledge(operator?: string): { accepted: boolean; reason?: string };
+}
+
 export interface RunnerCommandOptions {
   /** When locked by the kill switch, ARM must be refused. */
   isLocked?: () => boolean;
+  /** Session readiness gate: ARM refused unless the session is armable. */
+  canArm?: () => { ok: boolean; reason?: string };
 }
 
 /**
@@ -36,6 +43,8 @@ export function registerRunnerCommands(
 ): void {
   gateway.onCommand('ARM', () => {
     if (opts.isLocked?.() === true) return { accepted: false, reason: 'KILL_LOCKED' };
+    const gate = opts.canArm?.();
+    if (gate !== undefined && !gate.ok) return { accepted: false, reason: gate.reason ?? 'NOT_READY' };
     runner.arm();
     return { accepted: true, reason: runner.state() };
   });
@@ -76,5 +85,17 @@ export function registerKillCommands(gateway: Gateway, kill: KillCommandTarget):
     const confirm = typeof payload.confirm === 'string' ? payload.confirm : '';
     const reason = typeof payload.reason === 'string' ? payload.reason : '';
     return kill.rearm(confirm, reason);
+  });
+}
+
+/**
+ * Wire ACK_PREFLIGHT to the session module. The operator acknowledges the
+ * preflight checklist; the session refuses the ACK (with a reason) until the
+ * technical checks have passed.
+ */
+export function registerSessionCommands(gateway: Gateway, session: SessionCommandTarget): void {
+  gateway.onCommand('ACK_PREFLIGHT', (payload) => {
+    const operator = typeof payload.operator === 'string' ? payload.operator : undefined;
+    return session.acknowledge(operator);
   });
 }

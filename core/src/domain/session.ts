@@ -19,3 +19,13 @@ export interface SessionState {
   configHashes: Record<string, string>;
   startedTs: number;
 }
+
+/**
+ * One named preflight/self-test check result. Structurally identical to the
+ * kill switch's `SelfTestCheck` so the two can be folded into one checklist.
+ */
+export interface PreflightCheck {
+  name: string;
+  ok: boolean;
+  detail?: string;
+}

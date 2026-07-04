@@ -71,7 +71,16 @@ check, and the reserved exit throttle lane in the OMS. Read `01-DESIGN.md`
    repriceTicks 10, event 'exit.escalated'), KillSwitch refactored onto helpers
    (+ optional escalator), runner tracks stop exits + polls on onTimer,
    PaperBroker.holdFills(instr, count) chaos knob. 7 tests in escalation.test.ts.
-2. Session module + preflight + ACK_PREFLIGHT + square-off + tests.
+2. ✅ DONE: session/session.ts (SessionManager) — phase machine
+   PREFLIGHT→OPEN→ENTRY_CUTOFF→SQUARE_OFF→CLOSED (+HALTED/KILLED); preflight
+   checklist (instrument.master, feed.fresh, config.loaded ×3, kill.selftest,
+   journal.writable) + operator ACK, both gating canArm(); square-off reuses
+   flattenAllPositions('SQUARE_OFF') via shared flatten helper, does NOT lock.
+   New: session.preflight journal event, PreflightCheck domain type,
+   registerSessionCommands(ACK_PREFLIGHT), canArm option on
+   registerRunnerCommands. 8 tests in session.test.ts. 223 core tests green.
+   NOTE: SessionManager not yet wired into demo-gateway/runtime — deferred to
+   step 5 (gateway session slice) alongside the UI.
 3. Reconciler + auto-kill wiring + tests.
 4. Crash recovery + tests.
 5. Gateway slices + UI (REARM button, preflight panel) + Playwright update.

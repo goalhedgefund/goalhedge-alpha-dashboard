@@ -159,12 +159,21 @@ export type {
   ServerMsg,
   StateChange,
 } from './gateway/protocol.js';
-export { registerKillCommands, registerRunnerCommands } from './gateway/commands.js';
+export { registerKillCommands, registerRunnerCommands, registerSessionCommands } from './gateway/commands.js';
 export type {
   KillCommandTarget,
   RunnerCommandOptions,
   RunnerCommandTarget,
+  SessionCommandTarget,
 } from './gateway/commands.js';
+export { SessionManager } from './session/session.js';
+export type {
+  ArmReadiness,
+  LoadedConfigRef,
+  PreflightProbes,
+  SessionManagerOptions,
+  SquareOffReport,
+} from './session/session.js';
 export { ExitEscalator } from './oms/escalation.js';
 export type { EscalatorOmsPort, ExitEscalatorOptions } from './oms/escalation.js';
 export {
