@@ -12,7 +12,7 @@
       <div>
         <div class="eyebrow">Standalone Local Web App</div>
         <h1>Multiscript Dashboard</h1>
-        <p class="sub">Live Dhan feed, selected timeframe legs, and separate Excel logs per timeframe.</p>
+        <p class="sub">Live Dhan feed, validated 15m scalper legs, and paper trade logs.</p>
       </div>
       <div class="status-panel">
         <div class="status-item">
@@ -65,13 +65,9 @@
       </div>
       <div class="toolbar-actions">
         <div class="tf-filter">
-          <span>Timeframes</span>
+          <span>Strategy Frame</span>
           <div class="tf-checks">
-            <label class="tf-pill"><input type="checkbox" value="1" id="tf1" checked /><span>1m</span></label>
-            <label class="tf-pill"><input type="checkbox" value="5" id="tf5" checked /><span>5m</span></label>
-            <label class="tf-pill"><input type="checkbox" value="15" id="tf15" checked /><span>15m</span></label>
-            <label class="tf-pill"><input type="checkbox" value="60" id="tf60" /><span>60m</span></label>
-            <label class="tf-pill"><input type="checkbox" value="D" id="tfD" /><span>1D</span></label>
+            <label class="tf-pill"><input type="checkbox" value="15" id="tf15" checked disabled /><span>15m</span></label>
           </div>
         </div>
         <button id="startBtn">Start</button>
@@ -97,17 +93,7 @@
             <span>To</span>
             <input id="tradeTo" type="datetime-local" lang="en-GB" />
           </label>
-          <label>
-            <span>Timeframe</span>
-            <select id="tradeTf">
-              <option value="all">All</option>
-              <option value="1">1m</option>
-              <option value="5">5m</option>
-              <option value="15">15m</option>
-              <option value="60">60m</option>
-              <option value="D">Daily</option>
-            </select>
-          </label>
+          <input id="tradeTf" type="hidden" value="15" />
           <button id="loadTradesBtn" type="button">Load</button>
           <button id="tradeLogToggle" type="button" class="collapse-btn" title="Collapse">▲</button>
         </div>
@@ -122,7 +108,7 @@
     <main>
       <div class="section-title">
         <h2>Symbol Watchlist</h2>
-        <p>Tick the timeframes you want each symbol to run.</p>
+        <p>The validated system runs each symbol on 15m only.</p>
       </div>
       <section id="cards" class="cards"></section>
     </main>

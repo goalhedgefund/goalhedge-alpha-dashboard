@@ -13,8 +13,11 @@ const { createFeedService } = require('./services/feed.service');
 const { createTradeService } = require('./services/trade.service');
 const { createStatusService } = require('./services/status.service');
 const { createExportService } = require('./services/export.service');
+const { createInventoryService } = require('./services/inventory.service');
+const { createCashScalperService } = require('./services/cash-scalper.service');
 const { TradeLogger } = require('./logging/trade.logger');
 const { createMultiscriptRoutes } = require('./routes/multiscript.routes');
+const { createCashScalperRoutes } = require('./routes/cash-scalper.routes');
 const { createHealthRoutes } = require('./routes/health.routes');
 const { createDhanRestClient } = require('./adapters/dhan/dhan.rest.client');
 const { createRunner } = require('./engines/runner.engine');
@@ -127,6 +130,17 @@ async function createApp() {
     getLoggingConfig: () => currentLoggingConfig
   });
   const statusService = createStatusService({ runner });
+  const inventoryService = createInventoryService({
+    dataDir: env.dataDir,
+    defaultCapital: env.capital,
+    getSnapshot: () => runner.getStatus()
+  });
+  const cashScalperService = createCashScalperService({
+    dataDir: env.dataDir,
+    rootDir: env.rootDir,
+    exchangeConfig,
+    restClient
+  });
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
@@ -169,8 +183,13 @@ async function createApp() {
   });
 
   app.use('/api/health', createHealthRoutes({ runner }));
-  app.use('/api/multiscript', createMultiscriptRoutes({ runner, exportService, statusService }));
+  app.use('/api/multiscript', createMultiscriptRoutes({ runner, exportService, statusService, inventoryService }));
+  app.use('/api/cash-scalper', createCashScalperRoutes({ cashScalperService }));
   app.use(express.static(env.clientDir));
+
+  app.get('/cash-scalper', (req, res) => {
+    res.sendFile(path.join(env.clientDir, 'cash-scalper.html'));
+  });
 
   app.get('*', (req, res) => {
     res.sendFile(path.join(env.clientDir, 'index.html'));

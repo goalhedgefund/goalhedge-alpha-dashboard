@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('node:fs');
 const ExcelJS = require('exceljs');
 
-function createMultiscriptRoutes({ runner, exportService }) {
+function createMultiscriptRoutes({ runner, exportService, inventoryService }) {
   const router = express.Router();
 
   router.get('/status', (req, res) => {
@@ -66,6 +66,30 @@ function createMultiscriptRoutes({ runner, exportService }) {
       res.json(status);
     } catch (err) {
       res.status(500).json({ ok: false, message: err.message });
+    }
+  });
+
+  router.get('/inventory', (req, res) => {
+    try {
+      res.json(inventoryService.getPlan());
+    } catch (err) {
+      res.status(500).json({ ok: false, message: err.message });
+    }
+  });
+
+  router.post('/inventory', (req, res) => {
+    try {
+      res.json(inventoryService.save(req.body || {}));
+    } catch (err) {
+      res.status(500).json({ ok: false, message: err.message });
+    }
+  });
+
+  router.post('/inventory/paper-trade', (req, res) => {
+    try {
+      res.json(inventoryService.recordPaperTrade(req.body || {}));
+    } catch (err) {
+      res.status(400).json({ ok: false, message: err.message });
     }
   });
 

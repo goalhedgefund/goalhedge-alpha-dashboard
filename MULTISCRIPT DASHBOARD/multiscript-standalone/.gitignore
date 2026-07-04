@@ -6,3 +6,9 @@ data/trade-logs/*.xlsx
 data/trade-logs/*.json
 *.tmp
 .DS_Store
+server-out.log
+server-err.log
+data/*
+!data/cash-scalper.json
+!data/cash-scalper-combos.json
+!data/cash-symbol-master.json

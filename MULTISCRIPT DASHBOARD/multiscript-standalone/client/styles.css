@@ -155,10 +155,48 @@ button.muted{background:#243247;color:var(--text);border:1px solid var(--border)
 .trades-table tr.row-loss td:nth-child(10){color:var(--bad)}
 .trades-table tbody tr:hover td{background:rgba(255,255,255,.025)}
 
+/* Inventory scalper */
+.inventory-section{margin-top:16px;background:linear-gradient(180deg,rgba(24,34,51,.9),rgba(18,25,38,.94));border:1px solid var(--border);box-shadow:var(--shadow);border-radius:18px;overflow:hidden}
+.inventory-title{margin-top:0;border-radius:0;border:none;border-bottom:1px solid var(--border)}
+.inventory-actions{display:flex;gap:10px;align-items:center}
+.inventory-body{padding:16px 18px 18px}
+.inventory-controls{display:grid;grid-template-columns:repeat(8,minmax(110px,1fr));gap:10px;margin-bottom:14px}
+.inventory-controls label{display:grid;gap:6px}
+.inventory-controls span{color:var(--muted);font-size:12px}
+.inventory-controls input,.inventory-table input{padding:10px 11px;border-radius:10px;border:1px solid var(--border);background:#0f1724;color:var(--text);outline:none;font-size:13px;width:100%}
+.inventory-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.inventory-summary>div{padding:12px 14px;border-radius:12px;background:rgba(0,0,0,.16);border:1px solid var(--border)}
+.inventory-summary span{display:block;color:var(--muted);font-size:11px;margin-bottom:4px}
+.inventory-summary strong{font-size:17px}
+.inventory-summary strong.good{color:var(--good)}
+.inventory-summary strong.bad{color:var(--bad)}
+.inventory-scroll{overflow-x:auto}
+.inventory-table{width:100%;border-collapse:collapse;font-size:13px}
+.inventory-table th{text-align:left;padding:10px;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap}
+.inventory-table td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle;white-space:nowrap}
+.inventory-table td:first-child strong{display:block;font-size:13px}
+.inventory-table small{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+.inventory-table tbody tr:hover td{background:rgba(255,255,255,.025)}
+.inventory-table .good{color:var(--good);font-weight:800}
+.inventory-table .bad{color:var(--bad);font-weight:800}
+.action-chip{display:inline-flex;align-items:center;justify-content:center;min-width:76px;padding:6px 8px;border-radius:999px;border:1px solid var(--border);font-size:11px;font-weight:900;letter-spacing:.04em;color:var(--muted);background:rgba(255,255,255,.04)}
+.action-chip.bid,.action-chip.accumulate{color:var(--good);border-color:rgba(57,217,138,.35);background:rgba(57,217,138,.1)}
+.action-chip.ask,.action-chip.square-off{color:var(--bad);border-color:rgba(255,107,129,.35);background:rgba(255,107,129,.1)}
+.action-chip.prepare{color:var(--warn);border-color:rgba(245,201,107,.35);background:rgba(245,201,107,.1)}
+.paper-fill-btn{padding:7px 10px;border-radius:9px;font-size:11px;min-width:76px}
+.paper-muted{color:var(--muted);font-size:12px}
+.paper-ledger-wrap{margin-top:14px}
+.paper-ledger-title{display:flex;justify-content:space-between;align-items:center;margin:4px 0 8px}
+.paper-ledger-title h3{margin:0;font-size:15px}
+.paper-ledger-title span,.paper-ledger-empty{color:var(--muted);font-size:12px}
+.paper-ledger-empty{padding:10px 0 0}
+.paper-ledger-table td{font-size:12px}
+
 @media (max-width: 1100px){
   .topbar,.toolbar{flex-direction:column;align-items:stretch}
-  .status-panel,.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
+  .status-panel,.summary-grid,.inventory-summary{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
   .mode-toggle,.searchbox,.range-panel{min-width:0}
   .range-panel{grid-template-columns:1fr}
+  .inventory-controls{grid-template-columns:repeat(2,minmax(0,1fr))}
   .cards{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
 }

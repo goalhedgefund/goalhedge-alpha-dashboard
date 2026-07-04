@@ -5,11 +5,13 @@ const state = {
   modeBusy: false,
   rangeBusy: false,
   runnerBusy: false,
+  inventoryBusy: false,
+  inventoryPlan: null,
   pnlMode: 'ALL',       // 'ALL' or 'INTRADAY'
   tradeLogOpen: true
 };
 
-const tfLabels = ['1', '5', '15', '60', 'D'];
+const tfLabels = ['15'];
 
 function byId(id) {
   return document.getElementById(id);
@@ -17,6 +19,12 @@ function byId(id) {
 
 async function fetchSnapshot() {
   const res = await fetch('/api/multiscript/status');
+  return res.json();
+}
+
+async function fetchInventoryPlan() {
+  const res = await fetch('/api/multiscript/inventory');
+  if (!res.ok) throw new Error('Inventory load failed');
   return res.json();
 }
 
@@ -94,7 +102,7 @@ function syncRunnerUI() {
   byId('resetBtn').disabled = busy;
 }
 
-const INTRADAY_FRAMES = new Set(['1', '5', '15']);
+const INTRADAY_FRAMES = new Set(['15']);
 
 function renderSummary(snapshot) {
   const grid = byId('summaryGrid');
@@ -140,6 +148,205 @@ function renderSummary(snapshot) {
       <span>Unrealized PnL</span>
       <strong class="${uClass}">Rs ${unrealized.toFixed(2)}</strong>
     </div>`;
+}
+
+function actionClass(action) {
+  return String(action || 'WAIT').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+}
+
+function setInventorySettings(settings = {}) {
+  const map = {
+    invTotalCapital: 'totalCapital',
+    invMinStocks: 'minStocks',
+    invMaxStocks: 'maxStocks',
+    invIntradayCost: 'intradayCostPct',
+    invDeliveryCost: 'deliveryCostPct',
+    invScalpTarget: 'scalpTargetPct',
+    invBuyDecline: 'buyDeclinePct',
+    invMaxBuild: 'maxBuildPct'
+  };
+  for (const [id, key] of Object.entries(map)) {
+    const el = byId(id);
+    if (el && document.activeElement !== el) el.value = settings[key] ?? '';
+  }
+}
+
+function readInventorySettings() {
+  return {
+    totalCapital: Number(byId('invTotalCapital').value) || 0,
+    minStocks: Number(byId('invMinStocks').value) || 5,
+    maxStocks: Number(byId('invMaxStocks').value) || 25,
+    intradayCostPct: Number(byId('invIntradayCost').value) || 0,
+    deliveryCostPct: Number(byId('invDeliveryCost').value) || 0,
+    scalpTargetPct: Number(byId('invScalpTarget').value) || 0,
+    buyDeclinePct: Number(byId('invBuyDecline').value) || 0,
+    maxBuildPct: Number(byId('invMaxBuild').value) || 100
+  };
+}
+
+function renderInventory(plan) {
+  state.inventoryPlan = plan;
+  setInventorySettings(plan.settings);
+  const summary = byId('inventorySummary');
+  const wrap = byId('inventoryWrap');
+  const totals = plan.totals || {};
+  const clock = plan.clock || {};
+  const rows = plan.rows || [];
+
+  summary.innerHTML = `
+    <div><span>IST</span><strong>${clock.ist || '--:--'}</strong></div>
+    <div><span>Stocks</span><strong>${totals.stockCount || 0}</strong></div>
+    <div><span>Per Stock</span><strong>Rs ${Number(totals.perStockCapital || 0).toFixed(0)}</strong></div>
+    <div><span>Deployed</span><strong>Rs ${Number(totals.deployed || 0).toFixed(0)}</strong></div>
+    <div><span>Cash Left</span><strong>Rs ${Number(totals.cashRemaining || 0).toFixed(0)}</strong></div>
+    <div><span>Paper PnL</span><strong class="${Number(totals.realizedPaperPnl) >= 0 ? 'good' : 'bad'}">Rs ${Number(totals.realizedPaperPnl || 0).toFixed(0)}</strong></div>
+  `;
+
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="trades-empty">No inventory symbols available.</div>';
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div class="inventory-scroll">
+      <table class="inventory-table">
+        <thead>
+          <tr>
+            <th>Stock</th><th>LTP</th><th>Qty</th><th>Avg</th><th>Value</th>
+            <th>Capacity</th><th>Bid</th><th>Ask</th><th>Edge</th><th>Action</th><th>Paper</th><th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td><strong>${row.symbol}</strong><small>${row.signal}</small></td>
+              <td>Rs ${Number(row.ltp || 0).toFixed(2)}</td>
+              <td><input class="inv-qty" data-symbol="${row.symbol}" type="number" min="0" step="1" value="${row.quantity || 0}" /></td>
+              <td><input class="inv-avg" data-symbol="${row.symbol}" type="number" min="0" step="0.05" value="${row.avgPrice || 0}" /></td>
+              <td>Rs ${Number(row.positionValue || 0).toFixed(0)}</td>
+              <td>Rs ${Number(row.capacityValue || 0).toFixed(0)}<small>Add ${row.addQty || 0}</small></td>
+              <td>Rs ${Number(row.bid || 0).toFixed(2)}</td>
+              <td>Rs ${Number(row.ask || 0).toFixed(2)}</td>
+              <td class="${Number(row.scalpEdgePct) >= 0 ? 'good' : 'bad'}">${Number(row.scalpEdgePct || 0).toFixed(2)}%</td>
+              <td><span class="action-chip ${actionClass(row.action)}">${row.action}</span></td>
+              <td>
+                ${row.paperSide ? `<button class="paper-fill-btn" data-symbol="${row.symbol}" data-side="${row.paperSide}" data-qty="${row.paperQty || 0}" data-price="${row.paperPrice || 0}" data-reason="${row.action}: ${row.reason || ''}">${row.paperSide} ${row.paperQty || 0}</button><small>@ Rs ${Number(row.paperPrice || 0).toFixed(2)}</small>` : '<span class="paper-muted">--</span>'}
+              </td>
+              <td>${row.reason || ''}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  renderPaperLedger(plan.paperTrades || []);
+  wrap.querySelectorAll('.paper-fill-btn').forEach((button) => {
+    button.addEventListener('click', () => executePaperFill(button));
+  });
+}
+
+function renderPaperLedger(trades = []) {
+  const wrap = byId('paperLedgerWrap');
+  if (!trades.length) {
+    wrap.innerHTML = '<div class="paper-ledger-empty">No paper inventory fills yet.</div>';
+    return;
+  }
+  const recent = trades.slice(0, 12);
+  wrap.innerHTML = `
+    <div class="paper-ledger-title">
+      <h3>Paper Inventory Fills</h3>
+      <span>${trades.length} fill${trades.length !== 1 ? 's' : ''}</span>
+    </div>
+    <div class="inventory-scroll">
+      <table class="inventory-table paper-ledger-table">
+        <thead><tr><th>Time</th><th>Stock</th><th>Side</th><th>Qty</th><th>Price</th><th>Costs</th><th>Realized</th><th>Reason</th></tr></thead>
+        <tbody>
+          ${recent.map((trade) => `
+            <tr>
+              <td>${new Date(trade.time).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })}</td>
+              <td><strong>${trade.symbol}</strong></td>
+              <td><span class="action-chip ${trade.side === 'BUY' ? 'bid' : 'ask'}">${trade.side}</span></td>
+              <td>${trade.quantity}</td>
+              <td>Rs ${Number(trade.price || 0).toFixed(2)}</td>
+              <td>Rs ${Number(trade.costs || 0).toFixed(2)}</td>
+              <td class="${Number(trade.realizedPnl) >= 0 ? 'good' : 'bad'}">Rs ${Number(trade.realizedPnl || 0).toFixed(2)}</td>
+              <td>${trade.reason || ''}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function refreshInventory() {
+  const wrap = byId('inventoryWrap');
+  if (!state.inventoryPlan) wrap.innerHTML = '<div class="trades-empty">Loading inventory plan...</div>';
+  try {
+    renderInventory(await fetchInventoryPlan());
+  } catch (err) {
+    wrap.innerHTML = `<div class="trades-empty error">Failed to load inventory: ${err.message}</div>`;
+  }
+}
+
+async function saveInventory() {
+  if (state.inventoryBusy || !state.inventoryPlan) return;
+  state.inventoryBusy = true;
+  byId('saveInventoryBtn').disabled = true;
+  const positions = Array.from(document.querySelectorAll('.inv-qty')).map((qtyInput) => {
+    const symbol = qtyInput.dataset.symbol;
+    const avgInput = document.querySelector(`.inv-avg[data-symbol="${symbol}"]`);
+    return {
+      symbol,
+      quantity: Number(qtyInput.value) || 0,
+      avgPrice: Number(avgInput?.value) || 0
+    };
+  });
+  try {
+    const res = await fetch('/api/multiscript/inventory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: readInventorySettings(), positions })
+    });
+    if (!res.ok) throw new Error('Inventory save failed');
+    renderInventory(await res.json());
+  } catch (err) {
+    byId('inventoryWrap').insertAdjacentHTML('afterbegin', `<div class="trades-empty error">Failed to save inventory: ${err.message}</div>`);
+  } finally {
+    state.inventoryBusy = false;
+    byId('saveInventoryBtn').disabled = false;
+  }
+}
+
+async function executePaperFill(button) {
+  if (state.inventoryBusy) return;
+  const payload = {
+    symbol: button.dataset.symbol,
+    side: button.dataset.side,
+    quantity: Number(button.dataset.qty) || 0,
+    price: Number(button.dataset.price) || 0,
+    reason: button.dataset.reason || 'Paper inventory fill'
+  };
+  if (!payload.quantity || !payload.price) return;
+  state.inventoryBusy = true;
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/multiscript/inventory/paper-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Paper fill failed');
+    }
+    renderInventory(await res.json());
+  } catch (err) {
+    byId('inventoryWrap').insertAdjacentHTML('afterbegin', `<div class="trades-empty error">Paper fill failed: ${err.message}</div>`);
+  } finally {
+    state.inventoryBusy = false;
+    button.disabled = false;
+  }
 }
 
 function renderCards(snapshot) {
@@ -349,10 +556,7 @@ async function wireControls() {
     if (state.runnerBusy) return;
     state.runnerBusy = true;
     syncRunnerUI();
-    const activeFrames = ['1','5','15','60','D'].filter(f => {
-      const el = document.getElementById('tf' + f);
-      return el && el.checked;
-    });
+    const activeFrames = ['15'];
     const tradeModeEl = document.querySelector('input[name="tradeMode"]:checked');
     const tradeMode = tradeModeEl ? tradeModeEl.value : 'INTRADAY';
     try {

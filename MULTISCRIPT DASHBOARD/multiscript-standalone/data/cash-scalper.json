@@ -1,0 +1,75 @@
+{
+  "settings": {
+    "inventoryLimit": 1000000,
+    "carryForwardPct": 50,
+    "dailyTargetPct": 1,
+    "tradeSizePct": 10,
+    "intradayCostPct": 0.12,
+    "deliveryCostPct": 0.28,
+    "scalpTargetPct": 1,
+    "buyDeclinePct": 0.6,
+    "sessionStart": "09:15",
+    "squareOff": "15:20"
+  },
+  "symbols": [
+    {
+      "symbol": "AWL",
+      "name": "AWL AGRI BUSINESS LIMITED",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "8110",
+      "scriptLimit": 1000000,
+      "enabled": true
+    },
+    {
+      "symbol": "BHARATCOAL",
+      "name": "BHARAT COKING COAL LTD",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "760726",
+      "scriptLimit": 1000000,
+      "enabled": true
+    },
+    {
+      "symbol": "HCC",
+      "name": "HINDUSTAN CONSTRUCTION CO",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "1375",
+      "scriptLimit": 1000000,
+      "enabled": true
+    },
+    {
+      "symbol": "PATELENG",
+      "name": "PATEL ENGINEERING LTD.",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "11699",
+      "scriptLimit": 1000000,
+      "enabled": true
+    },
+    {
+      "symbol": "PINELABS",
+      "name": "PINE LABS LIMITED",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "759820",
+      "scriptLimit": 1000000,
+      "enabled": true
+    },
+    {
+      "symbol": "SAGILITY",
+      "name": "SAGILITY LIMITED",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "27052",
+      "scriptLimit": 100000,
+      "enabled": true
+    },
+    {
+      "symbol": "SAMMAANCAP",
+      "name": "SAMMAAN CAPITAL LIMITED",
+      "exchangeSegment": "NSE_EQ",
+      "securityId": "30125",
+      "scriptLimit": 1000000,
+      "enabled": true
+    }
+  ],
+  "positions": [],
+  "trades": [],
+  "updatedAt": "2026-07-04T08:02:41.094Z"
+}

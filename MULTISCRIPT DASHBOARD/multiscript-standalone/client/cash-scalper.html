@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cash Inventory Scalper</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/cash-scalper.css" />
+</head>
+<body>
+  <div class="app-shell cash-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Paper Trading Lab</div>
+        <h1>Cash Inventory Scalper</h1>
+        <p class="sub">User-selected cash scripts, Dhan live feed, paper fills, inventory limits, and overnight risk controls.</p>
+      </div>
+      <div class="status-panel cash-status">
+        <div class="status-item"><span>Dhan Feed</span><strong id="feedState">DISCONNECTED</strong></div>
+        <div class="status-item"><span>Scripts</span><strong id="symbolCount">0</strong></div>
+        <div class="status-item"><span>Daily Target</span><strong id="dailyTarget">Rs 0</strong></div>
+        <div class="status-item"><span>Paper PnL</span><strong id="paperPnl">Rs 0</strong></div>
+      </div>
+    </header>
+
+    <section class="cash-panel">
+      <div class="cash-toolbar">
+        <div class="cash-settings">
+          <label><span>Inventory Limit</span><input id="inventoryLimit" type="number" min="0" step="1000" /></label>
+          <label><span>Carry Forward %</span><input id="carryForwardPct" type="number" min="0" max="100" step="1" /></label>
+          <label><span>Daily Target %</span><input id="dailyTargetPct" type="number" min="0" step="0.1" /></label>
+          <label><span>Trade Size %</span><input id="tradeSizePct" type="number" min="1" max="100" step="1" /></label>
+          <label><span>Intraday Cost %</span><input id="intradayCostPct" type="number" min="0" step="0.01" /></label>
+          <label><span>Delivery Cost %</span><input id="deliveryCostPct" type="number" min="0" step="0.01" /></label>
+          <label><span>Scalp Target %</span><input id="scalpTargetPct" type="number" min="0" step="0.05" /></label>
+          <label><span>Buy Decline %</span><input id="buyDeclinePct" type="number" min="0" step="0.05" /></label>
+          <label><span>Session Start</span><input id="sessionStart" type="time" /></label>
+          <label><span>Square Off</span><input id="squareOff" type="time" /></label>
+        </div>
+        <div class="cash-actions">
+          <button id="saveSettingsBtn" type="button" class="muted">Save Rules</button>
+          <button id="refreshStrategyBtn" type="button" class="muted">Refresh Strategy</button>
+          <button id="connectBtn" type="button">Connect Dhan</button>
+          <button id="disconnectBtn" type="button" class="muted">Disconnect</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="cash-panel">
+      <div class="section-title cash-title">
+        <div>
+          <h2>Cash Script List</h2>
+          <p>Add frequently traded NSE cash scripts. The backend maps each symbol to Dhan security ID.</p>
+        </div>
+      </div>
+      <div class="symbol-entry">
+        <label><span>Search Symbol</span><input id="symbolSearch" type="search" placeholder="Type SAGILITY, RELIANCE, SBIN..." /></label>
+        <label><span>Symbol</span><input id="symbolInput" type="text" placeholder="SAGILITY" /></label>
+        <label><span>Script Limit</span><input id="scriptLimitInput" type="number" min="0" step="1000" placeholder="100000" /></label>
+        <button id="refreshMasterBtn" type="button" class="muted">Refresh Master</button>
+        <button id="addSymbolBtn" type="button">Add Script</button>
+      </div>
+      <div id="searchResults" class="search-results"></div>
+    </section>
+
+    <section class="cash-panel">
+      <div class="cash-summary" id="cashSummary"></div>
+      <div class="cash-table-wrap" id="cashRows">
+        <div class="trades-empty">Add cash scripts to begin paper scalping.</div>
+      </div>
+    </section>
+
+    <section class="cash-panel">
+      <div class="section-title cash-title">
+        <div>
+          <h2>Paper Trade Ledger</h2>
+          <p>Paper fills only. Long inventory is never sold below breakeven; shorts are intraday only.</p>
+        </div>
+      </div>
+      <div id="tradeLedger" class="cash-table-wrap"></div>
+    </section>
+  </div>
+
+  <script src="/cash-scalper.js"></script>
+</body>
+</html>

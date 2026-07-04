@@ -8,6 +8,8 @@
   "scripts": {
     "start": "node server/index.js",
     "probe": "node scripts/probe.js",
+    "refresh-regime": "node scripts/refresh-nifty-regime.js",
+    "backtest:cash-scalper": "node scripts/backtest-cash-scalper.js",
     "test": "node scripts/selftest.js",
     "setup": "powershell -ExecutionPolicy Bypass -File setup.ps1"
   },
