@@ -85,6 +85,15 @@ export class JournalWriter {
     return this.seq;
   }
 
+  /**
+   * False once a disk write has failed (latched) or the writer is closed —
+   * the guard trading components check before opening a new position, so the
+   * platform never trades blind behind a broken audit trail.
+   */
+  healthy(): boolean {
+    return this.failure === undefined && !this.closed;
+  }
+
   flush(): Promise<void> {
     if (this.buf.length === 0) return this.writeChain;
     const chunk = this.buf.join('\n') + '\n';

@@ -47,6 +47,8 @@ export interface StrategyRunnerOptions {
   todayDate: string;
   regime?: RegimeProvider;
   journal?: JournalSink;
+  /** Entry guard: when this returns false (broken journal) no new entry is proposed. */
+  journalHealthy?: () => boolean;
   cooldownSec?: number;
   /** When present, stop exits ride the reprice→market escalation ladder. */
   escalator?: ExitEscalator;
@@ -115,6 +117,14 @@ export class StrategyRunner {
     this.tickCooldown(nowMs);
     this.syncPosition(nowMs);
     if (this.lifecycle !== 'ARMED' || this.entryInFlight || this.openPosition() !== undefined) return;
+
+    // Never open a new position while the audit trail is broken (disk-full /
+    // latched journal failure). Protection for open positions (driveStops) is
+    // NOT gated here — a broken journal must never strand an existing position.
+    if (this.opts.journalHealthy?.() === false) {
+      this.noTrade('JOURNAL_UNHEALTHY');
+      return;
+    }
 
     const global = checkGlobal(this.opts.eligibility, {
       nowHHMM: formatHHMMIst(nowMs),

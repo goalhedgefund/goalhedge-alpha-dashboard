@@ -58,6 +58,10 @@ export interface KillSwitchOptions {
   /** AUTO trip: broker reject storm. */
   rejectStormCount?: number;
   rejectStormWindowMs?: number;
+  /** AUTO trip: max ms the main loop may go un-petted before WATCHDOG. */
+  watchdogMs?: number;
+  /** AUTO trip: |local clock − last exchange tick| beyond this while connected. */
+  clockSkewMs?: number;
 }
 
 /**
@@ -75,6 +79,7 @@ export class KillSwitch {
   private mode: KillState = 'READY';
   private tripReason: string | undefined;
   private lastTickTs = 0;
+  private lastPetMs = 0;
   private rejectTs: number[] = [];
 
   private readonly clock: Clock;
@@ -82,6 +87,8 @@ export class KillSwitch {
   private readonly feedStaleMs: number;
   private readonly rejectStormCount: number;
   private readonly rejectStormWindowMs: number;
+  private readonly watchdogMs: number;
+  private readonly clockSkewMs: number;
 
   constructor(private readonly opts: KillSwitchOptions) {
     this.clock = opts.clock ?? systemClock;
@@ -89,6 +96,8 @@ export class KillSwitch {
     this.feedStaleMs = opts.feedStaleMs ?? 5_000;
     this.rejectStormCount = opts.rejectStormCount ?? 5;
     this.rejectStormWindowMs = opts.rejectStormWindowMs ?? 60_000;
+    this.watchdogMs = opts.watchdogMs ?? 3_000;
+    this.clockSkewMs = opts.clockSkewMs ?? 2_000;
   }
 
   state(): KillState {
@@ -127,6 +136,39 @@ export class KillSwitch {
     const positioned = this.opts.oms.getPositions().some((p) => p.state !== 'CLOSED' && p.qty > 0);
     if (!positioned) return false;
     void this.trip('AUTO', 'FEED_STALE');
+    return true;
+  }
+
+  /** Pet the watchdog from the main loop, once per iteration. */
+  petWatchdog(nowMs: number): void {
+    this.lastPetMs = nowMs;
+  }
+
+  /**
+   * Call on an INDEPENDENT cadence (a timer the stuck main loop can't starve).
+   * If the loop hasn't petted the watchdog within the budget, it has wedged —
+   * trip WATCHDOG so a hung engine never sits on an open position.
+   */
+  checkWatchdog(nowMs: number): boolean {
+    if (this.mode !== 'READY' || this.lastPetMs === 0) return false;
+    if (nowMs - this.lastPetMs <= this.watchdogMs) return false;
+    void this.trip('AUTO', 'WATCHDOG');
+    return true;
+  }
+
+  /**
+   * Call on the timer cadence. Trips when the local clock and the last exchange
+   * tick disagree by more than the threshold WHILE the feed is current — a
+   * negative gap (tick stamped in the future) or a positive gap inside the
+   * freshness window. A large positive gap is feed staleness, not skew, and is
+   * left to checkFeedStale.
+   */
+  checkClockSkew(nowMs: number): boolean {
+    if (this.mode !== 'READY' || this.lastTickTs === 0) return false;
+    const skew = nowMs - this.lastTickTs;
+    if (skew > this.feedStaleMs) return false;
+    if (Math.abs(skew) <= this.clockSkewMs) return false;
+    void this.trip('AUTO', 'CLOCK_SKEW');
     return true;
   }
 
