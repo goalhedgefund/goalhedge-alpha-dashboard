@@ -67,6 +67,12 @@ export interface PaperHostOptions {
   autoArm?: boolean;
   recorder?: TickRecorderPort;
   gateway?: GatewayPort;
+  /**
+   * Paper-only: forward option quotes to the broker so fills track the replayed
+   * feed (e.g. PaperBroker.setQuote). Without it, a pure tick replay can't fill
+   * because the broker never learns the touch. Absent in live mode.
+   */
+  quoteSink?: (instrumentId: InstrumentId, quote: { bidPaise: number; askPaise: number; ltpPaise: number }) => void;
 }
 
 export interface HostStartResult {
@@ -171,8 +177,9 @@ export class PaperHost {
     this.opts.recorder?.record(tick);
     const kind = this.opts.marketData.ingest(tick);
 
-    if (kind === 'option' && this.isHeld(tick.instrumentId)) {
-      this.sink('md.tick', { tick });
+    if (kind === 'option') {
+      this.opts.quoteSink?.(tick.instrumentId, { bidPaise: tick.bidPaise, askPaise: tick.askPaise, ltpPaise: tick.ltpPaise });
+      if (this.isHeld(tick.instrumentId)) this.sink('md.tick', { tick });
     }
 
     if (kind === 'spot') {
