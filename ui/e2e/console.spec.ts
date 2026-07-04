@@ -31,6 +31,18 @@ test('(a) renders live state and a completed trade lands in the blotter', async 
   await expect(page.getByTestId('blotter-trade-row').first()).toContainText('₹');
 });
 
+test('(a2) preflight panel renders the boot checklist and ACK round-trips', async ({ page }) => {
+  await page.goto('/');
+  const panel = page.getByTestId('preflight-panel');
+  await expect(panel).toBeVisible();
+  // The demo runs preflight at boot with every check resolved green.
+  await expect(page.getByTestId('preflight-summary')).toHaveText('ALL PASS', { timeout: 10_000 });
+  await expect(panel.getByTestId('preflight-check').first()).toBeVisible();
+  // The operator acknowledgement (ACK_PREFLIGHT) is accepted.
+  await page.getByTestId('ack-preflight-btn').click();
+  await expect(page.getByTestId('ack-result')).toContainText('ACKED', { timeout: 5_000 });
+});
+
 test('(b) refresh mid-session reconstructs the full state from snapshot', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('blotter-trade-row').first()).toBeVisible({ timeout: 45_000 });
@@ -97,4 +109,23 @@ test('(e) kill switch is two-step: a click never fires; hold KILLS, locks, and A
   await expect(page.getByTestId('banner-lifecycle')).toHaveText('DISARMED', { timeout: 10_000 });
   await page.getByTestId('arm-btn').click();
   await expect(page.getByTestId('cmd-result')).toContainText('KILL_LOCKED', { timeout: 5_000 });
+});
+
+test('(f) re-arm: a typed reason unlocks the killed session and ARM works again', async ({ page }) => {
+  // Runs after (e): the server is LOCKED, so a fresh snapshot shows the rearm box.
+  await page.goto('/');
+  await expect(page.getByTestId('rearm-box')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('banner-kill')).toHaveText('LOCKED');
+
+  // Discipline: RE-ARM stays disabled until a reason is supplied.
+  await expect(page.getByTestId('rearm-btn')).toBeDisabled();
+  await page.getByTestId('rearm-reason').fill('root cause fixed: demo drill complete');
+  await expect(page.getByTestId('rearm-btn')).toBeEnabled();
+  await page.getByTestId('rearm-btn').click();
+  await expect(page.getByTestId('rearm-result')).toContainText('RE-ARMED', { timeout: 5_000 });
+
+  // Unlocked: the rearm box is gone and ARM is accepted again.
+  await expect(page.getByTestId('rearm-box')).toBeHidden({ timeout: 10_000 });
+  await page.getByTestId('arm-btn').click();
+  await expect(page.getByTestId('cmd-result')).toContainText('ARM: ok', { timeout: 5_000 });
 });

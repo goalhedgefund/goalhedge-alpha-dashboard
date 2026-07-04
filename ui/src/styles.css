@@ -104,7 +104,28 @@ button.warn { border-color: var(--amber); color: var(--amber); }
   letter-spacing: 2px;
 }
 .kill-btn.holding { background: var(--red); color: #fff; }
+.kill-btn:disabled { background: #2d1114; color: #7d5b5b; cursor: not-allowed; }
 .kill-result { margin-top: 6px; min-height: 16px; color: var(--amber); font-weight: 600; }
+.banner-kill { color: #fff; background: var(--red); padding: 1px 8px; border-radius: 3px; font-weight: 800; }
+
+/* re-arm (shown while locked) */
+.rearm { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.rearm .kill-state { color: var(--red); font-weight: 700; margin-bottom: 6px; }
+.rearm-reason {
+  width: 100%; margin-bottom: 6px; padding: 6px 8px;
+  background: #0a0d12; color: var(--text); border: 1px solid var(--border); border-radius: 4px;
+}
+.rearm-btn { width: 100%; border-color: var(--amber); color: var(--amber); }
+.rearm-btn:disabled { color: var(--dim); border-color: var(--border); cursor: not-allowed; }
+.rearm-result { margin-top: 6px; min-height: 16px; color: var(--green); font-weight: 600; }
+
+/* preflight checklist */
+.checks { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; }
+.check { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+.check .ok { color: var(--green); font-weight: 800; }
+.check .bad { color: var(--red); font-weight: 800; }
+.check-name { color: var(--text); }
+.check-detail { color: var(--dim); margin-left: auto; font-size: 11px; }
 
 /* positions */
 .flat { color: var(--dim); padding: 8px 0; letter-spacing: 2px; }

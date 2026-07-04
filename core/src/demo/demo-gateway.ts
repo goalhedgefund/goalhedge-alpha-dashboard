@@ -19,10 +19,10 @@ import type { OptionChainRow, Tick } from '../domain/marketdata.js';
 import { systemClock } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { Gateway } from '../gateway/gateway.js';
-import { registerRunnerCommands } from '../gateway/commands.js';
+import { registerKillCommands, registerRunnerCommands, registerSessionCommands } from '../gateway/commands.js';
 import type { GatewayState } from '../gateway/protocol.js';
 import { KillSwitch } from '../killswitch/kill-switch.js';
-import { registerKillCommands } from '../gateway/commands.js';
+import { SessionManager } from '../session/session.js';
 import { computeUnderlyingFeatures } from '../marketdata/features/library.js';
 import { formatHHMMIst } from '../domain/time.js';
 import { Oms } from '../oms/oms.js';
@@ -121,10 +121,11 @@ class DemoViewProvider implements MarketViewProvider {
 
 async function main(): Promise<void> {
   const configDir = new URL('../../../config/', import.meta.url);
-  const marketBase = loadConfig(
+  const marketCfg = loadConfig(
     MarketProfileSchema,
     fileURLToPath(new URL('market/india-nse-options.json', configDir)),
-  ).value;
+  );
+  const marketBase = marketCfg.value;
   // DEMO override: trade at any wall-clock time.
   const market = {
     ...marketBase,
@@ -132,10 +133,11 @@ async function main(): Promise<void> {
     entryCutoff: '23:59',
     hardSquareOff: '23:59',
   };
-  const riskProfile = loadConfig(
+  const riskCfg = loadConfig(
     RiskProfileSchema,
     fileURLToPath(new URL('risk/paper-default.json', configDir)),
-  ).value;
+  );
+  const riskProfile = riskCfg.value;
 
   const today = istDate(Date.now());
   const sessionId = makeSessionId(today, 'paper');
@@ -238,6 +240,14 @@ async function main(): Promise<void> {
     openPositions: oms.getPositions(),
     session: sessionRisk.current(),
   });
+  const markPrice = (id: InstrumentId): number | undefined => {
+    const row = provider.optionRows().get(id);
+    if (row === undefined) return undefined;
+    return row.bidPaise > 0 ? row.bidPaise : row.ltpPaise > 0 ? row.ltpPaise : undefined;
+  };
+  // Session is constructed after the kill switch (its preflight self-tests the
+  // kill path); the kill switch reflects trips back into the phase via notify.
+  const sessionBox: { session?: SessionManager } = {};
   const kill = new KillSwitch({
     sessionId,
     target: runner,
@@ -246,15 +256,61 @@ async function main(): Promise<void> {
     gateContext: killGateCtx,
     ids,
     market,
-    markPrice: (id) => {
-      const row = provider.optionRows().get(id);
-      if (row === undefined) return undefined;
-      return row.bidPaise > 0 ? row.bidPaise : row.ltpPaise > 0 ? row.ltpPaise : undefined;
+    markPrice,
+    journal: sink,
+    notify: (event) => sessionBox.session?.onKill(event),
+  });
+  const session = new SessionManager({
+    sessionId,
+    mode: 'paper',
+    date: today,
+    market,
+    target: runner,
+    flattenPorts: () => ({
+      sessionId,
+      oms,
+      gate,
+      gateContext: killGateCtx,
+      ids,
+      market,
+      markPrice,
+      clock: systemClock,
+      journal: sink,
+      protectTicks: 5,
+    }),
+    preflight: {
+      // DEMO: the real chain resolver needs a scrip-master CSV; stub a resolved
+      // weekly so the checklist renders a realistic PASS.
+      resolveChain: () => ({
+        expiryDate: '2026-07-07',
+        chain: new Map(),
+        lotSize: market.contract.lotSize,
+        tickSizePaise: market.tickSizePaise,
+        rowCount: 82,
+      }),
+      lastTickTs: () => provider.spotTicks[provider.spotTicks.length - 1]?.ts ?? 0,
+      feedStaleMs: 5_000,
+      killSelfTest: () => kill.selfTest(),
+      journalReady: () => Promise.resolve(),
+      configs: [
+        { name: 'market', hash: marketCfg.hash, path: marketCfg.path },
+        { name: 'risk', hash: riskCfg.hash, path: riskCfg.path },
+      ],
     },
+    clock: systemClock,
     journal: sink,
   });
+  sessionBox.session = session;
+
   registerRunnerCommands(gateway, runner, { isLocked: () => kill.isLocked() });
   registerKillCommands(gateway, kill);
+  registerSessionCommands(gateway, session);
+
+  // Preflight → operator ACK → OPEN, then arm the scripted trade loop. Seed one
+  // spot tick first so the feed-freshness check passes.
+  provider.pushSpot(Date.now(), BASE_SPOT);
+  await session.runPreflight();
+  session.acknowledge('demo');
   runner.arm();
 
   // Seed an hour of synthetic 1m bars so the chart is never empty.

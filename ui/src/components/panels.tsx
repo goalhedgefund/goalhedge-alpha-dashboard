@@ -14,15 +14,22 @@ type JEvent = GatewayState['events'][number];
 // ---------------------------------------------------------------- banner
 
 export function ModeBanner({ state }: { state: GatewayState }): JSX.Element {
-  const { session, algo } = state;
+  const { session, algo, kill } = state;
   return (
     <header className={`banner mode-${session.mode}`} data-testid="mode-banner">
       <span className="banner-mode">{session.mode.toUpperCase()}</span>
       <span className="banner-item">{session.date}</span>
-      <span className="banner-item">phase {session.phase}</span>
+      <span className="banner-item" data-testid="banner-phase">
+        phase {session.phase}
+      </span>
       <span className="banner-item" data-testid="banner-lifecycle">
         {algo.lifecycle}
       </span>
+      {kill.state !== 'READY' && (
+        <span className="banner-kill" data-testid="banner-kill">
+          {kill.state}
+        </span>
+      )}
       <span className="banner-strategy">{algo.strategyId}</span>
     </header>
   );
@@ -152,10 +159,14 @@ export function AlgoPanel({ state, client }: { state: GatewayState; client: Gate
 
 // ---------------------------------------------------------------- kill
 
-export function KillSwitch({ client }: { client: GatewayClient }): JSX.Element {
+export function KillSwitch({ state, client }: { state: GatewayState; client: GatewayClient }): JSX.Element {
   const [holding, setHolding] = useState(false);
   const [result, setResult] = useState('');
+  const [reason, setReason] = useState('');
+  const [rearmResult, setRearmResult] = useState('');
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const kill = state.kill;
+  const locked = kill.state === 'LOCKED';
 
   const start = (): void => {
     setHolding(true);
@@ -171,19 +182,97 @@ export function KillSwitch({ client }: { client: GatewayClient }): JSX.Element {
     setHolding(false);
   };
 
+  // Re-arm requires the typed 'REARM' confirmation + a non-empty reason
+  // (kill-switch discipline). The UI supplies the confirmation literal; the
+  // operator supplies the reason. Both are journaled server-side.
+  const rearm = async (): Promise<void> => {
+    const r = await client.command('REARM', { confirm: 'REARM', reason });
+    setRearmResult(r.accepted ? 'RE-ARMED — trading unlocked' : `REJECTED: ${r.reason ?? 'unknown'}`);
+    if (r.accepted) setReason('');
+  };
+
   return (
-    <section className="panel kill-panel">
+    <section className="panel kill-panel" data-testid="kill-panel">
       <button
         data-testid="kill-switch"
         className={holding ? 'kill-btn holding' : 'kill-btn'}
         onPointerDown={start}
         onPointerUp={cancel}
         onPointerLeave={cancel}
+        disabled={locked}
       >
-        {holding ? 'HOLD TO KILL…' : 'KILL SWITCH'}
+        {holding ? 'HOLD TO KILL…' : locked ? 'LOCKED' : 'KILL SWITCH'}
       </button>
       <div className="kill-result" data-testid="kill-result">
         {result}
+      </div>
+      {locked && (
+        <div className="rearm" data-testid="rearm-box">
+          <div className="kill-state" data-testid="kill-state">
+            LOCKED{kill.reason !== undefined ? `: ${kill.reason}` : ''}
+          </div>
+          <input
+            data-testid="rearm-reason"
+            className="rearm-reason"
+            placeholder="reason to re-arm"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <button
+            data-testid="rearm-btn"
+            className="rearm-btn"
+            disabled={reason.trim() === ''}
+            onClick={() => void rearm()}
+          >
+            RE-ARM
+          </button>
+          <div className="rearm-result" data-testid="rearm-result">
+            {rearmResult}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- preflight
+
+export function PreflightPanel({ state, client }: { state: GatewayState; client: GatewayClient }): JSX.Element {
+  const [ack, setAck] = useState('');
+  const checks = state.session.preflight;
+  const doAck = async (): Promise<void> => {
+    const r = await client.command('ACK_PREFLIGHT', { operator: 'ui' });
+    setAck(r.accepted ? `ACKED${r.reason !== undefined ? ` (${r.reason})` : ''}` : `REJECTED: ${r.reason ?? 'unknown'}`);
+  };
+  const allOk = checks !== undefined && checks.every((c) => c.ok);
+  return (
+    <section className="panel" data-testid="preflight-panel">
+      <h2>
+        PREFLIGHT{' '}
+        {checks !== undefined && (
+          <span className={allOk ? 'st-connected' : 'st-stale'} data-testid="preflight-summary">
+            {allOk ? 'ALL PASS' : 'BLOCKED'}
+          </span>
+        )}
+      </h2>
+      {checks === undefined ? (
+        <div className="flat">no preflight run</div>
+      ) : (
+        <div className="checks">
+          {checks.map((c) => (
+            <div key={c.name} className="check" data-testid="preflight-check">
+              <span className={c.ok ? 'ok st-connected' : 'bad st-stale'}>{c.ok ? '✓' : '✗'}</span>
+              <span className="check-name">{c.name}</span>
+              {c.detail !== undefined && <span className="check-detail">{c.detail}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      <button data-testid="ack-preflight-btn" onClick={() => void doAck()}>
+        ACK PREFLIGHT
+      </button>
+      <div className="cmd-result" data-testid="ack-result">
+        {ack}
       </div>
     </section>
   );

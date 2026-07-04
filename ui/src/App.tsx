@@ -8,6 +8,7 @@ import {
   KillSwitch,
   ModeBanner,
   PositionsPanel,
+  PreflightPanel,
   RiskMeters,
   UnderlyingChart,
 } from './components/panels.js';
@@ -37,9 +38,10 @@ export default function App(): JSX.Element {
       <main className="grid">
         <div className="col">
           <HealthHud state={state} status={status} lastSeq={client.lastSeq} />
+          <PreflightPanel state={state} client={client} />
           <RiskMeters state={state} />
           <AlgoPanel state={state} client={client} />
-          <KillSwitch client={client} />
+          <KillSwitch state={state} client={client} />
         </div>
         <div className="col">
           <PositionsPanel state={state} />
