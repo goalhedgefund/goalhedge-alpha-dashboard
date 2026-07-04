@@ -81,7 +81,14 @@ check, and the reserved exit throttle lane in the OMS. Read `01-DESIGN.md`
    registerRunnerCommands. 8 tests in session.test.ts. 223 core tests green.
    NOTE: SessionManager not yet wired into demo-gateway/runtime — deferred to
    step 5 (gateway session slice) alongside the UI.
-3. Reconciler + auto-kill wiring + tests.
+3. ✅ DONE: oms/reconciler.ts (Reconciler) — diffs OMS book vs adapter book
+   (getOrders/getPositions), GREEN/AMBER/RED (RED = net position qty
+   mismatch, AMBER = working-order presence drift), journals recon.result
+   deduped on STATE CHANGE, RED → kill.trip('AUTO','RECON_MISMATCH') once
+   (guarded by isLocked). Caller-driven reconcile() (timer + post-event wiring
+   is step 5). PaperBroker.setPositionQty chaos knob for out-of-band drift.
+   7 tests in reconciler.test.ts (classification, dedup, real OMS+PaperBroker
+   GREEN + injected-drift RED→trip). 230 core tests green.
 4. Crash recovery + tests.
 5. Gateway slices + UI (REARM button, preflight panel) + Playwright update.
 6. Chaos suite; tag `m9b`.

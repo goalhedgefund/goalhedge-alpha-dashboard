@@ -104,6 +104,16 @@ export { TradesWriter } from './exec/trades-writer.js';
 export type { TradesWriterOptions } from './exec/trades-writer.js';
 export { Oms } from './oms/oms.js';
 export type { JournalSink, OmsOptions, SubmitResult } from './oms/oms.js';
+export { Reconciler } from './oms/reconciler.js';
+export type {
+  OrderDiff,
+  PositionDiff,
+  ReconBookPort,
+  ReconKillPort,
+  ReconResult,
+  ReconState,
+  ReconcilerOptions,
+} from './oms/reconciler.js';
 export { PositionKeeper } from './oms/position-keeper.js';
 export { IllegalOrderTransitionError, canTransition, transitionOrder } from './oms/state-machine.js';
 export { TokenBucket } from './oms/throttle.js';

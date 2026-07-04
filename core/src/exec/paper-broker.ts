@@ -65,6 +65,16 @@ export class PaperBroker implements IBrokerAdapter {
     this.fillHolds.set(instrumentId, count);
   }
 
+  /**
+   * Chaos knob: set/overwrite (qty === 0 clears) a broker-side position out
+   * of band — a fill the OMS never saw. Drives the reconciler to RED so the
+   * kill switch trips on a real position mismatch.
+   */
+  setPositionQty(instrumentId: InstrumentId, position: Position | undefined): void {
+    if (position === undefined) this.positions.delete(instrumentId);
+    else this.positions.set(instrumentId, position);
+  }
+
   onOrderEvent(cb: (ev: BrokerOrderEvent) => void): () => void {
     this.handlers.add(cb);
     return () => this.handlers.delete(cb);
