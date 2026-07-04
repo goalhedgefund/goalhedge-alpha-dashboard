@@ -184,6 +184,14 @@ export type {
   SessionManagerOptions,
   SquareOffReport,
 } from './session/session.js';
+export {
+  prepareJournalForResume,
+  reconcileRecovered,
+  recoverFromJournal,
+  reduceJournal,
+} from './session/recovery.js';
+export type { RecoveredState, RecoveryOptions } from './session/recovery.js';
+export { diffNetPositions } from './oms/reconciler.js';
 export { ExitEscalator } from './oms/escalation.js';
 export type { EscalatorOmsPort, ExitEscalatorOptions } from './oms/escalation.js';
 export {

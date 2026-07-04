@@ -89,8 +89,19 @@ check, and the reserved exit throttle lane in the OMS. Read `01-DESIGN.md`
    is step 5). PaperBroker.setPositionQty chaos knob for out-of-band drift.
    7 tests in reconciler.test.ts (classification, dedup, real OMS+PaperBroker
    GREEN + injected-drift RED→trip). 230 core tests green.
-4. Crash recovery + tests.
+4. ✅ DONE: session/recovery.ts — reduceJournal (pure reducer, mirrors
+   mirror.ts switch; position.closed DELETES the book so rebuilt positions ===
+   Oms.getPositions(); rebuilds SessionRiskState by replaying trade.completed
+   net P&L); recoverFromJournal (read→reduce→prepareJournalForResume);
+   prepareJournalForResume crash-safety (torn tail truncated, valid-but-
+   newline-less tail terminated) so the resumed writer never appends onto a
+   torn line; reconcileRecovered(rebuilt vs adapter positions) → non-empty
+   means caller must safe-halt. Extracted diffNetPositions from reconciler.ts
+   (shared). 3 tests in session-recovery.test.ts (rebuild identical + seq
+   continuity, torn-tail drop, reconcile mismatch). 233 core tests green.
 5. Gateway slices + UI (REARM button, preflight panel) + Playwright update.
+   ALSO: wire SessionManager + Reconciler + recovery into demo-gateway/runtime;
+   watchdog + clock-skew trips (work order item 5).
 6. Chaos suite; tag `m9b`.
 
 ## Cautions

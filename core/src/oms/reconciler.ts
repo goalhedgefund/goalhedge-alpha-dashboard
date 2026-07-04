@@ -105,15 +105,7 @@ export class Reconciler {
   // --------------------------------------------------------------- internals
 
   private diffPositions(): PositionDiff[] {
-    const oms = netByInstrument(this.opts.oms.getPositions());
-    const broker = netByInstrument(this.opts.adapter.getPositions());
-    const diffs: PositionDiff[] = [];
-    for (const instrumentId of unionKeys(oms, broker)) {
-      const omsNet = oms.get(instrumentId) ?? 0;
-      const brokerNet = broker.get(instrumentId) ?? 0;
-      if (omsNet !== brokerNet) diffs.push({ instrumentId, omsNet, brokerNet });
-    }
-    return diffs;
+    return diffNetPositions(this.opts.oms.getPositions(), this.opts.adapter.getPositions());
   }
 
   private diffOrders(): OrderDiff[] {
@@ -131,6 +123,26 @@ export class Reconciler {
     }
     return diffs;
   }
+}
+
+/**
+ * Diff two position books by net signed exposure per instrument. Shared by
+ * the live reconciler and crash recovery (which compares the rebuilt book
+ * against the broker before it will let the session ARM).
+ */
+export function diffNetPositions(
+  oursPositions: readonly Position[],
+  brokerPositions: readonly Position[],
+): PositionDiff[] {
+  const ours = netByInstrument(oursPositions);
+  const broker = netByInstrument(brokerPositions);
+  const diffs: PositionDiff[] = [];
+  for (const instrumentId of unionKeys(ours, broker)) {
+    const omsNet = ours.get(instrumentId) ?? 0;
+    const brokerNet = broker.get(instrumentId) ?? 0;
+    if (omsNet !== brokerNet) diffs.push({ instrumentId, omsNet, brokerNet });
+  }
+  return diffs;
 }
 
 /** Net signed exposure per instrument, ignoring closed / zero-qty legs. */
