@@ -126,6 +126,26 @@ export { StopEngine } from './stops/stop-engine.js';
 export type { StopDecision, StopEngineOptions, StopTick, StopTriggerReason } from './stops/stop-engine.js';
 export { LATENCY_HOPS, LatencySampler, RollingLatency } from './telemetry/latency.js';
 export type { HiResClock, HopStats, LatencyHop, LatencySnapshot } from './telemetry/latency.js';
+export {
+  buildDigest,
+  buildDigestFromFile,
+  inr,
+  renderDigestMarkdown,
+  renderTradesCsv,
+  writeDigest,
+} from './report/digest.js';
+export type {
+  DigestArtifacts,
+  DigestMeta,
+  DigestReport,
+  DigestSummary,
+  DigestTradeRow,
+  ExitReasonRow,
+  LatencyDigest,
+  MaeDigest,
+  StrategyAttribution,
+  WaterfallRow,
+} from './report/digest.js';
 
 export type {
   EntryProposal,
