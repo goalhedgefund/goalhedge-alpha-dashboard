@@ -6,6 +6,7 @@ import type { OrderIntent, StopPlan } from '../domain/orders.js';
 import type { Position, Trade } from '../domain/positions.js';
 import type { SessionStopKind } from '../domain/risk.js';
 import { formatHHMMIst, type Clock } from '../domain/time.js';
+import type { ExitEscalator } from '../oms/escalation.js';
 import type { Oms } from '../oms/oms.js';
 import type { RiskGate, RiskGateContext } from '../risk/risk-gate.js';
 import type { SessionRiskState } from '../risk/session-risk.js';
@@ -47,6 +48,8 @@ export interface StrategyRunnerOptions {
   regime?: RegimeProvider;
   journal?: JournalSink;
   cooldownSec?: number;
+  /** When present, stop exits ride the reprice→market escalation ladder. */
+  escalator?: ExitEscalator;
 }
 
 /**
@@ -176,11 +179,12 @@ export class StrategyRunner {
     await this.driveStops(nowMs);
   }
 
-  /** Timer cadence: drives time stops when the market is silent, and cooldown expiry. */
+  /** Timer cadence: drives time stops when the market is silent, cooldown expiry, and exit escalation. */
   async onTimer(nowMs: number): Promise<void> {
     this.tickCooldown(nowMs);
     this.syncPosition(nowMs);
     await this.driveStops(nowMs);
+    await this.opts.escalator?.poll(nowMs);
   }
 
   /** Wire trade completions here (from the OMS journal sink). */
@@ -243,7 +247,10 @@ export class StrategyRunner {
       this.journal('intent.proposed', { intent });
       const verdict = this.opts.gate.evaluate(intent, this.gateContext(nowMs));
       this.journal('risk.verdict', { verdict });
-      if (verdict.approved) await this.opts.oms.submit(intent, verdict);
+      if (verdict.approved) {
+        const result = await this.opts.oms.submit(intent, verdict);
+        if (result.accepted) this.opts.escalator?.track(result.order, intent);
+      }
     } finally {
       this.exitInFlight = false;
     }

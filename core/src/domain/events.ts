@@ -50,6 +50,12 @@ export interface JournalPayloads {
   'kill.tripped': { source: 'MANUAL' | 'AUTO'; reason: string };
   'kill.completed': { durationMs: number; cancelledOrders: number; flattenedPositions: number };
   'kill.rearmed': { reason: string };
+  'exit.escalated': {
+    clientOrderId: string;
+    stage: 'REPRICE' | 'MARKET';
+    remainingQty: number;
+    newIntentId: string;
+  };
   'recon.result': { ok: boolean; diffs?: Record<string, unknown> };
   'command.received': {
     commandId: string;
@@ -94,6 +100,7 @@ const ALL_EVENT_TYPES = [
   'kill.tripped',
   'kill.completed',
   'kill.rearmed',
+  'exit.escalated',
   'recon.result',
   'command.received',
   'command.acked',

@@ -33,6 +33,7 @@ export class PaperBroker implements IBrokerAdapter {
   private quotes = new Map<InstrumentId, PaperQuote>();
   private rejectReason: string | undefined;
   private partialQty: number | undefined;
+  private readonly fillHolds = new Map<InstrumentId, number>();
   private seq = 0;
 
   constructor(opts: PaperBrokerOptions = {}) {
@@ -54,6 +55,14 @@ export class PaperBroker implements IBrokerAdapter {
 
   partialFillNext(qty: number): void {
     this.partialQty = qty;
+  }
+
+  /**
+   * Chaos knob: skip filling the next `count` orders for this instrument
+   * (they stay ACKED at the broker) — forces the exit escalation ladder.
+   */
+  holdFills(instrumentId: InstrumentId, count: number): void {
+    this.fillHolds.set(instrumentId, count);
   }
 
   onOrderEvent(cb: (ev: BrokerOrderEvent) => void): () => void {
@@ -121,6 +130,11 @@ export class PaperBroker implements IBrokerAdapter {
   }
 
   private fillOrder(order: Order): void {
+    const holds = this.fillHolds.get(order.instrumentId) ?? 0;
+    if (holds > 0) {
+      this.fillHolds.set(order.instrumentId, holds - 1);
+      return; // order rests ACKED, unfilled
+    }
     const quote = this.quotes.get(order.instrumentId);
     const base = order.side === 'BUY'
       ? quote?.askPaise ?? order.limitPricePaise ?? quote?.ltpPaise ?? 0

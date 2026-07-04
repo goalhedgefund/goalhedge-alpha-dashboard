@@ -260,7 +260,7 @@ describe('auto trips', () => {
     kill.noteReject(1_100);
     expect(kill.state()).toBe('READY');
     kill.noteReject(1_200); // 3 within 1s → trip
-    await Promise.resolve();
+    await new Promise<void>((r) => setImmediate(r)); // trip() awaits helpers; flush fully
     expect(kill.state()).toBe('LOCKED');
     expect(cap.events.find((e) => e.type === 'kill.tripped')?.payload).toMatchObject({
       source: 'AUTO',
@@ -291,7 +291,7 @@ describe('auto trips', () => {
     killPos.noteTick(10_000);
     expect(killPos.checkFeedStale(12_000)).toBe(false); // fresh → no trip
     expect(killPos.checkFeedStale(20_000)).toBe(true); // stale + positioned → trip
-    await Promise.resolve();
+    await new Promise<void>((r) => setImmediate(r)); // trip() awaits helpers; flush fully
     expect(killPos.state()).toBe('LOCKED');
   });
 });

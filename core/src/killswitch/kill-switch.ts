@@ -1,11 +1,16 @@
 import type { MarketProfile } from '../config/schemas.js';
 import type { JournalEventType, JournalPayloads } from '../domain/events.js';
-import type { ClientOrderId, IdFactory, InstrumentId, SessionId } from '../domain/ids.js';
-import { isTerminalOrderState, type Order, type OrderIntent } from '../domain/orders.js';
+import type { IdFactory, InstrumentId, SessionId } from '../domain/ids.js';
 import type { Position } from '../domain/positions.js';
-import type { RiskVerdict } from '../domain/risk.js';
 import { systemClock, type Clock } from '../domain/time.js';
-import type { SubmitResult } from '../oms/oms.js';
+import type { ExitEscalator } from '../oms/escalation.js';
+import {
+  buildFlattenIntent,
+  cancelAllOpenOrders,
+  flattenAllPositions,
+  type FlattenOmsPort,
+  type FlattenPorts,
+} from '../oms/flatten.js';
 import type { RiskGate, RiskGateContext } from '../risk/risk-gate.js';
 
 export type KillState = 'READY' | 'TRIPPING' | 'LOCKED';
@@ -13,12 +18,7 @@ export type KillSource = 'MANUAL' | 'AUTO';
 export type JournalSink = <K extends JournalEventType>(type: K, payload: JournalPayloads[K]) => void;
 
 /** The narrow OMS surface the kill switch needs (Oms satisfies structurally). */
-export interface KillOmsPort {
-  getOrders(): Order[];
-  getPositions(): Position[];
-  cancel(clientOrderId: ClientOrderId): Promise<void>;
-  submit(intent: OrderIntent, verdict: RiskVerdict): Promise<SubmitResult>;
-}
+export type KillOmsPort = FlattenOmsPort;
 
 export interface KillReport {
   state: KillState;
@@ -49,6 +49,8 @@ export interface KillSwitchOptions {
   clock?: Clock;
   journal?: JournalSink;
   notify?: (event: 'TRIPPED' | 'REARMED', detail: string) => void;
+  /** When present, flatten exits ride the reprice→market escalation ladder. */
+  escalator?: ExitEscalator;
   /** Protect-limit distance for flatten exits (aggressive: crosses spread). */
   protectTicks?: number;
   /** AUTO trip: feed silence while positioned. */
@@ -149,40 +151,11 @@ export class KillSwitch {
     // 1. No new entries, ever again this session (until typed re-arm).
     this.opts.target.disarm();
 
-    // 2. Cancel everything still working at the broker.
-    let cancelled = 0;
-    for (const order of this.opts.oms.getOrders()) {
-      if (isTerminalOrderState(order.state)) continue;
-      try {
-        await this.opts.oms.cancel(order.clientOrderId);
-        cancelled++;
-      } catch (err) {
-        this.journal('diag.error', { where: 'killswitch.cancel', message: String(err) });
-      }
-    }
-
-    // 3. Flatten every open position through the gate's exit lane.
-    let flattened = 0;
-    for (const pos of this.opts.oms.getPositions()) {
-      if (pos.state === 'CLOSED' || pos.qty <= 0) continue;
-      const intent = this.exitIntent(pos, reason);
-      this.journal('intent.proposed', { intent });
-      const verdict = this.opts.gate.evaluate(intent, this.opts.gateContext());
-      this.journal('risk.verdict', { verdict });
-      if (!verdict.approved) {
-        this.journal('diag.error', {
-          where: 'killswitch.flatten',
-          message: `gate rejected KILL exit: ${verdict.reason ?? 'unknown'}`,
-        });
-        continue;
-      }
-      try {
-        const result = await this.opts.oms.submit(intent, verdict);
-        if (result.accepted) flattened++;
-      } catch (err) {
-        this.journal('diag.error', { where: 'killswitch.flatten', message: String(err) });
-      }
-    }
+    // 2 + 3. Cancel everything working, then flatten through the gate's
+    // exit lane — shared with the session square-off (which must NOT lock).
+    const ports = this.flattenPorts();
+    const cancelled = await cancelAllOpenOrders(ports);
+    const flattened = await flattenAllPositions(ports, 'KILL', `kill:${reason}`);
 
     this.mode = 'LOCKED';
     const durationMs = this.clock.now() - started;
@@ -249,7 +222,8 @@ export class KillSwitch {
         openedTs: this.clock.now(),
         updatedTs: this.clock.now(),
       };
-      return this.opts.gate.evaluate(this.exitIntent(fake, 'SELF_TEST'), ctx).approved;
+      const intent = buildFlattenIntent(this.flattenPorts(), fake, 'KILL', 'kill:SELF_TEST');
+      return this.opts.gate.evaluate(intent, ctx).approved;
     });
 
     return { ok: checks.every((c) => c.ok), checks };
@@ -257,26 +231,19 @@ export class KillSwitch {
 
   // ------------------------------------------------------------ internals
 
-  private exitIntent(pos: Position, reason: string): OrderIntent {
-    const mark = this.opts.markPrice(pos.instrumentId);
-    const tick = this.opts.market.tickSizePaise;
-    const hasMark = mark !== undefined && mark > 0;
+  private flattenPorts(): FlattenPorts {
     return {
-      intentId: this.opts.ids.intentId(),
       sessionId: this.opts.sessionId,
-      strategyId: pos.strategyId,
-      ts: this.clock.now(),
-      side: 'SELL',
-      instrumentId: pos.instrumentId,
-      qty: pos.qty,
-      // With a mark: aggressive protect-limit that crosses the spread.
-      // Without one: pure market — getting flat beats price improvement.
-      type: hasMark ? 'LIMIT' : 'MARKET_PROTECT',
-      ...(hasMark ? { limitPricePaise: Math.max(tick, mark - this.protectTicks * tick) } : {}),
+      oms: this.opts.oms,
+      gate: this.opts.gate,
+      gateContext: this.opts.gateContext,
+      ids: this.opts.ids,
+      market: this.opts.market,
+      markPrice: this.opts.markPrice,
+      clock: this.clock,
+      ...(this.opts.journal !== undefined ? { journal: this.opts.journal } : {}),
       protectTicks: this.protectTicks,
-      ttlMs: 2_000,
-      tag: `kill:${reason}`,
-      purpose: 'KILL',
+      ...(this.opts.escalator !== undefined ? { escalator: this.opts.escalator } : {}),
     };
   }
 

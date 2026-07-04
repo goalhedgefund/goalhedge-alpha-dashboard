@@ -165,6 +165,14 @@ export type {
   RunnerCommandOptions,
   RunnerCommandTarget,
 } from './gateway/commands.js';
+export { ExitEscalator } from './oms/escalation.js';
+export type { EscalatorOmsPort, ExitEscalatorOptions } from './oms/escalation.js';
+export {
+  buildFlattenIntent,
+  cancelAllOpenOrders,
+  flattenAllPositions,
+} from './oms/flatten.js';
+export type { FlattenOmsPort, FlattenPorts } from './oms/flatten.js';
 export { KillSwitch } from './killswitch/kill-switch.js';
 export type {
   KillOmsPort,
