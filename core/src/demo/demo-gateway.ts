@@ -20,7 +20,8 @@ import { systemClock } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { Gateway } from '../gateway/gateway.js';
 import { registerKillCommands, registerRunnerCommands, registerSessionCommands } from '../gateway/commands.js';
-import type { GatewayState } from '../gateway/protocol.js';
+import { toGatewayLatency, type GatewayState } from '../gateway/protocol.js';
+import { LatencySampler } from '../telemetry/latency.js';
 import { KillSwitch } from '../killswitch/kill-switch.js';
 import { SessionManager } from '../session/session.js';
 import { computeUnderlyingFeatures } from '../marketdata/features/library.js';
@@ -193,6 +194,7 @@ async function main(): Promise<void> {
   });
 
   const gate = new RiskGate(market, riskProfile);
+  const latency = new LatencySampler();
   const runner = new StrategyRunner({
     sessionId,
     strategy: new S1MomentumBurst(),
@@ -229,6 +231,7 @@ async function main(): Promise<void> {
     regime: { trend: () => 1, highVolDay: () => false },
     journal: sink,
     cooldownSec: 5,
+    latency,
   });
   runnerBox.runner = runner;
 
@@ -377,10 +380,12 @@ async function main(): Promise<void> {
   ];
 
   const publish = (): void => {
+    const lat = latency.snapshot();
     gateway.set('health', {
       feedStatus: 'CONNECTED',
       lastTickTs: provider.spotTicks[provider.spotTicks.length - 1]?.ts ?? 0,
       gatewayTs: Date.now(),
+      ...(lat.total.count > 0 ? { latency: toGatewayLatency(lat) } : {}),
     });
     gateway.set('algo', {
       strategyId: 's1-momentum-burst',

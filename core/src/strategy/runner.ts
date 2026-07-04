@@ -11,6 +11,7 @@ import type { Oms } from '../oms/oms.js';
 import type { RiskGate, RiskGateContext } from '../risk/risk-gate.js';
 import type { SessionRiskState } from '../risk/session-risk.js';
 import type { StopDecision, StopEngine } from '../stops/stop-engine.js';
+import type { LatencySampler } from '../telemetry/latency.js';
 import { checkGlobal, checkOption, type EligibilityConfig, type RegimeTrend } from './eligibility.js';
 import type { EntryProposal, IStrategy, StrategyLifecycle, StrategyParams, StrategyView } from './types.js';
 
@@ -52,6 +53,8 @@ export interface StrategyRunnerOptions {
   cooldownSec?: number;
   /** When present, stop exits ride the reprice→market escalation ladder. */
   escalator?: ExitEscalator;
+  /** When present, times the entry decision hops (t_recv→t_sent) for the HUD + digest. */
+  latency?: LatencySampler;
 }
 
 /**
@@ -136,9 +139,15 @@ export class StrategyRunner {
       return;
     }
 
+    // ---- timed decision slice (t_recv → t_sent), 01-DESIGN §7 ----
+    const lat = this.opts.latency;
+    lat?.begin();
     const view: StrategyView = { ...this.opts.view.strategyView(nowMs), params: this.activeParams };
+    lat?.mark('features');
     const decision = this.opts.strategy.decide(view);
+    lat?.mark('signal');
     if (decision.kind === 'NONE') {
+      this.finishLatency();
       this.noTrade(decision.reason ?? 'NO_SIGNAL');
       return;
     }
@@ -152,6 +161,7 @@ export class StrategyRunner {
       ...(atm !== undefined ? { atmStrikePaise: atm } : {}),
     });
     if (!option.pass) {
+      this.finishLatency();
       this.noTrade(option.reason, option.detail);
       return;
     }
@@ -167,13 +177,18 @@ export class StrategyRunner {
     const intent = this.buildEntryIntent(decision, nowMs);
     this.journal('intent.proposed', { intent });
     const verdict = this.opts.gate.evaluate(intent, this.gateContext(nowMs));
+    lat?.mark('risk');
     this.journal('risk.verdict', { verdict });
-    if (!verdict.approved) return;
+    if (!verdict.approved) {
+      this.finishLatency();
+      return;
+    }
 
     this.entryInFlight = true;
     this.activeStopPlan = decision.stopPlan;
     this.trackedInstrumentId = decision.instrumentId;
-    const result = await this.opts.oms.submit(intent, verdict);
+    const result = await this.opts.oms.submit(intent, verdict, () => lat?.mark('sent'));
+    this.finishLatency();
     if (!result.accepted) {
       this.entryInFlight = false;
       this.activeStopPlan = undefined;
@@ -363,6 +378,17 @@ export class StrategyRunner {
       reason,
       ...(detail !== undefined ? { detail } : {}),
     });
+  }
+
+  /**
+   * Close the current latency decision. Records the reached hops into the
+   * rolling stats (HUD/benchmark) and journals a `latency.sample` only when an
+   * order actually went out (reached t_sent) — so the journal is not spammed on
+   * no-signal ticks. Must be called on every return path after `latency.begin()`.
+   */
+  private finishLatency(): void {
+    const hops = this.opts.latency?.end();
+    if (hops !== undefined) this.journal('latency.sample', { hops });
   }
 
   private journal<K extends JournalEventType>(type: K, payload: JournalPayloads[K]): void {

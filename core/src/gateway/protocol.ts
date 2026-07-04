@@ -15,10 +15,24 @@ import type { StrategyLifecycle, StrategyParams } from '../strategy/types.js';
  * The UI is stateless by design: snapshot + deltas reconstruct everything.
  */
 
+/** Internal tick→order latency for the Health HUD (01-DESIGN §7). */
+export interface GatewayLatency {
+  /** recv→sent total, milliseconds. */
+  totalP50Ms: number;
+  totalP99Ms: number;
+  maxMs: number;
+  /** Samples observed this session. */
+  count: number;
+  /** Per-hop p99 (ms) so the HUD can name the slow hop. */
+  hopP99Ms: { features: number; signal: number; risk: number; sent: number };
+}
+
 export interface GatewayHealth {
   feedStatus: 'CONNECTED' | 'DISCONNECTED' | 'STALE';
   lastTickTs: number;
   gatewayTs: number;
+  /** Absent until the first timed decision. */
+  latency?: GatewayLatency;
 }
 
 export interface GatewayAlgoState {
@@ -87,6 +101,33 @@ export type ClientMsg =
   | { kind: 'command'; commandId: string; type: CommandType; payload?: Record<string, unknown> }
   | { kind: 'resnapshot' }
   | { kind: 'hb'; ts: number };
+
+/**
+ * Map a LatencySampler snapshot onto the wire shape. Structurally typed so the
+ * protocol layer (shared with the UI) never imports the telemetry module.
+ */
+export function toGatewayLatency(snap: {
+  total: { p50Ms: number; p99Ms: number; maxMs: number; count: number };
+  hops: {
+    features: { p99Ms: number };
+    signal: { p99Ms: number };
+    risk: { p99Ms: number };
+    sent: { p99Ms: number };
+  };
+}): GatewayLatency {
+  return {
+    totalP50Ms: snap.total.p50Ms,
+    totalP99Ms: snap.total.p99Ms,
+    maxMs: snap.total.maxMs,
+    count: snap.total.count,
+    hopP99Ms: {
+      features: snap.hops.features.p99Ms,
+      signal: snap.hops.signal.p99Ms,
+      risk: snap.hops.risk.p99Ms,
+      sent: snap.hops.sent.p99Ms,
+    },
+  };
+}
 
 /** Apply a delta's changes to a state object (used by the UI client too). */
 export function applyChanges(state: GatewayState, changes: StateChange[]): GatewayState {

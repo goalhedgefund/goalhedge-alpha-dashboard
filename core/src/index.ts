@@ -124,6 +124,8 @@ export { SessionRiskState } from './risk/session-risk.js';
 export type { SessionRiskSnapshot } from './risk/session-risk.js';
 export { StopEngine } from './stops/stop-engine.js';
 export type { StopDecision, StopEngineOptions, StopTick, StopTriggerReason } from './stops/stop-engine.js';
+export { LATENCY_HOPS, LatencySampler, RollingLatency } from './telemetry/latency.js';
+export type { HiResClock, HopStats, LatencyHop, LatencySnapshot } from './telemetry/latency.js';
 
 export type {
   EntryProposal,
@@ -158,12 +160,13 @@ export { S2VwapFade } from './strategy/strategies/s2-vwap-fade.js';
 
 export { Gateway } from './gateway/gateway.js';
 export type { CommandHandler, CommandResult, GatewayOptions } from './gateway/gateway.js';
-export { applyChanges } from './gateway/protocol.js';
+export { applyChanges, toGatewayLatency } from './gateway/protocol.js';
 export type {
   ClientMsg,
   CommandType,
   GatewayAlgoState,
   GatewayHealth,
+  GatewayLatency,
   GatewayKillState,
   GatewayRiskState,
   GatewaySessionState,

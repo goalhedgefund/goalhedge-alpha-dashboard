@@ -60,6 +60,18 @@ export function HealthHud({
         <b className={status === 'LIVE' ? 'st-connected' : 'st-stale'}>{status}</b>
         <span>seq</span>
         <b>{lastSeq}</b>
+        {h.latency !== undefined && (
+          <>
+            <span>tick→order</span>
+            <b
+              className={h.latency.totalP99Ms < 5 ? 'st-connected' : 'st-stale'}
+              data-testid="hud-latency"
+              title={`slow hop p99 (ms): features ${h.latency.hopP99Ms.features.toFixed(3)}, signal ${h.latency.hopP99Ms.signal.toFixed(3)}, risk ${h.latency.hopP99Ms.risk.toFixed(3)}, sent ${h.latency.hopP99Ms.sent.toFixed(3)}`}
+            >
+              p50 {h.latency.totalP50Ms.toFixed(2)} / p99 {h.latency.totalP99Ms.toFixed(2)} ms
+            </b>
+          </>
+        )}
       </div>
     </section>
   );

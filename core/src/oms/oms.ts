@@ -67,7 +67,12 @@ export class Oms {
     this.adapter.onOrderEvent((ev) => this.onBrokerEvent(ev));
   }
 
-  async submit(intent: OrderIntent, verdict: RiskVerdict): Promise<SubmitResult> {
+  /**
+   * `onSent` (optional) fires synchronously the instant the order reaches SENT,
+   * BEFORE the adapter's wire call — it stamps the internal latency hop t_sent
+   * so the tick→order budget never includes broker RTT (01-DESIGN §7).
+   */
+  async submit(intent: OrderIntent, verdict: RiskVerdict, onSent?: () => void): Promise<SubmitResult> {
     if (!verdict.approved) return { order: this.draftOrder(intent), accepted: false, reason: verdict.reason ?? 'RISK_REJECTED' };
     const bucket = intent.purpose === 'ENTRY' ? this.throttle : this.exitThrottle;
     if (!bucket.tryTake()) return { order: this.draftOrder(intent), accepted: false, reason: 'THROTTLED' };
@@ -78,6 +83,7 @@ export class Oms {
     this.emit('order.created', { order: draft });
     const approved = this.transition(draft, 'RISK_APPROVED');
     const sent = this.transition(approved, 'SENT');
+    onSent?.();
     await this.adapter.placeOrder(sent);
     return { order: sent, accepted: true };
   }
