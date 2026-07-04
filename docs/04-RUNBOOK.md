@@ -12,7 +12,7 @@ instrument master refresh + weekly expiry roll check → feed connect + tick fre
 **09:15 — Open:** strategies remain DISARMED until operator issues `ARM` (deliberate human step, every day).
 **09:15–15:00 — Trading window:** entries allowed per eligibility filters; operator watches Health HUD + risk meters; **never edits configs mid-session** (params queue until flat by design).
 **15:00 — Entry cutoff** (config). **15:12 — Hard square-off** (config; ahead of broker auto-square-off).
-**Post-close (automated):** final reconciliation → daily digest (trades, hit rate, gross→charges→net waterfall, attribution, latency stats, MAE/MFE) → journal archive + tick-recording verification → session state CLOSED.
+**Post-close (automated):** final reconciliation → daily digest (trades, hit rate, gross→charges→net waterfall, attribution, latency stats, MAE) written to `journals/<date>/digest.md` + `trades.csv` (`PaperHost.squareOffAndReport`) → journal archive + tick-recording verification (`Recorder` runs every session) → session state CLOSED. Internal tick→order latency is instrumented per decision (`latency.sample`) with a **p99 < 5 ms** CI budget (01-DESIGN §7); any red on the HUD latency line is pre-kill territory.
 
 ## 2. Operator decision rules
 
@@ -52,4 +52,4 @@ Any unexplained state → **kill first**, preserve journals, snapshot SQLite, th
 
 ## 7. Change management
 
-`main` is always releasable · every behavior change re-pins the golden-session hash in review · config changes are PRs too (hash journaled at session start) · strategy changes must re-pass the 03 §10 strategy gate in paper before re-arming live · dependency updates get a full soak run before production use.
+`main` is always releasable · every behavior change re-pins the golden-session hash in review (the determinism hash is computed over all journal events **except `latency.sample`**, which carry real measured microseconds and are legitimately non-deterministic) · config changes are PRs too (hash journaled at session start) · strategy changes must re-pass the 03 §10 strategy gate in paper before re-arming live · dependency updates get a full soak run (`runSoak`) before production use.

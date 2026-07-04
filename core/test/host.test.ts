@@ -12,7 +12,9 @@ import type { Position } from '../src/domain/positions.js';
 import { ManualClock } from '../src/domain/time.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
 import { FeedMarketData } from '../src/host/feed-market-data.js';
-import { PaperHost } from '../src/host/paper-host.js';
+import { PaperHost, type PaperHostOptions } from '../src/host/paper-host.js';
+import { Recorder } from '../src/feed/recorder.js';
+import { ReplayFeed } from '../src/feed/replay.js';
 import { S1MomentumBurst } from '../src/strategy/strategies/s1-momentum-burst.js';
 
 const configDir = new URL('../../config/', import.meta.url);
@@ -50,7 +52,7 @@ function makeMarketData(): FeedMarketData {
   });
 }
 
-function buildHost(dir: string, clock: ManualClock, marketData: FeedMarketData, paper: PaperBroker): PaperHost {
+function buildHost(dir: string, clock: ManualClock, marketData: FeedMarketData, paper: PaperBroker, extra: Partial<PaperHostOptions> = {}): PaperHost {
   return new PaperHost({
     sessionId: SESSION, date: DATE, mode: 'paper', market, riskProfile,
     eligibility: {
@@ -62,6 +64,7 @@ function buildHost(dir: string, clock: ManualClock, marketData: FeedMarketData, 
     broker: paper, marketData, ids: new IdFactory(SESSION), clock,
     journalDir: dir, fsync: 'never',
     configs: [{ name: 'market', hash: 'abc123abc123', path: 'm' }, { name: 'risk', hash: 'def456def456', path: 'r' }],
+    ...extra,
   });
 }
 
@@ -236,5 +239,40 @@ describe('PaperHost — crash recovery (M10 §3, 03 §4)', () => {
     // The resumed writer continues the seq stream: first new event is priorSeq+1.
     expect(host.journalEvents()[0]?.seq).toBe(priorSeq + 1);
     await host.close();
+  }, 20_000);
+});
+
+describe('PaperHost — tick recorder grows the replay corpus (M10 §5)', () => {
+  it('records every ingested tick; the file replays back tick-for-tick', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-rec-'));
+    const clock = new ManualClock(START_10AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+    marketData.ingest(spotTick(START_10AM_IST, ATM, 100));
+    const recorder = new Recorder({ dir, compression: 'none' });
+
+    const host = buildHost(dir, clock, marketData, paper, { recorder, autoArm: false });
+    await host.start();
+
+    let ts = START_10AM_IST;
+    const feed: Tick[] = [];
+    for (let i = 0; i < 12; i++) {
+      ts += 1000; clock.set(ts);
+      const tk = spotTick(ts, ATM + i * 100, 100 + i);
+      feed.push(tk);
+      await host.ingestTick(tk);
+    }
+    expect(recorder.tickCount()).toBe(feed.length);
+    await host.close();
+    await recorder.close();
+
+    // The recorded corpus replays deterministically for the soak/backtest path.
+    const replayed: Tick[] = [];
+    const replay = new ReplayFeed({ path: recorder.path });
+    replay.setTickHandler((t) => replayed.push(t));
+    await replay.playInstant();
+    expect(replayed).toHaveLength(feed.length);
+    expect(replayed[0]?.ltpPaise).toBe(feed[0]?.ltpPaise);
+    expect(replayed.at(-1)?.ltpPaise).toBe(feed.at(-1)?.ltpPaise);
   }, 20_000);
 });
