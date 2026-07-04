@@ -156,6 +156,25 @@ export class Gateway {
       case 'strategy.noTrade':
         this.set('algo', { ...this.state.algo, lastNoTradeReason: ev.payload.reason });
         break;
+      case 'session.phase':
+        this.set('session', { ...this.state.session, phase: ev.payload.phase });
+        break;
+      case 'session.preflight':
+        this.set('session', { ...this.state.session, preflight: ev.payload.checks });
+        break;
+      case 'kill.tripped':
+        // TRIPPING is sub-second; kill.completed confirms LOCKED. Carry the reason.
+        this.set('kill', { state: 'TRIPPING', reason: ev.payload.reason });
+        break;
+      case 'kill.completed':
+        this.set('kill', {
+          state: 'LOCKED',
+          ...(this.state.kill.reason !== undefined ? { reason: this.state.kill.reason } : {}),
+        });
+        break;
+      case 'kill.rearmed':
+        this.set('kill', { state: 'READY' });
+        break;
       default:
         break;
     }

@@ -147,6 +147,7 @@ async function main(): Promise<void> {
 
   const initialState: GatewayState = {
     session: { sessionId, mode: 'paper', phase: 'OPEN', date: today },
+    kill: { state: 'READY' },
     health: { feedStatus: 'CONNECTED', lastTickTs: Date.now(), gatewayTs: Date.now() },
     algo: { strategyId: 's1-momentum-burst', lifecycle: 'DISARMED', params: {} },
     risk: {

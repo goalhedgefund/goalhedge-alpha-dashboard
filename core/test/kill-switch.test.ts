@@ -394,6 +394,7 @@ describe('gateway KILL/REARM commands + ARM lock', () => {
   function initialState(): GatewayState {
     return {
       session: { sessionId: SESSION, mode: 'paper', phase: 'OPEN', date: '2026-07-03' },
+      kill: { state: 'READY' },
       health: { feedStatus: 'CONNECTED', lastTickTs: 0, gatewayTs: 0 },
       algo: { strategyId: 's1', lifecycle: 'ARMED', params: {} },
       risk: {

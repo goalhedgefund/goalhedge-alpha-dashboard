@@ -40,6 +40,7 @@ class FakeWs implements WsLike {
 function mkState(phase = 'PREFLIGHT'): GatewayState {
   return {
     session: { sessionId: 's', mode: 'paper', phase, date: '2026-07-03' },
+    kill: { state: 'READY' },
     health: { feedStatus: 'CONNECTED', lastTickTs: 0, gatewayTs: 0 },
     algo: { strategyId: 's1', lifecycle: 'DISARMED', params: {} },
     risk: {

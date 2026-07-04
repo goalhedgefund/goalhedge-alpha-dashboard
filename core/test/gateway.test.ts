@@ -19,6 +19,7 @@ const INSTR = makeInstrumentId('NSE', 'CE1');
 function initialState(): GatewayState {
   return {
     session: { sessionId: SESSION, mode: 'paper', phase: 'PREFLIGHT', date: '2026-07-03' },
+    kill: { state: 'READY' },
     health: { feedStatus: 'CONNECTED', lastTickTs: 0, gatewayTs: 0 },
     algo: { strategyId: 's1-momentum-burst', lifecycle: 'DISARMED', params: {} },
     risk: {
@@ -332,6 +333,31 @@ describe('journal ingestion into the state tree', () => {
 
     g.ingestJournal(ev(6, 'strategy.noTrade', { strategyId: 's1', reason: 'COOLDOWN' }));
     expect(g.currentState().algo.lastNoTradeReason).toBe('COOLDOWN');
+  });
+
+  it('session.phase / session.preflight / kill.* derive the session and kill slices', () => {
+    const g = makeGateway();
+    expect(g.currentState().kill).toEqual({ state: 'READY' });
+
+    const checks = [
+      { name: 'instrument.master', ok: true, detail: 'expiry 2026-07-07' },
+      { name: 'operator.ack', ok: false },
+    ];
+    g.ingestJournal(ev(1, 'session.preflight', { sessionId: SESSION, ok: false, checks }));
+    expect(g.currentState().session.preflight).toEqual(checks);
+    // Untouched session fields survive the merge.
+    expect(g.currentState().session.mode).toBe('paper');
+
+    g.ingestJournal(ev(2, 'session.phase', { sessionId: SESSION, phase: 'OPEN', reason: 'ready' }));
+    expect(g.currentState().session.phase).toBe('OPEN');
+
+    g.ingestJournal(ev(3, 'kill.tripped', { source: 'MANUAL', reason: 'operator' }));
+    expect(g.currentState().kill).toEqual({ state: 'TRIPPING', reason: 'operator' });
+    g.ingestJournal(ev(4, 'kill.completed', { durationMs: 5, cancelledOrders: 0, flattenedPositions: 1 }));
+    // LOCKED, and the reason from the trip is carried forward.
+    expect(g.currentState().kill).toEqual({ state: 'LOCKED', reason: 'operator' });
+    g.ingestJournal(ev(5, 'kill.rearmed', { reason: 'fixed' }));
+    expect(g.currentState().kill).toEqual({ state: 'READY' });
   });
 
   it('md.bar 1m bars land in the bars slice, capped at 390; 1s bars are ignored', () => {

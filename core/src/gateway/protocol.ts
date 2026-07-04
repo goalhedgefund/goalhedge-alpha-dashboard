@@ -2,6 +2,7 @@ import type { JournalEvent } from '../domain/events.js';
 import type { Order } from '../domain/orders.js';
 import type { Bar, OptionChainRow } from '../domain/marketdata.js';
 import type { Position, Trade } from '../domain/positions.js';
+import type { PreflightCheck } from '../domain/session.js';
 import type { SessionRiskSnapshot } from '../risk/session-risk.js';
 import type { StrategyLifecycle, StrategyParams } from '../strategy/types.js';
 
@@ -37,8 +38,24 @@ export interface GatewayRiskState {
   };
 }
 
+export interface GatewaySessionState {
+  sessionId: string;
+  mode: 'paper' | 'live';
+  phase: string;
+  date: string;
+  /** Preflight checklist (technical checks + operator ACK), newest run. */
+  preflight?: PreflightCheck[];
+}
+
+export interface GatewayKillState {
+  state: 'READY' | 'TRIPPING' | 'LOCKED';
+  reason?: string;
+}
+
 export interface GatewayState {
-  session: { sessionId: string; mode: 'paper' | 'live'; phase: string; date: string };
+  session: GatewaySessionState;
+  /** Kill-switch state mirror, derived from kill.* journal events. */
+  kill: GatewayKillState;
   health: GatewayHealth;
   algo: GatewayAlgoState;
   risk: GatewayRiskState;
