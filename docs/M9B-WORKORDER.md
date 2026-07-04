@@ -99,10 +99,29 @@ check, and the reserved exit throttle lane in the OMS. Read `01-DESIGN.md`
    means caller must safe-halt. Extracted diffNetPositions from reconciler.ts
    (shared). 3 tests in session-recovery.test.ts (rebuild identical + seq
    continuity, torn-tail drop, reconcile mismatch). 233 core tests green.
-5. Gateway slices + UI (REARM button, preflight panel) + Playwright update.
-   ALSO: wire SessionManager + Reconciler + recovery into demo-gateway/runtime;
-   watchdog + clock-skew trips (work order item 5).
-6. Chaos suite; tag `m9b`.
+5. ✅ DONE: gateway session/kill slices + UI + Playwright.
+   - 5a (commit cf52dd6): GatewayState gains `session.preflight?: PreflightCheck[]`
+     + top-level `kill: { state, reason? }` slice; Gateway.ingestJournal derives
+     both from the journal (session.phase / session.preflight /
+     kill.tripped→TRIPPING → kill.completed→LOCKED carrying reason →
+     kill.rearmed→READY). Exported GatewaySessionState/GatewayKillState. +1
+     gateway derivation test (234 core).
+   - 5b (commit 08019d2): PreflightPanel (checklist + ACK_PREFLIGHT button),
+     KillSwitch panel re-arm box (reason input + RE-ARM sending typed
+     {confirm:'REARM',reason}, disabled until reason entered), ModeBanner kill
+     badge. Demo-gateway now runs a real SessionManager: preflight→ACK→OPEN at
+     boot (seeds a spot tick so feed.fresh passes; kill notify→session.onKill).
+     Playwright +（a2) preflight ALL PASS + ACK, +(f) re-arm→ARM. 7 e2e green.
+   NOTE: canArm NOT wired into demo runner-commands (kept ARM robust vs session
+     phase; canArm gating is unit-tested in session.test.ts). Reconciler +
+     recovery NOT wired into the demo runtime (they are library-tested; the demo
+     is a scripted single-position loop with no drift/restart to exercise) —
+     wire into the real live/paper host in M10, not the demo.
+   DEFERRED to step 6: watchdog + clock-skew trips (scope item 5) — they are
+     KillSwitch AUTO trips, natural to add alongside the chaos tests that
+     exercise them.
+6. Chaos suite (core/test/chaos.test.ts) per 03 §4 + watchdog/clock-skew trips
+   on the KillSwitch; then tag `m9b`.
 
 ## Cautions
 - Do not let square-off LOCK the session (only kill locks).
