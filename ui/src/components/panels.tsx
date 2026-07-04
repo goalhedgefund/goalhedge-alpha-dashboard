@@ -294,7 +294,13 @@ export function PreflightPanel({ state, client }: { state: GatewayState; client:
 
 export function PositionsPanel({ state }: { state: GatewayState }): JSX.Element {
   const open = state.positions.filter((p) => p.state !== 'CLOSED' && p.qty > 0);
-  const lastMove = [...state.events].reverse().find((e) => e.type === 'stop.moved');
+  // Latest stop.moved PER position, not one global newest — with >1 open
+  // position a single shared value would mislabel every position but the most
+  // recently moved. events are oldest→newest, so last write wins.
+  const stopByPos = new Map<string, Extract<JEvent, { type: 'stop.moved' }>['payload']['to']>();
+  for (const e of state.events) {
+    if (e.type === 'stop.moved') stopByPos.set(e.payload.positionId, e.payload.to);
+  }
   return (
     <section className="panel" data-testid="positions-panel">
       <h2>POSITIONS &amp; STOPS</h2>
@@ -307,10 +313,7 @@ export function PositionsPanel({ state }: { state: GatewayState }): JSX.Element 
           const row = state.chain.find((r) => r.instrumentId === p.instrumentId);
           const ltp = row?.ltpPaise ?? 0;
           const unreal = ltp > 0 ? (ltp - p.avgEntryPricePaise) * p.qty : 0;
-          const stop =
-            lastMove !== undefined && lastMove.type === 'stop.moved' && lastMove.payload.positionId === p.positionId
-              ? lastMove.payload.to
-              : undefined;
+          const stop = stopByPos.get(p.positionId);
           return (
             <div key={p.positionId} className="position" data-testid="open-position">
               <div className="kv">
@@ -536,6 +539,16 @@ function summarize(e: JEvent): string {
       return e.payload.accepted ? 'ok' : `rejected ${e.payload.reason ?? ''}`;
     case 'risk.sessionStop':
       return e.payload.kind;
+    case 'kill.tripped':
+      return `${e.payload.source} — ${e.payload.reason}`;
+    case 'kill.completed':
+      return `flat: ${e.payload.flattenedPositions} pos, ${e.payload.cancelledOrders} ord (${e.payload.durationMs}ms)`;
+    case 'kill.rearmed':
+      return `re-armed: ${e.payload.reason}`;
+    case 'recon.result':
+      return e.payload.ok ? 'GREEN' : `MISMATCH ${String((e.payload.diffs as { state?: string } | undefined)?.state ?? '')}`.trim();
+    case 'session.phase':
+      return `${e.payload.phase}${e.payload.reason !== undefined ? ` (${e.payload.reason})` : ''}`;
     default:
       return '';
   }
