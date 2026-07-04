@@ -235,4 +235,9 @@ export type {
   SelfTestCheck,
 } from './killswitch/kill-switch.js';
 
+export { FeedMarketData } from './host/feed-market-data.js';
+export type { FeedMarketDataOptions, OptionSpec, TickKind } from './host/feed-market-data.js';
+export { PaperHost } from './host/paper-host.js';
+export type { GatewayPort, HostStartResult, PaperHostOptions, TickRecorderPort } from './host/paper-host.js';
+
 export const CORE_VERSION = '0.1.0';
