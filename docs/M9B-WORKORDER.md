@@ -66,7 +66,11 @@ check, and the reserved exit throttle lane in the OMS. Read `01-DESIGN.md`
    acks unchanged (already covered in oms.test — extend if gaps).
 
 ## Order of work (commit each green step)
-1. Shared flatten helper extraction + escalation ladder + tests.
+1. ✅ DONE (commit 947e8f3): flatten.ts (buildFlattenIntent/cancelAllOpenOrders/
+   flattenAllPositions), escalation.ts (ExitEscalator, stageTimeoutMs 750,
+   repriceTicks 10, event 'exit.escalated'), KillSwitch refactored onto helpers
+   (+ optional escalator), runner tracks stop exits + polls on onTimer,
+   PaperBroker.holdFills(instr, count) chaos knob. 7 tests in escalation.test.ts.
 2. Session module + preflight + ACK_PREFLIGHT + square-off + tests.
 3. Reconciler + auto-kill wiring + tests.
 4. Crash recovery + tests.
