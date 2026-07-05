@@ -5,6 +5,7 @@ import type { Position } from '../domain/positions.js';
 import type { RiskVerdict } from '../domain/risk.js';
 import type { OptionChainRow } from '../domain/marketdata.js';
 import type { SessionRiskSnapshot } from './session-risk.js';
+import { computeCharges } from '../charges/engine.js';
 
 export type RiskRejectReason =
   | 'SESSION_STOP_LATCHED'
@@ -16,6 +17,7 @@ export type RiskRejectReason =
   | 'LIQUIDITY_FLOOR'
   | 'MISSING_STOP_PLAN'
   | 'INVALID_STOP_PLAN'
+  | 'COST_GATE'
   | 'PER_TRADE_RISK'
   | 'POSITION_LIMIT'
   | 'MAX_LOTS_PER_ORDER'
@@ -112,6 +114,7 @@ export class RiskGate {
     const entry = intent.limitPricePaise ?? row.askPaise;
     const riskPaise = Math.max(0, entry - intent.stopPlan.hardStopPremiumPaise) * intent.qty;
     if (entry <= 0 || intent.stopPlan.hardStopPremiumPaise >= entry) return reject('INVALID_STOP_PLAN', riskPaise);
+    if (!this.costGatePasses(intent, row, entry)) return reject('COST_GATE', riskPaise);
     const budget = Math.round(this.risk.capitalPaise * (this.risk.perTradeRiskPct / 100));
     if (riskPaise > budget) return reject('PER_TRADE_RISK', riskPaise);
 
@@ -127,5 +130,27 @@ export class RiskGate {
       approved: true,
       riskPaise,
     };
+  }
+
+  private costGatePasses(intent: OrderIntent, row: OptionChainRow, entryPaise: number): boolean {
+    const cfg = this.risk.costGate;
+    if (cfg === undefined || !cfg.enabled) return true;
+
+    const expectedMovePaise = Math.round(entryPaise * (cfg.minExpectedMovePct / 100));
+    if (expectedMovePaise <= 0) return false;
+    const expectedExitPaise = entryPaise + expectedMovePaise;
+    const charges = computeCharges(
+      [
+        { side: 'BUY', qty: intent.qty, pricePaise: entryPaise },
+        { side: 'SELL', qty: intent.qty, pricePaise: expectedExitPaise },
+      ],
+      this.market,
+    ).totalPaise;
+    const spreadPaise = row.askPaise > 0 && row.bidPaise > 0 ? row.askPaise - row.bidPaise : entryPaise;
+    const slippagePaise = cfg.slippageTicks * this.market.tickSizePaise * 2;
+    const frictionPaise = charges + Math.max(0, spreadPaise + slippagePaise) * intent.qty;
+    if (frictionPaise <= 0) return true;
+    const expectedGrossPaise = expectedMovePaise * intent.qty;
+    return expectedGrossPaise >= frictionPaise * cfg.minRewardToCost;
   }
 }

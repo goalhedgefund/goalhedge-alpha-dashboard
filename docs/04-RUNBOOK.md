@@ -36,6 +36,7 @@ Kill-switch drill during a live-data paper session (flatten time vs budget) · c
 | Loss streak | 3 consecutive → 30 min cooldown | |
 | Max trades/day | 15 | scalping ≠ overtrading |
 | Max concurrent positions | 1 | v1 |
+| Cost gate | min expected move 8%, reward/friction >= 1.5x | accounts for spread, slippage, and charges before entry |
 | Position size | fixed-fractional, **never Kelly** | per prior in-house research (in-sample Kelly oversizes 5–9×) |
 
 ## 5. India compliance checklist (execute at live-broker selection; owner: operator)

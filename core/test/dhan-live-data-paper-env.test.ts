@@ -30,11 +30,16 @@ DHAN_SCRIP_MASTER_PATH=data/dhan/api-scrip-master.csv
     expect(env.clientId).toBe('client-1');
     expect(env.accessToken).toBe('token-1');
     expect(env.scripMasterPath).toBe('data/dhan/api-scrip-master.csv');
+    expect(env.strategyId).toBe('s1-momentum-burst');
     expect(env.spotSecurityId).toBe('13');
     expect(env.spotExchangeSegment).toBe('IDX_I');
     expect(env.optionExchangeSegment).toBe('NSE_FNO');
     expect(env.feedRequestCode).toBe(21);
     expect(env.autoArm).toBe(false);
+    expect(env.regimeTrendRet30Pct).toBe(0.0015);
+    expect(env.paperSlippageTicks).toBe(1);
+    expect(env.paperAckLatencyMs).toBe(80);
+    expect(env.paperFillLatencyMs).toBe(120);
   });
 
   it('lets process env override values from the env file', () => {
@@ -52,6 +57,10 @@ DHAN_SCRIP_MASTER_PATH=file.csv
       DHAN_WS_URL: 'wss://process.example',
       DHAN_AUTO_ARM: 'yes',
       DHAN_INITIAL_SPOT_RUPEES: '24501.25',
+      DHAN_STRATEGY_ID: 's2-vwap-fade',
+      DHAN_PAPER_SLIPPAGE_TICKS: '2',
+      DHAN_PAPER_ACK_LATENCY_MS: '90',
+      DHAN_PAPER_FILL_LATENCY_MS: '140',
     });
 
     expect(env.clientId).toBe('process-client');
@@ -59,6 +68,10 @@ DHAN_SCRIP_MASTER_PATH=file.csv
     expect(env.wsUrl).toBe('wss://process.example');
     expect(env.autoArm).toBe(true);
     expect(env.initialSpotPaise).toBe(2_450_125);
+    expect(env.strategyId).toBe('s2-vwap-fade');
+    expect(env.paperSlippageTicks).toBe(2);
+    expect(env.paperAckLatencyMs).toBe(90);
+    expect(env.paperFillLatencyMs).toBe(140);
   });
 
   it('fails clearly when required Dhan runtime keys are missing', () => {

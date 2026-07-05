@@ -10,6 +10,7 @@ export interface DhanLiveDataPaperEnv {
   accessToken: string;
   scripMasterPath: string;
   underlyingSymbol: string;
+  strategyId: string;
   spotSecurityId: string;
   spotExchangeSegment: string;
   optionExchangeSegment: string;
@@ -24,6 +25,13 @@ export interface DhanLiveDataPaperEnv {
   maxSpreadPct: number;
   minOi: number;
   minVolume: number;
+  regimeTrendRet30Pct: number;
+  regimeTrendVwapPct: number;
+  regimeHighVolRet30Pct: number;
+  regimeHighVolAtrPct: number;
+  paperSlippageTicks: number;
+  paperAckLatencyMs: number;
+  paperFillLatencyMs: number;
   initialSpotPaise?: number;
 }
 
@@ -58,6 +66,7 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     accessToken: requireString(vars, 'DHAN_ACCESS_TOKEN', envPath),
     scripMasterPath: requireString(vars, 'DHAN_SCRIP_MASTER_PATH', envPath),
     underlyingSymbol: getString(vars, 'DHAN_UNDERLYING_SYMBOL', 'NIFTY').toUpperCase(),
+    strategyId: getStrategyId(vars, 'DHAN_STRATEGY_ID', 's1-momentum-burst'),
     spotSecurityId: getString(vars, 'DHAN_SPOT_SECURITY_ID', '13'),
     spotExchangeSegment: getString(vars, 'DHAN_SPOT_EXCHANGE_SEGMENT', 'IDX_I'),
     optionExchangeSegment: getString(vars, 'DHAN_OPTION_EXCHANGE_SEGMENT', 'NSE_FNO'),
@@ -72,6 +81,13 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     maxSpreadPct: getNumber(vars, 'DHAN_MAX_SPREAD_PCT', 0.015, 0),
     minOi: getInt(vars, 'DHAN_MIN_OI', 100, 0),
     minVolume: getInt(vars, 'DHAN_MIN_VOLUME', 100, 0),
+    regimeTrendRet30Pct: getNumber(vars, 'DHAN_REGIME_TREND_RET30_PCT', 0.0015, 0),
+    regimeTrendVwapPct: getNumber(vars, 'DHAN_REGIME_TREND_VWAP_PCT', 0.0005, 0),
+    regimeHighVolRet30Pct: getNumber(vars, 'DHAN_REGIME_HIGH_VOL_RET30_PCT', 0.006, 0),
+    regimeHighVolAtrPct: getNumber(vars, 'DHAN_REGIME_HIGH_VOL_ATR_PCT', 0.006, 0),
+    paperSlippageTicks: getInt(vars, 'DHAN_PAPER_SLIPPAGE_TICKS', 1, 0),
+    paperAckLatencyMs: getInt(vars, 'DHAN_PAPER_ACK_LATENCY_MS', 80, 0),
+    paperFillLatencyMs: getInt(vars, 'DHAN_PAPER_FILL_LATENCY_MS', 120, 0),
     ...(initialSpotPaise !== undefined ? { initialSpotPaise } : {}),
   };
 }
@@ -115,6 +131,14 @@ function getBool(vars: Record<string, string>, key: string, fallback: boolean): 
   if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
   if (['0', 'false', 'no', 'off'].includes(raw)) return false;
   throw new Error(`${key} must be one of true/false, yes/no, on/off, or 1/0`);
+}
+
+function getStrategyId(vars: Record<string, string>, key: string, fallback: string): string {
+  const value = getString(vars, key, fallback);
+  if (!/^[a-z0-9-]+$/.test(value)) {
+    throw new Error(`${key} must contain only lowercase letters, numbers, and '-'`);
+  }
+  return value;
 }
 
 function parseInitialSpotPaise(vars: Record<string, string>): number | undefined {

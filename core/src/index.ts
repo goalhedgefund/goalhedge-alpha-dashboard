@@ -175,6 +175,8 @@ export type {
   RegimeProvider,
   StrategyRunnerOptions,
 } from './strategy/runner.js';
+export { FeatureRegimeProvider } from './strategy/regime.js';
+export type { FeatureRegimeProviderOptions } from './strategy/regime.js';
 export { S1MomentumBurst } from './strategy/strategies/s1-momentum-burst.js';
 export { S2VwapFade } from './strategy/strategies/s2-vwap-fade.js';
 

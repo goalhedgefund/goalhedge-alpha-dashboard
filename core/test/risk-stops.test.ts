@@ -145,6 +145,20 @@ describe('RiskGate ordered checks', () => {
     expect(verdict.reason).toBe('FREEZE_QTY');
   });
 
+  it('COST_GATE rejects entries whose expected move cannot clear friction', () => {
+    const ids = new IdFactory(SESSION);
+    const strictRisk: RiskProfile = {
+      ...risk,
+      costGate: { enabled: true, minExpectedMovePct: 0.1, slippageTicks: 5, minRewardToCost: 10 },
+    };
+    const gate = new RiskGate(market, strictRisk);
+
+    const verdict = gate.evaluate(intent(ids), context());
+
+    expect(verdict.approved).toBe(false);
+    expect(verdict.reason).toBe('COST_GATE');
+  });
+
   it('property: approved entry risk never exceeds configured budget', () => {
     fc.assert(
       fc.property(

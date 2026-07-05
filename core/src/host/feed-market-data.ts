@@ -2,7 +2,7 @@ import type { InstrumentId } from '../domain/ids.js';
 import type { Instrument, OptionRight } from '../domain/instrument.js';
 import type { Bar, OptionChainRow, Tick } from '../domain/marketdata.js';
 import { BarBuilder } from '../feed/bar-builder.js';
-import { computeUnderlyingFeatures } from '../marketdata/features/library.js';
+import { computeOptionFeatures, computeUnderlyingFeatures } from '../marketdata/features/library.js';
 import { OptionChainState } from '../marketdata/chain-state.js';
 import type { MarketViewProvider } from '../strategy/runner.js';
 import type { OptionView, StrategyView } from '../strategy/types.js';
@@ -20,6 +20,8 @@ export interface FeedMarketDataOptions {
   strikeStepPaise: number;
   /** Spot ticks retained for the feature window (default 240 ≈ 1 min @ 250ms). */
   spotRingSize?: number;
+  /** Option ticks retained per instrument for premium velocity/spread stability. */
+  optionRingSize?: number;
   chainDepth?: number;
 }
 
@@ -43,7 +45,9 @@ export class FeedMarketData implements MarketViewProvider {
   private readonly byStrikeRight = new Map<string, InstrumentId>();
   private readonly strikes: number[];
   private readonly ringSize: number;
+  private readonly optionRingSize: number;
   private readonly spotTicks: Tick[] = [];
+  private readonly optionTicks = new Map<InstrumentId, Tick[]>();
   private atmStrike: number | undefined;
   // Session VWAP accumulators (design §2.2: VWAP of the DAY, not of the ring).
   private cumTurnover = 0;
@@ -62,6 +66,7 @@ export class FeedMarketData implements MarketViewProvider {
       this.barSink?.(bar);
     });
     this.ringSize = opts.spotRingSize ?? 240;
+    this.optionRingSize = opts.optionRingSize ?? 120;
     const instruments: Instrument[] = opts.options.map((o) => ({
       id: o.instrumentId,
       kind: 'OPTION',
@@ -81,7 +86,10 @@ export class FeedMarketData implements MarketViewProvider {
       ...(opts.chainDepth !== undefined ? { depth: opts.chainDepth } : {}),
     });
     this.optionIds = new Set(opts.options.map((o) => o.instrumentId));
-    for (const o of opts.options) this.byStrikeRight.set(key(o.strikePaise, o.right), o.instrumentId);
+    for (const o of opts.options) {
+      this.byStrikeRight.set(key(o.strikePaise, o.right), o.instrumentId);
+      this.optionTicks.set(o.instrumentId, []);
+    }
     this.strikes = [...new Set(opts.options.map((o) => o.strikePaise))].sort((a, b) => a - b);
   }
 
@@ -102,6 +110,10 @@ export class FeedMarketData implements MarketViewProvider {
       this.barBuilder.onTick(tick);
       this.atmStrike = this.chain.updateSpot(tick.ltpPaise).atmStrikePaise;
     } else if (kind === 'option') {
+      const ticks = this.optionTicks.get(tick.instrumentId) ?? [];
+      ticks.push(tick);
+      if (ticks.length > this.optionRingSize) ticks.splice(0, ticks.length - this.optionRingSize);
+      this.optionTicks.set(tick.instrumentId, ticks);
       this.chain.updateTick(tick);
     }
     return kind;
@@ -163,7 +175,12 @@ export class FeedMarketData implements MarketViewProvider {
     const id = this.byStrikeRight.get(key(strike, right)) ?? this.nearestId(strike, right);
     if (id === undefined) return undefined;
     const row = this.chain.row(id);
-    return row !== undefined ? { instrumentId: id, row } : undefined;
+    if (row === undefined) return undefined;
+    return {
+      instrumentId: id,
+      row,
+      features: computeOptionFeatures(row, this.optionTicks.get(id) ?? [], this.atmStrike),
+    };
   }
 
   private nearestStrike(): number | undefined {

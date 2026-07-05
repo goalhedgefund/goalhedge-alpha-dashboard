@@ -9,5 +9,11 @@
   "lossStreak": { "count": 3, "cooldownMin": 30 },
   "maxTradesPerDay": 15,
   "maxConcurrentPositions": 1,
-  "maxLotsPerOrder": 24
+  "maxLotsPerOrder": 24,
+  "costGate": {
+    "enabled": true,
+    "minExpectedMovePct": 8,
+    "slippageTicks": 1,
+    "minRewardToCost": 1.5
+  }
 }

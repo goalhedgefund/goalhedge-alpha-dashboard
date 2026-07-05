@@ -22,7 +22,10 @@ import {
   type ScripRow,
   type WeeklyChainResult,
 } from '../marketdata/instrument-master.js';
+import type { IStrategy } from '../strategy/types.js';
+import { FeatureRegimeProvider } from '../strategy/regime.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
+import { S2VwapFade } from '../strategy/strategies/s2-vwap-fade.js';
 import { FeedMarketData, type OptionSpec } from './feed-market-data.js';
 import { loadDhanLiveDataPaperEnv, type DhanLiveDataPaperEnv } from './dhan-live-data-paper-env.js';
 import { PaperHost } from './paper-host.js';
@@ -166,6 +169,17 @@ function marketWithLiveChainFacts(market: MarketProfile, weekly: WeeklyChainResu
   };
 }
 
+function makeStrategy(strategyId: string): IStrategy {
+  switch (strategyId) {
+    case 's1-momentum-burst':
+      return new S1MomentumBurst();
+    case 's2-vwap-fade':
+      return new S2VwapFade();
+    default:
+      throw new Error(`Unsupported DHAN_STRATEGY_ID=${strategyId}`);
+  }
+}
+
 function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBuild {
   const root = repoRoot();
   const configDir = new URL('../../../config/', import.meta.url);
@@ -173,7 +187,10 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   const sessionId = makeSessionId(date, 'paper');
   const marketCfg = loadConfig(MarketProfileSchema, fileURLToPath(new URL('market/india-nse-options.json', configDir)));
   const riskCfg = loadConfig(RiskProfileSchema, fileURLToPath(new URL('risk/paper-default.json', configDir)));
-  const strategyCfg = loadConfig(StrategyConfigSchema, fileURLToPath(new URL('strategy/s1-momentum-burst.json', configDir)));
+  const strategyCfg = loadConfig(StrategyConfigSchema, fileURLToPath(new URL(`strategy/${env.strategyId}.json`, configDir)));
+  if (strategyCfg.value.strategyId !== env.strategyId) {
+    throw new Error(`Strategy config id mismatch: requested ${env.strategyId}, file declares ${strategyCfg.value.strategyId}`);
+  }
 
   const scripMasterPath = resolveRepoPath(root, env.scripMasterPath);
   const scripRows = loadScripMaster(scripMasterPath);
@@ -198,10 +215,16 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   mkdirSync(journalDir, { recursive: true });
   mkdirSync(tickDir, { recursive: true });
 
-  const paper = new PaperBroker({ clock: systemClock, tickSizePaise: market.tickSizePaise });
+  const paper = new PaperBroker({
+    clock: systemClock,
+    tickSizePaise: market.tickSizePaise,
+    slippageTicks: env.paperSlippageTicks,
+    ackLatencyMs: env.paperAckLatencyMs,
+    fillLatencyMs: env.paperFillLatencyMs,
+  });
   const recorder = new Recorder({ dir: tickDir, compression: 'gzip' });
   const ids = new IdFactory(sessionId);
-  const strategy = new S1MomentumBurst();
+  const strategy = makeStrategy(strategyCfg.value.strategyId);
   const commandJournal = { host: undefined as PaperHost | undefined };
   const gateway = new Gateway({
     port: env.gatewayPort,
@@ -231,7 +254,14 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     },
     strategy,
     params: strategyCfg.value.params,
-    regime: { trend: () => 1, highVolDay: () => false },
+    regime: new FeatureRegimeProvider({
+      view: marketData,
+      clock: systemClock,
+      trendRet30Pct: env.regimeTrendRet30Pct,
+      trendVwapPct: env.regimeTrendVwapPct,
+      highVolRet30Pct: env.regimeHighVolRet30Pct,
+      highVolAtrPct: env.regimeHighVolAtrPct,
+    }),
     ...(typeof strategyCfg.value.params.cooldownSec === 'number' ? { cooldownSec: strategyCfg.value.params.cooldownSec } : {}),
     broker: paper,
     marketData,
@@ -245,7 +275,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     ],
     resolveChain: () => weekly,
     feedStaleMs: env.feedStaleMs,
-    autoArm: env.autoArm,
+    autoArm: env.autoArm && strategyCfg.value.enabled,
     recorder,
     gateway,
     quoteSink: (instrumentId, quote) => paper.setQuote(instrumentId, quote),
@@ -290,7 +320,7 @@ async function main(): Promise<void> {
   console.log(`[scalper] ticks: ${build.tickDir}`);
   console.log(`[scalper] selected strikes: ${build.selectedStrikes.map(formatPaise).join(', ')}`);
   if (build.disabledStrategyConfig) {
-    console.warn('[scalper] strategy config is enabled=false; runner is available, but auto-arm remains controlled by DHAN_AUTO_ARM/UI.');
+    console.warn('[scalper] strategy config is enabled=false; auto-arm and UI ARM are blocked until the config is enabled.');
   }
 
   await build.feed.connect();
@@ -311,7 +341,10 @@ async function main(): Promise<void> {
     },
     {
       isLocked: () => build.host.killLocked(),
-      canArm: () => build.host.canArm(),
+      canArm: () => {
+        if (build.disabledStrategyConfig) return { ok: false, reason: 'STRATEGY_DISABLED' };
+        return build.host.canArm();
+      },
     },
   );
   registerKillCommands(build.gateway, {

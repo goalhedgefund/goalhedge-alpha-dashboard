@@ -18,6 +18,7 @@ describe('config round trip (M0 acceptance)', () => {
     ['market/india-nse-options.json', MarketProfileSchema],
     ['risk/paper-default.json', RiskProfileSchema],
     ['strategy/s1-momentum-burst.json', StrategyConfigSchema],
+    ['strategy/s2-vwap-fade.json', StrategyConfigSchema],
   ] as const;
 
   for (const [rel, schema] of cases) {

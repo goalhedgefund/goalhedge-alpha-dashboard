@@ -68,6 +68,17 @@ export const RiskProfileSchema = z.object({
   maxTradesPerDay: z.number().int().min(1),
   maxConcurrentPositions: z.number().int().min(1),
   maxLotsPerOrder: z.number().int().min(1),
+  costGate: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Minimum expected favorable premium move as % of entry premium. */
+      minExpectedMovePct: z.number().positive(),
+      /** Estimated round-trip slippage, per side, in exchange ticks. */
+      slippageTicks: z.number().int().min(0).default(1),
+      /** Required expected gross edge divided by friction cost. */
+      minRewardToCost: z.number().positive().default(1.5),
+    })
+    .optional(),
 });
 
 export const StrategyConfigSchema = z.object({
