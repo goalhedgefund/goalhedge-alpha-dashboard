@@ -297,7 +297,7 @@ function scoreTrendFromCloses(closes = [], end = closes.length, combo = DEFAULT_
 async function postDhanIntraday(symbolRow, fromDate, toDate, interval = '1') {
   const clientId = process.env.DHAN_CLIENT_ID || '';
   const token = process.env.DHAN_ACCESS_TOKEN || '';
-  if (!clientId || !token) throw new Error('Missing DHAN_CLIENT_ID or DHAN_ACCESS_TOKEN in .env');
+  if (!clientId || !token) throw new Error(`Missing DHAN_CLIENT_ID or DHAN_ACCESS_TOKEN in ${env.dhanEnvFile || 'D:\\DHAN_LOGIN\\.env'}`);
   const body = {
     securityId: String(symbolRow.securityId),
     exchangeSegment: symbolRow.exchangeSegment || 'NSE_EQ',

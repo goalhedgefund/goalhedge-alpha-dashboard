@@ -14,8 +14,8 @@ Standalone local dashboard for the validated 15-minute Multiscript scalper setup
 
 ## Run
 
-1. Copy `.env.example` to `.env`.
-2. Fill in `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN`.
+1. Keep Dhan credentials in `D:\DHAN_LOGIN\.env`.
+2. Copy `.env.example` to `.env` for app settings.
 3. Confirm these settings remain unchanged:
 
 ```text

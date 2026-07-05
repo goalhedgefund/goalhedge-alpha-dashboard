@@ -1,8 +1,10 @@
 const path = require('node:path');
 const dotenv = require('dotenv');
+const { loadDhanEnv } = require('./dhan-env');
 
 const rootDir = path.resolve(__dirname, '..', '..');
 dotenv.config({ path: path.join(rootDir, '.env') });
+const dhanEnv = loadDhanEnv();
 
 function num(value, fallback) {
   const parsed = Number(value);
@@ -20,6 +22,8 @@ const env = {
   clientDir: path.join(rootDir, 'client'),
   serverDir: path.join(rootDir, 'server'),
   dataDir: path.join(rootDir, 'data'),
+  dhanEnvFile: dhanEnv.envFile,
+  dhanEnvLoaded: dhanEnv.loaded,
   logDir: path.join(rootDir, 'data', 'trade-logs'),
   replayLogDir: path.join(rootDir, 'data', 'trade-logs', 'replay'),
   replaySourceDir: process.env.MULTISCRIPT_REPLAY_SOURCE_DIR || 'D:\\CODEX\\data\\futures-eligible-cash-candles',
