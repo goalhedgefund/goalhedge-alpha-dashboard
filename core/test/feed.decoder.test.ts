@@ -18,6 +18,7 @@ import {
   decodeDhanBuffer,
   type DhanDisconnectPacket,
   type DhanFullPacket,
+  type DhanIndexPacket,
   type DhanLtpPacket,
   type DhanOiPacket,
   type DhanQuotePacket,
@@ -35,6 +36,32 @@ function makeHeader(buf: Buffer, code: number, length: number, segment: number, 
   buf.writeUInt8(segment, 3);
   buf.writeUInt32LE(secId, 4);
 }
+
+describe('code 1 - Index packet', () => {
+  it('decodes index ltp and normalizes it to a spot tick', () => {
+    const buf = Buffer.alloc(16, 0);
+    makeHeader(buf, 1, 16, 0, 13);
+    buf.writeFloatLE(24501.25, 8);
+    buf.writeInt32LE(1782000000, 12);
+
+    const [p] = decodeDhanBuffer(buf);
+    expect(p?.code).toBe(1);
+    expect(p?.exchangeSegment).toBe('IDX_I');
+    if (p?.code === 1) {
+      const index = p as DhanIndexPacket;
+      expect(index.securityId).toBe('13');
+      expect(index.ltp).toBeCloseTo(24501.25, 2);
+    }
+
+    const spotId = makeInstrumentId('NSE', 'NIFTY_SPOT');
+    const tick = dhanPacketToTick(p!, 1_782_001_000_000, new Map([['13', spotId]]));
+    expect(tick).not.toBeNull();
+    expect(tick!.instrumentId).toBe(spotId);
+    expect(tick!.ltpPaise).toBe(2_450_125);
+    expect(tick!.ts).toBe(1_782_000_000_000);
+    expect(tick!.qty).toBe(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Code 2 — LTP only (16 bytes)

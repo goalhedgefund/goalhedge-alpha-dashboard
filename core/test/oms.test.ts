@@ -11,12 +11,12 @@ import type { BrokerOrderEvent, IBrokerAdapter } from '../src/exec/adapter.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
 import { TradesWriter } from '../src/exec/trades-writer.js';
 import { IdFactory, makeInstrumentId, makeSessionId, type ClientOrderId } from '../src/domain/ids.js';
-import type { Order, OrderIntent } from '../src/domain/orders.js';
+import { ORDER_STATES, type Order, type OrderIntent } from '../src/domain/orders.js';
 import type { Position } from '../src/domain/positions.js';
 import type { RiskVerdict } from '../src/domain/risk.js';
 import { ManualClock } from '../src/domain/time.js';
 import { Oms } from '../src/oms/oms.js';
-import { IllegalOrderTransitionError, transitionOrder } from '../src/oms/state-machine.js';
+import { canTransition, IllegalOrderTransitionError, transitionOrder } from '../src/oms/state-machine.js';
 import { TokenBucket } from '../src/oms/throttle.js';
 
 const configDir = new URL('../../config/', import.meta.url);
@@ -112,6 +112,69 @@ describe('OMS state machine', () => {
     const approvedOrder = transitionOrder(base, 'RISK_APPROVED', 2);
     expect(approvedOrder.state).toBe('RISK_APPROVED');
     expect(() => transitionOrder(base, 'SENT', 2)).toThrow(IllegalOrderTransitionError);
+  });
+
+  it('pins the full legal transition table', () => {
+    const expected = new Map<string, readonly string[]>([
+      ['DRAFT', ['RISK_APPROVED']],
+      ['RISK_APPROVED', ['SENT', 'EXPIRED']],
+      ['SENT', ['ACKED', 'PARTIAL', 'FILLED', 'REJECTED', 'CANCELLED', 'EXPIRED']],
+      ['ACKED', ['PARTIAL', 'FILLED', 'REJECTED', 'CANCELLED', 'EXPIRED']],
+      ['PARTIAL', ['PARTIAL', 'FILLED', 'CANCELLED', 'EXPIRED']],
+      ['FILLED', []],
+      ['REJECTED', []],
+      ['CANCELLED', []],
+      ['EXPIRED', []],
+    ]);
+
+    for (const from of ORDER_STATES) {
+      for (const to of ORDER_STATES) {
+        expect(canTransition(from, to), `${from} -> ${to}`).toBe(expected.get(from)?.includes(to) ?? false);
+      }
+    }
+  });
+});
+
+describe('TokenBucket broker-limit windows', () => {
+  it('enforces burst capacity and clamps refill at capacity', () => {
+    const clock = new ManualClock(0);
+    const bucket = new TokenBucket({ capacity: 3, refillPerSec: 1, clock });
+
+    expect([bucket.tryTake(), bucket.tryTake(), bucket.tryTake(), bucket.tryTake()]).toEqual([true, true, true, false]);
+    clock.advance(10_000);
+    expect(bucket.available()).toBe(3);
+  });
+
+  it('refills at the sustained rate without granting early tokens', () => {
+    const clock = new ManualClock(0);
+    const bucket = new TokenBucket({ capacity: 2, refillPerSec: 2, clock });
+
+    expect(bucket.tryTake(2)).toBe(true);
+    clock.advance(249);
+    expect(bucket.tryTake()).toBe(false);
+    clock.advance(251);
+    expect(bucket.tryTake()).toBe(true);
+    expect(bucket.tryTake()).toBe(false);
+  });
+
+  it('composes per-second, per-minute, and per-day windows by requiring all buckets', () => {
+    const clock = new ManualClock(0);
+    const perSecond = new TokenBucket({ capacity: 2, refillPerSec: 2, clock });
+    const perMinute = new TokenBucket({ capacity: 3, refillPerSec: 3 / 60, clock });
+    const perDay = new TokenBucket({ capacity: 4, refillPerSec: 0, clock });
+    const takeAll = (): boolean => {
+      if (perSecond.available() < 1 || perMinute.available() < 1 || perDay.available() < 1) return false;
+      return perSecond.tryTake() && perMinute.tryTake() && perDay.tryTake();
+    };
+
+    expect([takeAll(), takeAll(), takeAll()]).toEqual([true, true, false]); // second window is exhausted
+    clock.advance(1_000);
+    expect(takeAll()).toBe(true); // second window refilled; minute/day still had room
+    expect(takeAll()).toBe(false); // minute window is exhausted
+    clock.advance(20_000);
+    expect(takeAll()).toBe(true); // minute window refilled one token; day cap now exhausted
+    clock.advance(86_400_000);
+    expect(takeAll()).toBe(false); // day bucket has no refill in this scoped composition
   });
 });
 

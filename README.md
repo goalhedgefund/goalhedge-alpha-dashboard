@@ -15,6 +15,36 @@ npm run lint
 npm run e2e      # UI Playwright suite (needs the chromium install above)
 ```
 
+## Dhan live-data paper runner
+
+The Dhan live-data paper runner reads credentials from `D:\DHAN_LOGIN\.env` by default and uses live Dhan market data with the in-repo `PaperBroker`; it does not place live orders.
+
+Required before market start:
+
+```bash
+DHAN_CLIENT_ID=...
+DHAN_ACCESS_TOKEN=...
+DHAN_WS_URL=wss://api-feed.dhan.co
+DHAN_SCRIP_MASTER_PATH=D:\path\to\api-scrip-master.csv
+```
+
+Useful optional knobs:
+
+```bash
+DHAN_AUTO_ARM=false
+DHAN_GATEWAY_PORT=8787
+DHAN_SPOT_SECURITY_ID=13
+DHAN_SPOT_EXCHANGE_SEGMENT=IDX_I
+DHAN_OPTION_EXCHANGE_SEGMENT=NSE_FNO
+DHAN_INITIAL_SPOT_RUPEES=24500
+```
+
+Run:
+
+```bash
+npm run paper:live-data:dhan
+```
+
 ## Layout
 
 - `core/` — trading engine (TypeScript, strict; no UI dependencies)

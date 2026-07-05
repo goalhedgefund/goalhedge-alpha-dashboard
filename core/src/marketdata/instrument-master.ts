@@ -45,10 +45,16 @@ function stripTimePortion(dateStr: string): string {
   return dateStr.split(' ')[0] ?? dateStr;
 }
 
+function parseTickSizePaise(raw: string): number {
+  const value = parseFloat(raw);
+  if (!Number.isFinite(value)) return NaN;
+  return Math.round(value >= 1 ? value : value * 100);
+}
+
 function parseRow(cols: string[]): ScripRow | null {
   if (cols.length < 13) return null;
   const strikePaise = Math.round(parseFloat(cols[9] ?? '0') * 100);
-  const tickSizePaise = Math.round(parseFloat(cols[11] ?? '5') * 100);
+  const tickSizePaise = parseTickSizePaise(cols[11] ?? '5');
   if (isNaN(strikePaise) || isNaN(tickSizePaise)) return null;
 
   const tradingSymbol = (cols[5] ?? '').trim();

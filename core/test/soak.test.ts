@@ -97,7 +97,7 @@ function makeSpec(id: string): SoakSessionSpec {
 
 describe('soak — N sessions back-to-back (03-TESTING-PLAN §9)', () => {
   it('every session keeps journal integrity, is deterministic, produces a digest, and does not leak', async () => {
-    const N = 5;
+    const N = 6;
     const specs = Array.from({ length: N }, (_, i) => makeSpec(String(i + 1)));
     const report = await runSoak(specs);
 

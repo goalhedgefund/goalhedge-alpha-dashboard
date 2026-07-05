@@ -17,6 +17,8 @@ export interface SubscribeRequest {
   /** Broker-specific security/instrument token. */
   brokerToken: string;
   instrumentId: InstrumentId;
+  /** Broker-specific market-data mode; falls back to the adapter default. */
+  requestCode?: number;
 }
 
 export interface IFeedAdapter {

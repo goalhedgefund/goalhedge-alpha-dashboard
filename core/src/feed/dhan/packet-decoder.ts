@@ -11,12 +11,13 @@
  *   Byte 3    : exchange segment code (UInt8)
  *   Bytes 4-7 : securityId (UInt32LE)
  *
- * Dhan segment codes (from the original JS):
- *   1 = NSE_EQ, 2 = NSE_FNO, 3 = BSE_EQ, 4 = BSE_FNO,
- *   5 = MCX_COMM, 6 = NSE_CURR, 7 = BSE_CURR
+ * Dhan v2 segment codes (Annexure):
+ *   0 = IDX_I, 1 = NSE_EQ, 2 = NSE_FNO, 3 = NSE_CURRENCY,
+ *   4 = BSE_EQ, 5 = MCX_COMM, 7 = BSE_CURRENCY, 8 = BSE_FNO
  */
 
 export type DhanExchangeSegment =
+  | 'IDX_I'
   | 'NSE_EQ'
   | 'NSE_FNO'
   | 'BSE_EQ'
@@ -24,16 +25,19 @@ export type DhanExchangeSegment =
   | 'MCX_COMM'
   | 'NSE_CURR'
   | 'BSE_CURR'
+  | 'NSE_CURRENCY'
+  | 'BSE_CURRENCY'
   | `SEG_${number}`;
 
 const SEGMENT_MAP: Record<number, DhanExchangeSegment> = {
+  0: 'IDX_I',
   1: 'NSE_EQ',
   2: 'NSE_FNO',
-  3: 'BSE_EQ',
-  4: 'BSE_FNO',
+  3: 'NSE_CURRENCY',
+  4: 'BSE_EQ',
   5: 'MCX_COMM',
-  6: 'NSE_CURR',
-  7: 'BSE_CURR',
+  7: 'BSE_CURRENCY',
+  8: 'BSE_FNO',
 };
 
 function getExchangeSegment(code: number): DhanExchangeSegment {
@@ -75,6 +79,12 @@ export interface DhanDepthLevel {
 
 export interface DhanPacketBase extends PacketHeader {
   rawLength: number;
+}
+
+export interface DhanIndexPacket extends DhanPacketBase {
+  code: 1;
+  ltp: number;
+  ltt: number;
 }
 
 export interface DhanLtpPacket extends DhanPacketBase {
@@ -138,6 +148,7 @@ export interface DhanUnknownPacket extends DhanPacketBase {
 }
 
 export type DhanPacket =
+  | DhanIndexPacket
   | DhanLtpPacket
   | DhanQuotePacket
   | DhanOiPacket
@@ -152,6 +163,14 @@ function decodePacket(buf: Buffer): DhanPacket {
   const unknown = (): DhanUnknownPacket => ({ ...base, payload: buf.subarray(8) });
 
   switch (base.code) {
+    case 1:
+      if (buf.length < 12) return unknown();
+      return {
+        ...base,
+        code: 1,
+        ltp: buf.readFloatLE(8),
+        ltt: buf.length >= 16 ? buf.readInt32LE(12) : 0,
+      };
     case 2:
       if (buf.length < 16) return unknown();
       return {

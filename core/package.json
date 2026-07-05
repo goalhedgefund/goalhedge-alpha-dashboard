@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "build": "tsc -p tsconfig.build.json",
-    "demo": "node dist/demo/demo-gateway.js"
+    "demo": "node dist/demo/demo-gateway.js",
+    "paper:live-data:dhan": "node dist/host/dhan-live-data-paper.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",

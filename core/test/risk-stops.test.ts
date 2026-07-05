@@ -10,6 +10,7 @@ import type { OptionChainRow } from '../src/domain/marketdata.js';
 import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
 import { SessionRiskState } from '../src/risk/session-risk.js';
 import { StopEngine } from '../src/stops/stop-engine.js';
+import { buildLongOptionStopPlan } from '../src/strategy/stop-plan.js';
 import { hashValue } from '../src/config/loader.js';
 
 const configDir = new URL('../../config/', import.meta.url);
@@ -85,7 +86,7 @@ function context(overrides: Partial<RiskGateContext> = {}): RiskGateContext {
   };
 }
 
-function position(): Position {
+function position(overrides: Partial<Position> = {}): Position {
   return {
     positionId: new IdFactory(SESSION).positionId(),
     sessionId: SESSION,
@@ -98,6 +99,7 @@ function position(): Position {
     realizedGrossPaise: 0,
     openedTs: 1_000,
     updatedTs: 1_000,
+    ...overrides,
   };
 }
 
@@ -130,6 +132,17 @@ describe('RiskGate ordered checks', () => {
     expect(gate.evaluate(intent(ids, { stopPlan: undefined } as never), context()).reason).toBe('MISSING_STOP_PLAN');
     expect(gate.evaluate(intent(ids), context({ openPositions: [position()] })).reason).toBe('POSITION_LIMIT');
     expect(gate.evaluate(intent(ids), context({ throttleAvailable: 0 })).reason).toBe('THROTTLE_HEADROOM');
+  });
+
+  it('pins freeze-quantity scope: oversized orders are rejected, not silently split', () => {
+    const ids = new IdFactory(SESSION);
+    const gate = new RiskGate(market, risk);
+    const oversized = intent(ids, { qty: market.contract.freezeQty + market.contract.lotSize });
+
+    const verdict = gate.evaluate(oversized, context());
+
+    expect(verdict.approved).toBe(false);
+    expect(verdict.reason).toBe('FREEZE_QTY');
   });
 
   it('property: approved entry risk never exceeds configured budget', () => {
@@ -174,6 +187,26 @@ describe('SessionRiskState latches', () => {
     streak.recordTrade(-1);
     expect(streak.current().latchedStop).toBe('LOSS_STREAK');
   });
+
+  it('give-back and max-trades latch until operator reset', () => {
+    const giveBack = new SessionRiskState(risk);
+    giveBack.recordTrade(Math.round(risk.capitalPaise * 0.006)); // arms give-back at a meaningful peak
+    expect(giveBack.current().latchedStop).toBeUndefined();
+    giveBack.recordTrade(-Math.round(risk.capitalPaise * 0.0045));
+    expect(giveBack.current().latchedStop).toBe('GIVE_BACK');
+    giveBack.recordTrade(999_999_999);
+    expect(giveBack.current().latchedStop).toBe('GIVE_BACK');
+    giveBack.operatorReset();
+    expect(giveBack.current().latchedStop).toBeUndefined();
+
+    const maxTrades = new SessionRiskState({ ...risk, maxTradesPerDay: 2 });
+    maxTrades.recordTrade(1);
+    expect(maxTrades.current().latchedStop).toBeUndefined();
+    maxTrades.recordTrade(1);
+    expect(maxTrades.current().latchedStop).toBe('MAX_TRADES');
+    maxTrades.operatorReset();
+    expect(maxTrades.current().latchedStop).toBeUndefined();
+  });
 });
 
 describe('StopEngine trigger matrix', () => {
@@ -186,6 +219,77 @@ describe('StopEngine trigger matrix', () => {
     expect(decision?.trigger?.reason).toBe('L1_HARD_PREMIUM');
     expect(decision?.trigger?.exitIntent.side).toBe('SELL');
     expect(decision?.trigger?.exitIntent.limitPricePaise).toBe(8_890);
+  });
+
+  it.each([
+    { right: 'CE', qty: 65, premiumPaise: 9_000, expectedLimit: 8_985, label: 'full normal' },
+    { right: 'CE', qty: 30, premiumPaise: 8_100, expectedLimit: 8_085, label: 'partial gap-through' },
+    { right: 'PE', qty: 65, premiumPaise: 9_000, expectedLimit: 8_985, label: 'full normal' },
+    { right: 'PE', qty: 30, premiumPaise: 8_100, expectedLimit: 8_085, label: 'partial gap-through' },
+  ] as const)('L1 premium matrix: $right $label exits current qty with protection limit', ({ qty, premiumPaise, expectedLimit }) => {
+    const ids = new IdFactory(SESSION);
+    const engine = new StopEngine({ ids, tickSizePaise: 5 });
+    const pos = position({ qty });
+    engine.arm(pos, stopPlan());
+
+    const decision = engine.update(pos, { nowMs: 2_000, premiumPaise });
+
+    expect(decision?.trigger?.reason).toBe('L1_HARD_PREMIUM');
+    expect(decision?.trigger?.exitIntent.qty).toBe(qty);
+    expect(decision?.trigger?.exitIntent.limitPricePaise).toBe(expectedLimit);
+  });
+
+  it.each([
+    { right: 'CE', dir: 'BELOW', invalidSpot: 28_900_00 },
+    { right: 'PE', dir: 'ABOVE', invalidSpot: 29_700_00 },
+  ] as const)('L1 underlying matrix: $right invalidation fires before time stop', ({ dir, invalidSpot }) => {
+    const ids = new IdFactory(SESSION);
+    const engine = new StopEngine({ ids, tickSizePaise: 5 });
+    const pos = position();
+    engine.arm(pos, {
+      ...stopPlan(),
+      hardStopUnderlyingDir: dir,
+      hardStopUnderlyingPaise: dir === 'BELOW' ? 29_000_00 : 29_600_00,
+    });
+
+    const decision = engine.update(pos, { nowMs: 2_000, premiumPaise: 10_100, underlyingPaise: invalidSpot });
+
+    expect(decision?.trigger?.reason).toBe('L1_UNDERLYING');
+    expect(decision?.trigger?.exitIntent.qty).toBe(pos.qty);
+  });
+
+  it.each(['DAILY_LOSS', 'GIVE_BACK', 'LOSS_STREAK'] as const)('L4 session stop matrix: %s exits immediately', (sessionStop) => {
+    const ids = new IdFactory(SESSION);
+    const engine = new StopEngine({ ids, tickSizePaise: 5 });
+    const pos = position({ qty: 30 });
+    engine.arm(pos, stopPlan());
+
+    const decision = engine.update(pos, { nowMs: 2_000, premiumPaise: 10_100 }, sessionStop);
+
+    expect(decision?.trigger?.reason).toBe('L4_SESSION');
+    expect(decision?.trigger?.exitIntent.qty).toBe(30);
+  });
+
+  it('ATR-derived invalidation levels are directional for CE and PE stop plans', () => {
+    const ce = buildLongOptionStopPlan({
+      entryPremiumPaise: 10_000,
+      tickSizePaise: 5,
+      right: 'CE',
+      pcts: { hardStopPremiumPct: 25, timeStopSec: 30 },
+      invalidation: { kind: 'atr', spotPaise: 29_500_00, atrPaise: 12_500, mult: 2 },
+    });
+    const pe = buildLongOptionStopPlan({
+      entryPremiumPaise: 10_000,
+      tickSizePaise: 5,
+      right: 'PE',
+      pcts: { hardStopPremiumPct: 25, timeStopSec: 30 },
+      invalidation: { kind: 'atr', spotPaise: 29_500_00, atrPaise: 12_500, mult: 2 },
+    });
+
+    expect(ce.hardStopUnderlyingDir).toBe('BELOW');
+    expect(ce.hardStopUnderlyingPaise).toBe(29_250_00);
+    expect(pe.hardStopUnderlyingDir).toBe('ABOVE');
+    expect(pe.hardStopUnderlyingPaise).toBe(29_750_00);
   });
 
   it('triggers underlying invalidation, time stop, and session stop', () => {

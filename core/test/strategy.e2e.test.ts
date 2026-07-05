@@ -422,4 +422,61 @@ describe('M7 E2E: signal → gate → fill → trail → exit (scripted replay)'
     await h.writer.close();
     await h.trades.close();
   });
+
+  it('market scenario: flat dead market produces zero trades by design', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scalper-e2e-flat-'));
+    const h = buildHarness(START_10AM_IST, dir);
+
+    for (let i = 0; i < 30; i++) await h.stepSpot(0);
+
+    expect(h.events.some((e) => e.type === 'strategy.signal')).toBe(false);
+    expect(h.events.some((e) => e.type === 'intent.proposed')).toBe(false);
+    expect(h.events.some((e) => e.type === 'trade.completed')).toBe(false);
+    const reasons = h.events.filter((e) => e.type === 'strategy.noTrade').map((e) => (e.type === 'strategy.noTrade' ? e.payload.reason : ''));
+    expect(reasons).toContain('NO_IMPULSE');
+    await h.writer.close();
+    await h.trades.close();
+  });
+
+  it('market scenario: spread blowout blocks entries before risk approval', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scalper-e2e-spread-'));
+    const h = buildHarness(START_10AM_IST, dir);
+    h.provider.ceRow = { ...h.provider.ceRow, bidPaise: 14_000, askPaise: 16_000, ltpPaise: 15_000 };
+    h.paper.setQuote(CE_ID, { bidPaise: 14_000, askPaise: 16_000, ltpPaise: 15_000 });
+
+    for (let i = 0; i < 10; i++) await h.stepSpot(0);
+    await h.stepSpot(2_500);
+    await h.stepSpot(2_500);
+
+    expect(h.events.some((e) => e.type === 'intent.proposed')).toBe(false);
+    expect(h.events.some((e) => e.type === 'trade.completed')).toBe(false);
+    const noTrade = [...h.events].reverse().find((e) => e.type === 'strategy.noTrade');
+    expect(noTrade?.type === 'strategy.noTrade' ? noTrade.payload.reason : undefined).toBe('SPREAD_GATE');
+    await h.writer.close();
+    await h.trades.close();
+  });
+
+  it('market scenario: gap-through-stop exits at available bid and reports the loss honestly', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scalper-e2e-gap-'));
+    const h = buildHarness(START_10AM_IST, dir);
+
+    for (let i = 0; i < 10; i++) await h.stepSpot(0);
+    await h.stepSpot(2_500);
+    await h.stepSpot(2_500); // entry fills @ 15000, hard stop 11250
+
+    h.paper.setQuote(CE_ID, { bidPaise: 7_990, askPaise: 8_010, ltpPaise: 8_000 });
+    await h.stepPremium(8_000);
+
+    const trigger = h.events.find((e) => e.type === 'stop.triggered');
+    expect(trigger?.type === 'stop.triggered' ? trigger.payload.layer : undefined).toBe('L1_HARD_PREMIUM');
+    const trade = h.events.find((e) => e.type === 'trade.completed');
+    expect(trade?.type).toBe('trade.completed');
+    if (trade?.type === 'trade.completed') {
+      expect(trade.payload.trade.exit.pricePaise).toBe(7_990);
+      expect(trade.payload.trade.grossPnlPaise).toBe((7_990 - 15_000) * 65);
+      expect(trade.payload.trade.netPnlPaise).toBeLessThan(trade.payload.trade.grossPnlPaise);
+    }
+    await h.writer.close();
+    await h.trades.close();
+  });
 });

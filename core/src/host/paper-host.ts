@@ -267,7 +267,33 @@ export class PaperHost {
 
   // ------------------------------------------------------------ accessors (UI/tests)
 
-  runnerState(): string {
+  arm(): void {
+    this.runner.arm();
+  }
+  disarm(): void {
+    this.runner.disarm();
+  }
+  setParams(params: StrategyParams): void {
+    this.runner.setParams(params);
+  }
+  canArm(): ReturnType<SessionManager['canArm']> {
+    return this.session.canArm();
+  }
+  acknowledgePreflight(operator?: string): ReturnType<SessionManager['acknowledge']> {
+    return this.session.acknowledge(operator);
+  }
+  tripKill(source: 'MANUAL' | 'AUTO', reason: string): Promise<unknown> {
+    return this.kill.trip(source, reason);
+  }
+  rearmKill(confirm: string, reason: string): ReturnType<KillSwitch['rearm']> {
+    return this.kill.rearm(confirm, reason);
+  }
+  journalGatewayCommand<K extends 'command.received' | 'command.acked'>(type: K, payload: JournalPayloads[K]): void {
+    if (!this.started) throw new Error('PaperHost.journalGatewayCommand before start()');
+    this.sink(type, payload);
+  }
+
+  runnerState(): ReturnType<StrategyRunner['state']> {
     return this.runner.state();
   }
   sessionPhase(): string {

@@ -4,6 +4,7 @@ import type { IFeedAdapter, FeedHealth, SubscribeRequest } from '../interface.js
 import {
   decodeDhanBuffer,
   type DhanFullPacket,
+  type DhanIndexPacket,
   type DhanLtpPacket,
   type DhanPacket,
   type DhanQuotePacket,
@@ -22,15 +23,15 @@ export function dhanPacketToTick(
   recvTs: number,
   tokenToInstrument: ReadonlyMap<string, InstrumentId>,
 ): Tick | null {
-  if (p.code !== 2 && p.code !== 4 && p.code !== 8) return null;
+  if (p.code !== 1 && p.code !== 2 && p.code !== 4 && p.code !== 8) return null;
   const instrId = tokenToInstrument.get(p.securityId);
   if (instrId === undefined) return null;
 
-  const typed = p as DhanLtpPacket | DhanQuotePacket | DhanFullPacket;
+  const typed = p as DhanIndexPacket | DhanLtpPacket | DhanQuotePacket | DhanFullPacket;
   const ltpPaise = Math.round(typed.ltp * 100);
   const ts = typed.ltt > 0 ? typed.ltt * 1000 : recvTs;
 
-  if (typed.code === 2) {
+  if (typed.code === 1 || typed.code === 2) {
     return {
       instrumentId: instrId,
       ts,
@@ -119,6 +120,7 @@ export class DhanFeed implements IFeedAdapter {
       this.ws = ws;
 
       ws.addEventListener('open', () => {
+        if (this.ws !== ws) return;
         this.connected = true;
         this.flushSubscriptions();
         this.startKeepAlive();
@@ -129,6 +131,7 @@ export class DhanFeed implements IFeedAdapter {
       });
 
       ws.addEventListener('message', (event: MessageEvent) => {
+        if (this.ws !== ws || !this.connected) return;
         const data = event.data as ArrayBuffer | string;
         const packets = decodeDhanBuffer(
           typeof data === 'string' ? data : Buffer.from(data),
@@ -144,12 +147,14 @@ export class DhanFeed implements IFeedAdapter {
       });
 
       ws.addEventListener('close', () => {
+        if (this.ws !== ws) return;
         this.connected = false;
         this.stopKeepAlive();
         if (this.shouldReconnect) this.scheduleReconnect();
       });
 
       ws.addEventListener('error', () => {
+        if (this.ws !== ws) return;
         if (!resolved) {
           resolved = true;
           reject(new Error('DhanFeed WebSocket connection failed'));
@@ -162,34 +167,46 @@ export class DhanFeed implements IFeedAdapter {
     for (const r of requests) {
       this.tokenToInstrument.set(r.brokerToken, r.instrumentId);
     }
-    // Accumulate (dedupe by token) instead of replacing: a reconnect re-flushes
-    // pendingSubscriptions, so earlier subscribe() batches must survive here.
-    const byToken = new Map(this.pendingSubscriptions.map((r) => [r.brokerToken, r]));
-    for (const r of requests) byToken.set(r.brokerToken, r);
-    this.pendingSubscriptions = [...byToken.values()];
+    // Accumulate instead of replacing: a reconnect re-flushes pending
+    // subscriptions, so earlier subscribe() batches must survive here.
+    const byKey = new Map(this.pendingSubscriptions.map((r) => [subscriptionKey(r), r]));
+    for (const r of requests) byKey.set(subscriptionKey(r), r);
+    this.pendingSubscriptions = [...byKey.values()];
     this.flushSubscriptions();
   }
 
   private flushSubscriptions(): void {
     if (!this.connected || this.ws === null || this.pendingSubscriptions.length === 0) return;
-    const chunks: SubscribeRequest[][] = [];
-    for (let i = 0; i < this.pendingSubscriptions.length; i += 100) {
-      chunks.push(this.pendingSubscriptions.slice(i, i + 100));
+    const byRequestCode = new Map<number, SubscribeRequest[]>();
+    for (const r of this.pendingSubscriptions) {
+      const requestCode = r.requestCode ?? this.opts.requestCode;
+      const group = byRequestCode.get(requestCode) ?? [];
+      group.push(r);
+      byRequestCode.set(requestCode, group);
     }
-    for (const chunk of chunks) {
-      const msg = JSON.stringify({
-        RequestCode: this.opts.requestCode,
-        InstrumentCount: chunk.length,
-        InstrumentList: chunk.map((r) => ({
-          ExchangeSegment: r.exchangeSegment,
-          SecurityId: r.brokerToken,
-        })),
-      });
-      try {
-        this.ws.send(msg);
-      } catch {
-        /* connection lost mid-flush; reconnect will re-flush */
+    for (const [requestCode, group] of byRequestCode) {
+      const chunks: SubscribeRequest[][] = [];
+      for (let i = 0; i < group.length; i += 100) {
+        chunks.push(group.slice(i, i + 100));
       }
+      for (const chunk of chunks) this.sendSubscriptionChunk(requestCode, chunk);
+    }
+  }
+
+  private sendSubscriptionChunk(requestCode: number, chunk: SubscribeRequest[]): void {
+    if (!this.connected || this.ws === null) return;
+    const msg = JSON.stringify({
+      RequestCode: requestCode,
+      InstrumentCount: chunk.length,
+      InstrumentList: chunk.map((r) => ({
+        ExchangeSegment: r.exchangeSegment,
+        SecurityId: r.brokerToken,
+      })),
+    });
+    try {
+      this.ws.send(msg);
+    } catch {
+      /* connection lost mid-flush; reconnect will re-flush */
     }
   }
 
@@ -251,4 +268,8 @@ export class DhanFeed implements IFeedAdapter {
   ): Tick | null {
     return dhanPacketToTick(p, recvTs, this.tokenToInstrument);
   }
+}
+
+function subscriptionKey(r: SubscribeRequest): string {
+  return `${r.requestCode ?? 'default'}:${r.exchangeSegment}:${r.brokerToken}`;
 }

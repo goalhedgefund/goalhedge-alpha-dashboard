@@ -5,6 +5,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildOptionChain,
@@ -33,6 +36,22 @@ describe('loadScripMaster', () => {
     expect(typeof sample.securityId).toBe('string');
     expect(typeof sample.lotSize).toBe('number');
     expect(typeof sample.expiryDate).toBe('string');
+  });
+
+  it('normalizes Dhan tick size whether compact CSV uses rupees or paise', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scrip-master-'));
+    const path = join(dir, 'ticks.csv');
+    writeFileSync(
+      path,
+      [
+        'SEM_EXM_EXCH_ID,SEM_SEGMENT,SEM_SMST_SECURITY_ID,SEM_INSTRUMENT_NAME,SEM_EXPIRY_CODE,SEM_TRADING_SYMBOL,SEM_LOT_UNITS,SEM_CUSTOM_SYMBOL,SEM_EXPIRY_DATE,SEM_STRIKE_PRICE,SEM_OPTION_TYPE,SEM_TICK_SIZE,SEM_EXPIRY_FLAG,SEM_EXCH_INSTRUMENT_TYPE,SEM_SERIES,SM_SYMBOL_NAME',
+        'NSE,D,1,OPTIDX,1,NIFTY-Jul2026-29000-CE,65,NIFTY 07 JUL 29000 CE,2026-07-07 14:30:00,29000,CE,0.05,W,OP,,NIFTY',
+        'NSE,D,2,OPTIDX,1,NIFTY-Jul2026-29000-PE,65,NIFTY 07 JUL 29000 PE,2026-07-07 14:30:00,29000,PE,5.0000,W,OP,,NIFTY',
+      ].join('\n'),
+      'utf8',
+    );
+    const rows = loadScripMaster(path);
+    expect(rows.map((r) => r.tickSizePaise)).toEqual([5, 5]);
   });
 });
 

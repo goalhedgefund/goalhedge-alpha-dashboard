@@ -5,6 +5,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import type { JournalEvent, JournalEventType, JournalPayloads } from '../src/domain/events.js';
+import { hashValue } from '../src/config/loader.js';
 import { IdFactory, makeInstrumentId, makeSessionId } from '../src/domain/ids.js';
 import type { Order } from '../src/domain/orders.js';
 import type { Position, Trade } from '../src/domain/positions.js';
@@ -167,6 +168,41 @@ describe('snapshot + delta protocol', () => {
     const snap2 = await c.expect(isSnapshot);
     expect(snap2.seq).toBe(3);
     expect(snap2.state.session.phase).toBe('OPEN');
+  });
+
+  it('delta stream reconstructs gateway state at deterministic checkpoints (hash compare)', async () => {
+    const g = makeGateway();
+    const c = await connect(g);
+    const snap = await c.expect(isSnapshot);
+    let rebuilt = snap.state;
+
+    for (let i = 1; i <= 20; i++) {
+      g.set('health', {
+        feedStatus: i % 3 === 0 ? 'STALE' : 'CONNECTED',
+        lastTickTs: 1_000 + i,
+        gatewayTs: 2_000 + i,
+      });
+      g.set('algo', {
+        strategyId: 's1-momentum-burst',
+        lifecycle: i % 2 === 0 ? 'ARMED' : 'DISARMED',
+        params: { lots: i },
+        lastNoTradeReason: `checkpoint-${i}`,
+      });
+      g.set('risk', {
+        ...g.currentState().risk,
+        snapshot: {
+          realizedNetPnlPaise: i * 100,
+          peakNetPnlPaise: i * 125,
+          lossStreak: i % 4,
+          tradesTaken: i,
+        },
+      });
+      g.flushNow();
+
+      const delta = await c.expect(isDelta);
+      rebuilt = applyChanges(rebuilt, delta.changes);
+      expect(hashValue(rebuilt), `checkpoint ${i}`).toBe(hashValue(g.currentState()));
+    }
   });
 
   it('heartbeats carry the current seq without incrementing it', async () => {
