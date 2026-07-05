@@ -111,15 +111,20 @@ test('(e) kill switch is two-step: a click never fires; hold KILLS, locks, and A
   await expect(page.getByTestId('cmd-result')).toContainText('KILL_LOCKED', { timeout: 5_000 });
 });
 
-test('(f) re-arm: a typed reason unlocks the killed session and ARM works again', async ({ page }) => {
+test('(f) re-arm: the OPERATOR types the REARM token + a reason to unlock; ARM works again', async ({ page }) => {
   // Runs after (e): the server is LOCKED, so a fresh snapshot shows the rearm box.
   await page.goto('/');
   await expect(page.getByTestId('rearm-box')).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId('banner-kill')).toHaveText('LOCKED');
 
-  // Discipline: RE-ARM stays disabled until a reason is supplied.
+  // Discipline: RE-ARM stays disabled until the operator TYPES the literal
+  // confirmation token AND a reason — the UI never auto-supplies either.
   await expect(page.getByTestId('rearm-btn')).toBeDisabled();
   await page.getByTestId('rearm-reason').fill('root cause fixed: demo drill complete');
+  await expect(page.getByTestId('rearm-btn')).toBeDisabled(); // reason alone is not enough
+  await page.getByTestId('rearm-confirm').fill('rearm');
+  await expect(page.getByTestId('rearm-btn')).toBeDisabled(); // token is case-exact
+  await page.getByTestId('rearm-confirm').fill('REARM');
   await expect(page.getByTestId('rearm-btn')).toBeEnabled();
   await page.getByTestId('rearm-btn').click();
   await expect(page.getByTestId('rearm-result')).toContainText('RE-ARMED', { timeout: 5_000 });

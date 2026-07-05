@@ -1,8 +1,8 @@
 import type { MarketProfile } from '../config/schemas.js';
 import type { JournalEventType, JournalPayloads } from '../domain/events.js';
-import type { IdFactory, InstrumentId, PositionId, SessionId } from '../domain/ids.js';
+import type { ClientOrderId, IdFactory, InstrumentId, PositionId, SessionId } from '../domain/ids.js';
 import type { OptionChainRow } from '../domain/marketdata.js';
-import type { OrderIntent, StopPlan } from '../domain/orders.js';
+import { isTerminalOrderState, type OrderIntent, type StopPlan } from '../domain/orders.js';
 import type { Position, Trade } from '../domain/positions.js';
 import type { SessionStopKind } from '../domain/risk.js';
 import { formatHHMMIst, type Clock } from '../domain/time.js';
@@ -74,6 +74,7 @@ export class StrategyRunner {
   private trackedPositionId: PositionId | undefined;
   private trackedInstrumentId: InstrumentId | undefined;
   private lastPremiumPaise: number | undefined;
+  private entryOrderId: ClientOrderId | undefined;
   private entryInFlight = false;
   private exitInFlight = false;
   private cooldownUntilMs = 0;
@@ -110,6 +111,11 @@ export class StrategyRunner {
 
   activeParamsSnapshot(): StrategyParams {
     return { ...this.activeParams };
+  }
+
+  /** Latest journaled no-trade reason (for the gateway algo slice). */
+  lastNoTrade(): string | undefined {
+    return this.lastNoTradeReason;
   }
 
   /**
@@ -195,6 +201,7 @@ export class StrategyRunner {
       this.trackedInstrumentId = undefined;
       return;
     }
+    this.entryOrderId = result.order.clientOrderId;
     this.syncPosition(nowMs);
   }
 
@@ -266,7 +273,6 @@ export class StrategyRunner {
         reason: trigger.reason,
         premiumPaise,
       });
-      this.opts.stopEngine.disarm(pos.positionId);
 
       const intent = trigger.exitIntent;
       this.journal('intent.proposed', { intent });
@@ -274,7 +280,24 @@ export class StrategyRunner {
       this.journal('risk.verdict', { verdict });
       if (verdict.approved) {
         const result = await this.opts.oms.submit(intent, verdict);
-        if (result.accepted) this.opts.escalator?.track(result.order, intent);
+        if (result.accepted) {
+          // Disarm ONLY once the exit order is accepted — disarming earlier
+          // and then failing to submit would leave the position unprotected
+          // forever. While the stop stays armed, the next tick re-triggers
+          // and retries the exit; exitInFlight prevents overlap.
+          this.opts.stopEngine.disarm(pos.positionId);
+          this.opts.escalator?.track(result.order, intent);
+        } else {
+          this.journal('diag.error', {
+            where: 'runner.stopExit',
+            message: `exit submit not accepted (${result.reason ?? 'unknown'}); stop stays armed for retry`,
+          });
+        }
+      } else {
+        this.journal('diag.error', {
+          where: 'runner.stopExit',
+          message: `gate rejected stop exit (${verdict.reason ?? 'unknown'}); stop stays armed for retry`,
+        });
       }
     } finally {
       this.exitInFlight = false;
@@ -287,12 +310,25 @@ export class StrategyRunner {
 
     if (pos !== undefined && this.entryInFlight) {
       this.entryInFlight = false;
+      this.entryOrderId = undefined;
       if (this.activeStopPlan !== undefined) {
         this.opts.stopEngine.arm(pos, this.activeStopPlan);
       }
       this.trackedPositionId = pos.positionId;
       this.lifecycle = 'ACTIVE';
       return;
+    }
+
+    // Entry died unfilled (broker reject / cancel / TTL expiry): release the
+    // in-flight latch or the runner never proposes another entry all session.
+    if (pos === undefined && this.entryInFlight && this.entryOrderId !== undefined) {
+      const order = this.opts.oms.getOrder(this.entryOrderId);
+      if (order !== undefined && isTerminalOrderState(order.state)) {
+        this.entryInFlight = false;
+        this.entryOrderId = undefined;
+        this.activeStopPlan = undefined;
+        this.trackedInstrumentId = undefined;
+      }
     }
 
     if (pos === undefined && this.trackedPositionId !== undefined) {

@@ -8,9 +8,11 @@ Desk-grade, fully-automated intraday option scalping platform. Market-agnostic c
 
 ```bash
 npm install
+npx playwright install chromium   # one-time: browser for the UI e2e suite
 npm test         # core test suite (vitest + fast-check)
 npm run typecheck
 npm run lint
+npm run e2e      # UI Playwright suite (needs the chromium install above)
 ```
 
 ## Layout

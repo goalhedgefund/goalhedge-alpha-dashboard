@@ -6,6 +6,7 @@ import {
   type ClientMsg,
   type CommandType,
   type GatewayState,
+  type GatewayStateSlices,
   type ServerMsg,
   type StateChange,
 } from './protocol.js';
@@ -108,6 +109,17 @@ export class Gateway {
   set<K extends keyof GatewayState>(path: K, value: GatewayState[K]): void {
     this.state = { ...this.state, [path]: value };
     this.dirty.set(path, value);
+  }
+
+  /**
+   * Apply the host's derived slices (health/risk/chain/algo) in one call.
+   * Satisfies the host's GatewayPort structurally alongside ingestJournal.
+   */
+  publishState(slices: GatewayStateSlices): void {
+    this.set('health', slices.health);
+    this.set('risk', slices.risk);
+    this.set('chain', slices.chain);
+    this.set('algo', slices.algo);
   }
 
   /**

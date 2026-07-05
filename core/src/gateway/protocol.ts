@@ -89,6 +89,18 @@ export interface StateChange {
   value: unknown;
 }
 
+/**
+ * Derived slices the journal alone cannot keep fresh (health ages, risk
+ * meters, chain quotes, algo lifecycle). The host publishes these on its
+ * timer cadence; Gateway.publishState applies them to the state tree.
+ */
+export interface GatewayStateSlices {
+  health: GatewayHealth;
+  risk: GatewayRiskState;
+  chain: OptionChainRow[];
+  algo: GatewayAlgoState;
+}
+
 export type ServerMsg =
   | { kind: 'snapshot'; v: 1; seq: number; state: GatewayState }
   | { kind: 'delta'; v: 1; seq: number; changes: StateChange[] }

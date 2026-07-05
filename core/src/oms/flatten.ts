@@ -91,9 +91,18 @@ export async function flattenAllPositions(
   purpose: 'KILL' | 'SQUARE_OFF' | 'EXIT',
   tag: string,
 ): Promise<number> {
+  // Re-callable without stacking sells: skip positions that already have a
+  // working exit order (the escalator chases those). Makes retry loops safe.
+  const chasing = new Set(
+    p.oms
+      .getOrders()
+      .filter((o) => !isTerminalOrderState(o.state) && o.side === 'SELL')
+      .map((o) => o.instrumentId),
+  );
   let flattened = 0;
   for (const pos of p.oms.getPositions()) {
     if (pos.state === 'CLOSED' || pos.qty <= 0) continue;
+    if (chasing.has(pos.instrumentId)) continue;
     const intent = buildFlattenIntent(p, pos, purpose, tag);
     p.journal?.('intent.proposed', { intent });
     const verdict = p.gate.evaluate(intent, p.gateContext());

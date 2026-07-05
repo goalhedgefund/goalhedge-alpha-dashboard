@@ -10,6 +10,7 @@ export type RiskRejectReason =
   | 'SESSION_STOP_LATCHED'
   | 'MARKET_CLOSED'
   | 'INSTRUMENT_NOT_WHITELISTED'
+  | 'NO_OPTION_QUOTE'
   | 'STRIKE_BAND'
   | 'SPREAD_GATE'
   | 'LIQUIDITY_FLOOR'
@@ -85,24 +86,30 @@ export class RiskGate {
     }
     if (!ctx.allowedInstruments.has(intent.instrumentId)) return reject('INSTRUMENT_NOT_WHITELISTED');
 
+    // An ENTRY without a live quote row can never be priced or spread-checked —
+    // a limit price alone must not bypass the quote gates.
     const row = ctx.optionRows.get(intent.instrumentId);
-    if (row !== undefined && ctx.atmStrikePaise !== undefined) {
+    if (row === undefined) return reject('NO_OPTION_QUOTE');
+
+    if (ctx.atmStrikePaise !== undefined) {
       const band = ctx.strikeBand ?? 5;
       const steps = Math.abs(row.strikePaise - ctx.atmStrikePaise) / this.market.contract.strikeStepPaise;
       if (steps > band) return reject('STRIKE_BAND');
     }
 
-    if (row !== undefined) {
-      if (row.bidPaise > 0 && row.askPaise > 0) {
-        const mid = (row.bidPaise + row.askPaise) / 2;
-        const spreadPct = mid > 0 ? (row.askPaise - row.bidPaise) / mid : Infinity;
-        if (spreadPct > (ctx.maxSpreadPct ?? 0.015)) return reject('SPREAD_GATE');
-      }
-      if (row.oi < (ctx.minOi ?? 0) || row.volume < (ctx.minVolume ?? 0)) return reject('LIQUIDITY_FLOOR');
+    if (row.bidPaise > 0 && row.askPaise > 0) {
+      const mid = (row.bidPaise + row.askPaise) / 2;
+      const spreadPct = mid > 0 ? (row.askPaise - row.bidPaise) / mid : Infinity;
+      if (spreadPct > (ctx.maxSpreadPct ?? 0.015)) return reject('SPREAD_GATE');
+    } else {
+      // One-sided or empty book is the worst spread there is — never let an
+      // ENTRY through exactly when liquidity has vanished.
+      return reject('SPREAD_GATE');
     }
+    if (row.oi < (ctx.minOi ?? 0) || row.volume < (ctx.minVolume ?? 0)) return reject('LIQUIDITY_FLOOR');
 
     if (intent.stopPlan === undefined) return reject('MISSING_STOP_PLAN');
-    const entry = intent.limitPricePaise ?? row?.askPaise ?? row?.ltpPaise ?? 0;
+    const entry = intent.limitPricePaise ?? row.askPaise;
     const riskPaise = Math.max(0, entry - intent.stopPlan.hardStopPremiumPaise) * intent.qty;
     if (entry <= 0 || intent.stopPlan.hardStopPremiumPaise >= entry) return reject('INVALID_STOP_PLAN', riskPaise);
     const budget = Math.round(this.risk.capitalPaise * (this.risk.perTradeRiskPct / 100));

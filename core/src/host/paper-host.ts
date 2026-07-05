@@ -7,7 +7,10 @@ import type { Tick } from '../domain/marketdata.js';
 import { formatHHMMIst, systemClock, type Clock } from '../domain/time.js';
 import type { IBrokerAdapter } from '../exec/adapter.js';
 import { TradesWriter } from '../exec/trades-writer.js';
+import { toGatewayLatency, type GatewayStateSlices } from '../gateway/protocol.js';
+import { mirrorEvent } from '../journal/mirror.js';
 import { JournalWriter, type FsyncPolicy } from '../journal/writer.js';
+import { Persistence } from '../persistence/db.js';
 import { ExitEscalator } from '../oms/escalation.js';
 import { Oms } from '../oms/oms.js';
 import { Reconciler } from '../oms/reconciler.js';
@@ -33,6 +36,12 @@ export interface TickRecorderPort {
 /** Optional gateway sink so a UI can attach to a live host. */
 export interface GatewayPort {
   ingestJournal(ev: JournalEvent): void;
+  /**
+   * Optional: periodic push of the derived slices the journal alone cannot
+   * keep fresh (health ages, risk meters, chain quotes, algo lifecycle).
+   * The real Gateway implements this; a journal-only sink may omit it.
+   */
+  publishState?(slices: GatewayStateSlices): void;
 }
 
 export interface PaperHostOptions {
@@ -67,6 +76,11 @@ export interface PaperHostOptions {
   autoArm?: boolean;
   recorder?: TickRecorderPort;
   gateway?: GatewayPort;
+  /**
+   * SQLite mirror (01-DESIGN §9). Default: scalper.db inside journalDir.
+   * Pass an existing Persistence to share one, or 'off' to disable.
+   */
+  persistence?: Persistence | 'off';
   /**
    * Paper-only: forward option quotes to the broker so fills track the replayed
    * feed (e.g. PaperBroker.setQuote). Without it, a pure tick replay can't fill
@@ -112,6 +126,10 @@ export class PaperHost {
   private readonly events: JournalEvent[] = [];
   private lastReconcileMs = Number.NEGATIVE_INFINITY;
   private started = false;
+  private journalBroken = false;
+  private db: Persistence | undefined;
+  private mirrorBroken = false;
+  private lastTickTs = 0;
 
   constructor(private readonly opts: PaperHostOptions) {
     this.clock = opts.clock ?? systemClock;
@@ -139,6 +157,10 @@ export class PaperHost {
     });
     await this.writer.ready();
     this.tradesWriter = new TradesWriter({ dir: this.opts.journalDir });
+    this.db =
+      this.opts.persistence === 'off'
+        ? undefined
+        : this.opts.persistence ?? new Persistence(join(this.opts.journalDir, 'scalper.db'));
     this.wire();
 
     await this.session.runPreflight();
@@ -175,6 +197,11 @@ export class PaperHost {
   async ingestTick(tick: Tick): Promise<void> {
     if (!this.started) throw new Error('PaperHost.ingestTick before start()');
     this.opts.recorder?.record(tick);
+    // Kill-switch auto-trip inputs: every tick feeds staleness tracking, and a
+    // tick stamped in the future beyond the skew budget trips CLOCK_SKEW.
+    if (tick.ts > this.lastTickTs) this.lastTickTs = tick.ts;
+    this.kill.noteTick(tick.ts);
+    this.kill.checkClockSkew(this.clock.now());
     const kind = this.opts.marketData.ingest(tick);
 
     if (kind === 'option') {
@@ -194,9 +221,14 @@ export class PaperHost {
   /** Timer cadence: time-stops / escalation ladder + reconcile cadence. */
   async onTimer(nowMs: number): Promise<void> {
     if (!this.started) return;
+    this.kill.petWatchdog(nowMs);
+    this.kill.checkFeedStale(nowMs); // trips only while positioned + silent
+    this.oms.expireTtl(nowMs); // TTL lapse → EXPIRED + broker cancel-and-verify
+    this.oms.cancelUnacked(nowMs); // unacked past timeout → cancel-and-verify
     await this.runner.onTimer(nowMs);
     await this.session.onTimer(nowMs);
     this.maybeReconcile(nowMs);
+    this.publishGateway(nowMs);
   }
 
   /** Force a reconcile now (after a fill, or on demand). Returns the state. */
@@ -212,6 +244,13 @@ export class PaperHost {
   async squareOffAndReport(): Promise<{ report: DigestReport; artifacts: DigestArtifacts }> {
     await this.session.squareOff();
     this.reconcileNow();
+    const stillOpen = this.oms.getPositions().filter((p) => p.state !== 'CLOSED' && p.qty > 0);
+    if (stillOpen.length > 0) {
+      this.sink('diag.error', {
+        where: 'host.squareOff',
+        message: `${stillOpen.length} position(s) still open at digest time — exits are being chased; digest may be incomplete`,
+      });
+    }
     await this.writer.flush();
     const report = buildDigest(this.events, { sessionId: String(this.opts.sessionId), date: this.opts.date, mode: this.mode });
     const artifacts = await writeDigest(report, this.opts.journalDir);
@@ -222,6 +261,8 @@ export class PaperHost {
   async close(): Promise<void> {
     await this.writer.close();
     await this.tradesWriter.close();
+    if (this.db !== undefined && this.opts.persistence === undefined) this.db.close();
+    this.db = undefined;
   }
 
   // ------------------------------------------------------------ accessors (UI/tests)
@@ -324,6 +365,7 @@ export class PaperHost {
       journal: this.sink,
       escalator,
       notify: (event) => sessionBox.session?.onKill(event),
+      ...(opts.feedStaleMs !== undefined ? { feedStaleMs: opts.feedStaleMs } : {}),
     });
 
     this.session = new SessionManager({
@@ -343,6 +385,9 @@ export class PaperHost {
         clock: this.clock,
         journal: this.sink,
         protectTicks: 5,
+        // Square-off exits ride the same reprice→market ladder as stop/kill
+        // exits — a resting square-off limit must be chased, never abandoned.
+        escalator,
       }),
       preflight: {
         resolveChain: opts.resolveChain ?? (() => this.defaultChain()),
@@ -364,13 +409,44 @@ export class PaperHost {
       clock: this.clock,
       journal: this.sink,
     });
+
+    // Spot 1m bars → journal (UI chart + ATR/codex features read them).
+    opts.marketData.setBarSink((bar) => this.sink('md.bar', { bar }));
   }
 
   /** Single journal sink: append (truth) → mirror to memory/gateway → fan-outs. */
   private sink = <K extends JournalEventType>(type: K, payload: JournalPayloads[K]): void => {
-    const ev = this.writer.append(type, payload);
+    let ev: JournalEvent;
+    try {
+      ev = this.writer.append(type, payload);
+    } catch (err) {
+      // A latched journal failure must never strand an open position: the
+      // writer latches + journalHealthy() already blocks NEW entries, but the
+      // exit path journals before it submits — keep the event flow alive so
+      // stops/kill/square-off can still get flat. seq -1 marks unpersisted.
+      if (!this.journalBroken) {
+        this.journalBroken = true;
+        console.error('[scalper] journal write failed; entries blocked, exits continue:', err);
+      }
+      ev = { seq: -1, ts: this.clock.now(), type, payload } as JournalEvent;
+    }
     this.events.push(ev);
+    if (this.db !== undefined) {
+      try {
+        mirrorEvent(this.db, ev);
+      } catch (mirrorErr) {
+        // Journal stays the source of truth; a mirror failure must never
+        // touch the trading path. Surface it once, keep mirroring the rest.
+        if (!this.mirrorBroken) {
+          this.mirrorBroken = true;
+          this.sink('diag.error', { where: 'host.mirror', message: `sqlite mirror failed: ${String(mirrorErr)}` });
+        }
+      }
+    }
     this.opts.gateway?.ingestJournal(ev);
+    if (ev.type === 'order.updated' && ev.payload.order.state === 'REJECTED') {
+      this.kill.noteReject(ev.ts); // reject-storm auto trip
+    }
     if (ev.type === 'trade.completed') {
       this.runner.onTrade(ev.payload.trade);
       this.reconcileNow(); // reconcile after every completed round trip
@@ -381,6 +457,41 @@ export class PaperHost {
     if (nowMs - this.lastReconcileMs < this.reconcileEveryMs) return;
     this.lastReconcileMs = nowMs;
     this.reconciler.reconcile();
+  }
+
+  /** Push the derived gateway slices the journal can't keep fresh (01 §3.1). */
+  private publishGateway(nowMs: number): void {
+    const gw = this.opts.gateway;
+    if (gw?.publishState === undefined) return;
+    const rp = this.opts.riskProfile;
+    const snap = this.latency.snapshot();
+    const staleMs = this.opts.feedStaleMs ?? 5_000;
+    const noTrade = this.runner.lastNoTrade();
+    const slices: GatewayStateSlices = {
+      health: {
+        feedStatus: this.lastTickTs === 0 ? 'DISCONNECTED' : nowMs - this.lastTickTs > staleMs ? 'STALE' : 'CONNECTED',
+        lastTickTs: this.lastTickTs,
+        gatewayTs: nowMs,
+        ...(snap.total.count > 0 ? { latency: toGatewayLatency(snap) } : {}),
+      },
+      risk: {
+        snapshot: this.sessionRisk.current(),
+        limits: {
+          dailyMaxLossPaise: Math.round(rp.capitalPaise * (rp.dailyMaxLossPct / 100)),
+          perTradeRiskPaise: Math.round(rp.capitalPaise * (rp.perTradeRiskPct / 100)),
+          maxTradesPerDay: rp.maxTradesPerDay,
+          maxConcurrentPositions: rp.maxConcurrentPositions,
+        },
+      },
+      chain: this.opts.marketData.chainRows(),
+      algo: {
+        strategyId: this.opts.strategy.id,
+        lifecycle: this.runner.state(),
+        params: this.runner.activeParamsSnapshot(),
+        ...(noTrade !== undefined ? { lastNoTradeReason: noTrade } : {}),
+      },
+    };
+    gw.publishState(slices);
   }
 
   private isHeld(instrumentId: InstrumentId): boolean {

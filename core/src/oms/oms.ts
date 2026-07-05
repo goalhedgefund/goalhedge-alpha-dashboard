@@ -52,6 +52,7 @@ export class Oms {
   private readonly ttlMs = new Map<ClientOrderId, number>();
   private readonly brokerEvents = new Set<string>();
   private readonly fillIds = new Set<string>();
+  private readonly cancelAttempts = new Map<ClientOrderId, number>();
 
   constructor(opts: OmsOptions) {
     this.adapter = opts.adapter;
@@ -84,8 +85,24 @@ export class Oms {
     const approved = this.transition(draft, 'RISK_APPROVED');
     const sent = this.transition(approved, 'SENT');
     onSent?.();
-    await this.adapter.placeOrder(sent);
-    return { order: sent, accepted: true };
+    try {
+      await this.adapter.placeOrder(sent);
+    } catch (err) {
+      // Adapter blew up on the wire call. If nothing happened for this order
+      // in the meantime (no ack/fill event), fail it locally so the caller
+      // sees accepted:false and can release its in-flight state; otherwise
+      // the events already tell the true story — just journal the throw.
+      const current = this.orders.get(sent.clientOrderId) ?? sent;
+      if (current.state === 'SENT' && current.filledQty === 0) {
+        const rejected = this.transition(
+          { ...current, rejectReason: `ADAPTER_ERROR: ${String(err)}` },
+          'REJECTED',
+        );
+        return { order: rejected, accepted: false, reason: 'ADAPTER_ERROR' };
+      }
+      this.emit('diag.error', { where: 'oms.submit', message: String(err) });
+    }
+    return { order: this.orders.get(sent.clientOrderId) ?? sent, accepted: true };
   }
 
   cancel(clientOrderId: ClientOrderId): Promise<void> {
@@ -100,8 +117,20 @@ export class Oms {
       const age = now - order.createdTs;
       if (age < ttl) continue;
       if (order.state === 'RISK_APPROVED' || order.state === 'SENT' || order.state === 'ACKED' || order.state === 'PARTIAL') {
+        const reachedBroker = order.state !== 'RISK_APPROVED';
         const next = this.transition(order, 'EXPIRED');
         expired.push(next);
+        // Cancel-and-verify: an order that reached the broker may still be
+        // resting there — expiring it only locally would leave a live order
+        // that can fill later. The broker's CANCELLED event confirms.
+        if (reachedBroker) {
+          void this.adapter.cancelOrder(order.clientOrderId).catch(() => {
+            this.emit('diag.error', {
+              where: 'oms.expireTtl',
+              message: `broker cancel failed for expired ${order.clientOrderId}`,
+            });
+          });
+        }
       }
     }
     return expired;
@@ -111,8 +140,19 @@ export class Oms {
     const cancelled: ClientOrderId[] = [];
     for (const order of this.orders.values()) {
       if (order.state === 'SENT' && now - order.updatedTs >= this.unackedTimeoutMs) {
+        // One cancel attempt per timeout window: verify via the broker's
+        // CANCELLED/REJECT event, re-attempt if still unverified, and journal
+        // every failed attempt so the operator sees an unverifiable order.
+        const lastAttempt = this.cancelAttempts.get(order.clientOrderId) ?? Number.NEGATIVE_INFINITY;
+        if (now - lastAttempt < this.unackedTimeoutMs) continue;
+        this.cancelAttempts.set(order.clientOrderId, now);
         cancelled.push(order.clientOrderId);
-        void this.adapter.cancelOrder(order.clientOrderId);
+        void this.adapter.cancelOrder(order.clientOrderId).catch(() => {
+          this.emit('diag.error', {
+            where: 'oms.cancelUnacked',
+            message: `cancel-and-verify failed for ${order.clientOrderId}; will retry next window`,
+          });
+        });
       }
     }
     return cancelled;

@@ -1,6 +1,7 @@
 import type { InstrumentId } from '../domain/ids.js';
 import type { Instrument, OptionRight } from '../domain/instrument.js';
-import type { OptionChainRow, Tick } from '../domain/marketdata.js';
+import type { Bar, OptionChainRow, Tick } from '../domain/marketdata.js';
+import { BarBuilder } from '../feed/bar-builder.js';
 import { computeUnderlyingFeatures } from '../marketdata/features/library.js';
 import { OptionChainState } from '../marketdata/chain-state.js';
 import type { MarketViewProvider } from '../strategy/runner.js';
@@ -44,9 +45,22 @@ export class FeedMarketData implements MarketViewProvider {
   private readonly ringSize: number;
   private readonly spotTicks: Tick[] = [];
   private atmStrike: number | undefined;
+  // Session VWAP accumulators (design §2.2: VWAP of the DAY, not of the ring).
+  private cumTurnover = 0;
+  private cumQty = 0;
+  // Spot 1m bars for ATR / codex features + the UI chart.
+  private readonly bars1m: Bar[] = [];
+  private readonly barBuilder: BarBuilder;
+  private barSink: ((bar: Bar) => void) | undefined;
 
   constructor(opts: FeedMarketDataOptions) {
     this.spotInstrumentId = opts.spotInstrumentId;
+    this.barBuilder = new BarBuilder(opts.spotInstrumentId, (bar) => {
+      if (bar.tf !== '1m') return;
+      this.bars1m.push(bar);
+      if (this.bars1m.length > 60) this.bars1m.splice(0, this.bars1m.length - 60);
+      this.barSink?.(bar);
+    });
     this.ringSize = opts.spotRingSize ?? 240;
     const instruments: Instrument[] = opts.options.map((o) => ({
       id: o.instrumentId,
@@ -83,6 +97,9 @@ export class FeedMarketData implements MarketViewProvider {
     if (kind === 'spot') {
       this.spotTicks.push(tick);
       if (this.spotTicks.length > this.ringSize) this.spotTicks.splice(0, this.spotTicks.length - this.ringSize);
+      this.cumTurnover += tick.ltpPaise * tick.qty;
+      this.cumQty += tick.qty;
+      this.barBuilder.onTick(tick);
       this.atmStrike = this.chain.updateSpot(tick.ltpPaise).atmStrikePaise;
     } else if (kind === 'option') {
       this.chain.updateTick(tick);
@@ -90,14 +107,22 @@ export class FeedMarketData implements MarketViewProvider {
     return kind;
   }
 
+  /** Receive each finished spot 1m bar (the host journals them as md.bar). */
+  setBarSink(cb: (bar: Bar) => void): void {
+    this.barSink = cb;
+  }
+
   // --------------------------------------------------------- MarketViewProvider
 
   strategyView(nowMs: number): Omit<StrategyView, 'params'> {
     const spot = this.spotPaise();
+    const features = computeUnderlyingFeatures(this.spotTicks, this.bars1m);
+    // Session VWAP overrides the ring-window value the library computes.
+    if (this.cumQty > 0) features.vwapPaise = this.cumTurnover / this.cumQty;
     return {
       nowMs,
       ...(spot !== undefined ? { spotPaise: spot } : {}),
-      underlyingFeatures: computeUnderlyingFeatures(this.spotTicks, []),
+      underlyingFeatures: features,
       ...(this.atmStrike !== undefined ? { atmStrikePaise: this.atmStrike } : {}),
       atmOption: (right) => this.atmOption(right),
     };

@@ -102,14 +102,20 @@ export class OptionChainState {
       if (pricePaise <= 0 || ctx.timeToExpiryYears <= 0 || ctx.forwardPaise <= 0) continue;
       const strike = row.strikePaise / 100;
       const marketPrice = pricePaise / 100;
-      const iv = impliedVolBlack76(
-        row.right,
-        marketPrice,
-        forward,
-        strike,
-        ctx.timeToExpiryYears,
-        ctx.riskFreeRate !== undefined ? { riskFreeRate: ctx.riskFreeRate } : {},
-      );
+      let iv: number;
+      try {
+        iv = impliedVolBlack76(
+          row.right,
+          marketPrice,
+          forward,
+          strike,
+          ctx.timeToExpiryYears,
+          ctx.riskFreeRate !== undefined ? { riskFreeRate: ctx.riskFreeRate } : {},
+        );
+      } catch {
+        // Stale/crossed quote below intrinsic — skip this row, keep the pass alive.
+        continue;
+      }
       const greeks = black76Greeks({
         right: row.right,
         forward,

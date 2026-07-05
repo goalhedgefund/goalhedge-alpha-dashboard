@@ -162,7 +162,11 @@ export class DhanFeed implements IFeedAdapter {
     for (const r of requests) {
       this.tokenToInstrument.set(r.brokerToken, r.instrumentId);
     }
-    this.pendingSubscriptions = requests.slice();
+    // Accumulate (dedupe by token) instead of replacing: a reconnect re-flushes
+    // pendingSubscriptions, so earlier subscribe() batches must survive here.
+    const byToken = new Map(this.pendingSubscriptions.map((r) => [r.brokerToken, r]));
+    for (const r of requests) byToken.set(r.brokerToken, r);
+    this.pendingSubscriptions = [...byToken.values()];
     this.flushSubscriptions();
   }
 

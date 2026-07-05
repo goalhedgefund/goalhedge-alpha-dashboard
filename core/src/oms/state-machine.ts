@@ -2,8 +2,11 @@ import type { Order, OrderState } from '../domain/orders.js';
 
 const LEGAL: ReadonlyMap<OrderState, ReadonlySet<OrderState>> = new Map([
   ['DRAFT', new Set(['RISK_APPROVED'])],
-  ['RISK_APPROVED', new Set(['SENT'])],
-  ['SENT', new Set(['ACKED', 'REJECTED', 'CANCELLED', 'EXPIRED'])],
+  // EXPIRED: TTL can lapse before the wire call happens (expireTtl).
+  ['RISK_APPROVED', new Set(['SENT', 'EXPIRED'])],
+  // PARTIAL/FILLED: real brokers can deliver a fill before (or instead of)
+  // the ack — a lost ack must never crash the fill path.
+  ['SENT', new Set(['ACKED', 'PARTIAL', 'FILLED', 'REJECTED', 'CANCELLED', 'EXPIRED'])],
   ['ACKED', new Set(['PARTIAL', 'FILLED', 'REJECTED', 'CANCELLED', 'EXPIRED'])],
   ['PARTIAL', new Set(['PARTIAL', 'FILLED', 'CANCELLED', 'EXPIRED'])],
   ['FILLED', new Set()],

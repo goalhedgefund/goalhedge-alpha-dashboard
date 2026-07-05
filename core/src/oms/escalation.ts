@@ -159,6 +159,15 @@ export class ExitEscalator {
         stage: nextStage,
         stageStartMs: nowMs,
       });
+    } else {
+      // Throttled/failed submit: never drop a live exit. Keep tracking the
+      // dead order at the same rung so the next poll re-escalates the
+      // remaining quantity instead of abandoning the position.
+      this.opts.journal?.('diag.error', {
+        where: 'escalation.submit',
+        message: `escalated exit not accepted (${result.reason ?? 'unknown'}); retrying next poll`,
+      });
+      this.tracked.set(t.clientOrderId, { ...t, stageStartMs: nowMs });
     }
   }
 

@@ -224,7 +224,7 @@ export function resolveNiftyWeeklyChain(
     expiryDate,
     chain,
     lotSize: first ? Math.round(first.lotSize) : 65,
-    tickSizePaise: first ? first.tickSizePaise : 500,
+    tickSizePaise: first ? first.tickSizePaise : 5,
     rowCount: niftyOptions.filter((r) => r.expiryDate === expiryDate).length,
   };
 }

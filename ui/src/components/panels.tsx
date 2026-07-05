@@ -175,6 +175,7 @@ export function KillSwitch({ state, client }: { state: GatewayState; client: Gat
   const [holding, setHolding] = useState(false);
   const [result, setResult] = useState('');
   const [reason, setReason] = useState('');
+  const [confirmText, setConfirmText] = useState('');
   const [rearmResult, setRearmResult] = useState('');
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const kill = state.kill;
@@ -195,12 +196,15 @@ export function KillSwitch({ state, client }: { state: GatewayState; client: Gat
   };
 
   // Re-arm requires the typed 'REARM' confirmation + a non-empty reason
-  // (kill-switch discipline). The UI supplies the confirmation literal; the
-  // operator supplies the reason. Both are journaled server-side.
+  // (kill-switch discipline). The OPERATOR types both — the UI never supplies
+  // the confirmation literal itself, or the two-step ceremony is theatre.
   const rearm = async (): Promise<void> => {
-    const r = await client.command('REARM', { confirm: 'REARM', reason });
+    const r = await client.command('REARM', { confirm: confirmText.trim(), reason });
     setRearmResult(r.accepted ? 'RE-ARMED — trading unlocked' : `REJECTED: ${r.reason ?? 'unknown'}`);
-    if (r.accepted) setReason('');
+    if (r.accepted) {
+      setReason('');
+      setConfirmText('');
+    }
   };
 
   return (
@@ -224,6 +228,13 @@ export function KillSwitch({ state, client }: { state: GatewayState; client: Gat
             LOCKED{kill.reason !== undefined ? `: ${kill.reason}` : ''}
           </div>
           <input
+            data-testid="rearm-confirm"
+            className="rearm-reason"
+            placeholder="type REARM to confirm"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+          />
+          <input
             data-testid="rearm-reason"
             className="rearm-reason"
             placeholder="reason to re-arm"
@@ -233,7 +244,7 @@ export function KillSwitch({ state, client }: { state: GatewayState; client: Gat
           <button
             data-testid="rearm-btn"
             className="rearm-btn"
-            disabled={reason.trim() === ''}
+            disabled={confirmText.trim() !== 'REARM' || reason.trim() === ''}
             onClick={() => void rearm()}
           >
             RE-ARM
@@ -312,7 +323,11 @@ export function PositionsPanel({ state }: { state: GatewayState }): JSX.Element 
         open.map((p) => {
           const row = state.chain.find((r) => r.instrumentId === p.instrumentId);
           const ltp = row?.ltpPaise ?? 0;
-          const unreal = ltp > 0 ? (ltp - p.avgEntryPricePaise) * p.qty : 0;
+          // Mark at the exit side (bid) — that's what closing now would fetch;
+          // LTP flatters a long position by half the spread. Charges are only
+          // known at exit, so this is labeled GROSS, never presented as net.
+          const mark = row !== undefined && row.bidPaise > 0 ? row.bidPaise : ltp;
+          const unreal = mark > 0 ? (mark - p.avgEntryPricePaise) * p.qty : 0;
           const stop = stopByPos.get(p.positionId);
           return (
             <div key={p.positionId} className="position" data-testid="open-position">
@@ -325,7 +340,7 @@ export function PositionsPanel({ state }: { state: GatewayState }): JSX.Element 
                 <b>{rupees(p.avgEntryPricePaise)}</b>
                 <span>ltp</span>
                 <b>{ltp > 0 ? rupees(ltp) : '—'}</b>
-                <span>open P&L</span>
+                <span>open P&L (gross @bid)</span>
                 <b className={unreal < 0 ? 'neg' : 'pos'}>{rupees(unreal)}</b>
               </div>
               <div className="stop-ladder">
@@ -542,7 +557,7 @@ function summarize(e: JEvent): string {
     case 'kill.tripped':
       return `${e.payload.source} — ${e.payload.reason}`;
     case 'kill.completed':
-      return `flat: ${e.payload.flattenedPositions} pos, ${e.payload.cancelledOrders} ord (${e.payload.durationMs}ms)`;
+      return `exits sent: ${e.payload.flattenedPositions} pos, cancelled ${e.payload.cancelledOrders} ord (${e.payload.durationMs}ms)`;
     case 'kill.rearmed':
       return `re-armed: ${e.payload.reason}`;
     case 'recon.result':

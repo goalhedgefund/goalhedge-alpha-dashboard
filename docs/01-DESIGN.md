@@ -150,7 +150,7 @@ At retail scale in India, broker/exchange RTT (~50–200 ms) dominates. Our comm
 ## 9. Cross-Cutting
 
 - **Config discipline:** all configs zod-validated and typed; session journal records the config hash; any param change is a journaled event. Config files: `config/market/india-nse-options.json`, `config/risk/<profile>.json`, `config/strategy/<id>.json`.
-- **Market profile carries the exchange facts** (verify at go-live; they drift): session 09:15–15:30 IST, NIFTY lot size (75 as configured), freeze quantity per NSE circular, weekly expiry day per current exchange calendar (config, currently Tuesday), tick size ₹0.05, square-off defaults.
+- **Market profile carries the exchange facts** (verify at go-live; they drift): session 09:15–15:30 IST, NIFTY lot size (65 as configured, verified against the live Dhan scrip master 2026-07-03), freeze quantity 1950 per NSE circular, weekly expiry day per current exchange calendar (config, currently Tuesday), tick size ₹0.05, square-off defaults.
 - **Time discipline:** IST exchange time everywhere; NTP check at preflight; monotonic per-source event timestamps.
 - **Data capture:** Recorder writes normalized compressed JSONL ticks every session → the replay/backtest corpus grows daily. (CODEX 1-min cash candles are research inputs; scalping validation needs our own tick capture.)
 - **Persistence:** better-sqlite3 (WAL) for orders/trades/positions/sessions; JSONL for the event journal; crash recovery = journal replay + reconciliation at restart (tested, 03 §4).

@@ -94,6 +94,8 @@ export class SessionManager {
   private preflightRan = false;
   private acked = false;
   private squareOffStarted = false;
+  private squareOffCancelled = 0;
+  private squareOffFlattened = 0;
 
   constructor(private readonly opts: SessionManagerOptions) {
     this.clock = opts.clock ?? systemClock;
@@ -237,7 +239,16 @@ export class SessionManager {
     if (this.phaseValue === 'PREFLIGHT') this.maybeOpen(nowMs);
 
     if (hhmm >= hardSquareOff) {
-      if (this.phaseValue === 'OPEN' || this.phaseValue === 'ENTRY_CUTOFF') await this.squareOff();
+      if (this.phaseValue === 'OPEN' || this.phaseValue === 'ENTRY_CUTOFF') {
+        await this.squareOff();
+      } else if (this.phaseValue === 'SQUARE_OFF') {
+        // Exits still working: retry any position that lost its exit (the
+        // flatten helper skips positions already being chased), then close
+        // only once the book is actually flat.
+        const ports = this.opts.flattenPorts();
+        this.squareOffFlattened += await flattenAllPositions(ports, 'SQUARE_OFF', 'squareoff:retry');
+        this.completeSquareOffIfFlat();
+      }
       return;
     }
 
@@ -249,9 +260,17 @@ export class SessionManager {
   /**
    * Flatten every open position under purpose SQUARE_OFF and close the
    * session. Does NOT lock — square-off is routine, not a kill. Idempotent.
+   *
+   * CLOSED is only claimed once the book is ACTUALLY flat: with instant paper
+   * fills that is immediately; with real fill latency the phase stays
+   * SQUARE_OFF and onTimer retries/verifies until flat — the session never
+   * reports "closed" while positions are still live.
    */
   async squareOff(): Promise<SquareOffReport> {
-    if (this.squareOffStarted) return { cancelledOrders: 0, flattenedPositions: 0 };
+    if (this.squareOffStarted) {
+      this.completeSquareOffIfFlat();
+      return { cancelledOrders: 0, flattenedPositions: 0 };
+    }
     this.squareOffStarted = true;
     this.transitionTo('SQUARE_OFF', 'hard square-off');
     this.opts.target.disarm();
@@ -259,12 +278,10 @@ export class SessionManager {
     const ports = this.opts.flattenPorts();
     const cancelledOrders = await cancelAllOpenOrders(ports);
     const flattenedPositions = await flattenAllPositions(ports, 'SQUARE_OFF', 'squareoff');
+    this.squareOffCancelled += cancelledOrders;
+    this.squareOffFlattened += flattenedPositions;
 
-    this.transitionTo('CLOSED', 'square-off complete');
-    this.journal('session.closed', {
-      sessionId: this.opts.sessionId,
-      summary: { cancelledOrders, flattenedPositions },
-    });
+    this.completeSquareOffIfFlat();
     return { cancelledOrders, flattenedPositions };
   }
 
@@ -296,6 +313,23 @@ export class SessionManager {
     if (this.started) return;
     this.started = true;
     this.journal('session.started', { session: this.state() });
+  }
+
+  private isFlat(): boolean {
+    return this.opts
+      .flattenPorts()
+      .oms.getPositions()
+      .every((p) => p.state === 'CLOSED' || p.qty <= 0);
+  }
+
+  /** SQUARE_OFF → CLOSED, but only when every position is really flat. */
+  private completeSquareOffIfFlat(): void {
+    if (this.phaseValue !== 'SQUARE_OFF' || !this.isFlat()) return;
+    this.transitionTo('CLOSED', 'square-off complete');
+    this.journal('session.closed', {
+      sessionId: this.opts.sessionId,
+      summary: { cancelledOrders: this.squareOffCancelled, flattenedPositions: this.squareOffFlattened },
+    });
   }
 
   private maybeOpen(nowMs: number): void {

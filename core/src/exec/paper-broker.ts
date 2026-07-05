@@ -1,5 +1,5 @@
 import type { InstrumentId, PositionId } from '../domain/ids.js';
-import type { Fill, Order } from '../domain/orders.js';
+import { isTerminalOrderState, type Fill, type Order } from '../domain/orders.js';
 import type { Position } from '../domain/positions.js';
 import { systemClock, type Clock } from '../domain/time.js';
 import type { BrokerOrderEvent, IBrokerAdapter } from './adapter.js';
@@ -118,7 +118,11 @@ export class PaperBroker implements IBrokerAdapter {
   async cancelOrder(clientOrderId: Order['clientOrderId']): Promise<void> {
     const existing = this.orders.get(clientOrderId);
     const ts = this.clock.now();
-    if (existing !== undefined) this.orders.set(clientOrderId, { ...existing, state: 'CANCELLED', updatedTs: ts });
+    // Never rewrite a terminal order (a FILLED order cannot become CANCELLED);
+    // the CANCELLED event is still emitted and the OMS ignores it when stale.
+    if (existing !== undefined && !isTerminalOrderState(existing.state)) {
+      this.orders.set(clientOrderId, { ...existing, state: 'CANCELLED', updatedTs: ts });
+    }
     this.emit({
       type: 'CANCELLED',
       clientOrderId,
@@ -140,12 +144,25 @@ export class PaperBroker implements IBrokerAdapter {
   }
 
   private fillOrder(order: Order): void {
+    // A cancel confirmed between ack and fill kills the pending fill — a real
+    // broker never fills an order it has already confirmed cancelled.
+    const current = this.orders.get(order.clientOrderId);
+    if (current !== undefined && (current.state === 'CANCELLED' || current.state === 'REJECTED')) return;
     const holds = this.fillHolds.get(order.instrumentId) ?? 0;
     if (holds > 0) {
       this.fillHolds.set(order.instrumentId, holds - 1);
       return; // order rests ACKED, unfilled
     }
     const quote = this.quotes.get(order.instrumentId);
+    // Honor limit semantics: a limit order only fills when marketable at the
+    // touch. Non-marketable limits rest ACKED (TTL/escalation machinery
+    // chases them) instead of dishonestly filling through the limit.
+    if (quote !== undefined && order.limitPricePaise !== undefined) {
+      const marketable = order.side === 'BUY'
+        ? quote.askPaise > 0 && quote.askPaise <= order.limitPricePaise
+        : quote.bidPaise > 0 && quote.bidPaise >= order.limitPricePaise;
+      if (!marketable) return; // rests ACKED, unfilled
+    }
     const base = order.side === 'BUY'
       ? quote?.askPaise ?? order.limitPricePaise ?? quote?.ltpPaise ?? 0
       : quote?.bidPaise ?? order.limitPricePaise ?? quote?.ltpPaise ?? 0;
@@ -161,7 +178,14 @@ export class PaperBroker implements IBrokerAdapter {
     }
     const fillQty = Math.min(order.qty, this.partialQty ?? order.qty);
     this.partialQty = undefined;
-    const pricePaise = order.side === 'BUY' ? base + this.slippagePaise : Math.max(1, base - this.slippagePaise);
+    let pricePaise = order.side === 'BUY' ? base + this.slippagePaise : Math.max(1, base - this.slippagePaise);
+    // Slippage never breaches the limit: a marketable limit fills at the
+    // touch or better, capped at the limit price itself.
+    if (order.limitPricePaise !== undefined) {
+      pricePaise = order.side === 'BUY'
+        ? Math.min(pricePaise, order.limitPricePaise)
+        : Math.max(pricePaise, order.limitPricePaise);
+    }
     const fill: Fill = {
       clientOrderId: order.clientOrderId,
       fillId: this.eventId('fill'),
