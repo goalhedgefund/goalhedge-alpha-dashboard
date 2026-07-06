@@ -61,6 +61,34 @@ describe('code 1 - Index packet', () => {
     expect(tick!.ts).toBe(1_782_000_000_000);
     expect(tick!.qty).toBe(0);
   });
+
+  it('normalizes Dhan ltt values that arrive one IST offset ahead of recv time', () => {
+    const buf = Buffer.alloc(16, 0);
+    makeHeader(buf, 1, 16, 0, 13);
+    buf.writeFloatLE(24406.5, 8);
+    buf.writeInt32LE(1783336800, 12);
+
+    const [p] = decodeDhanBuffer(buf);
+    const spotId = makeInstrumentId('NSE', 'NIFTY_SPOT');
+    const tick = dhanPacketToTick(p!, 1_783_317_058_000, new Map([['13', spotId]]));
+
+    expect(tick).not.toBeNull();
+    expect(tick!.ts).toBe(1_783_317_000_000);
+  });
+
+  it('clamps still-future Dhan ltt values to receive time', () => {
+    const buf = Buffer.alloc(16, 0);
+    makeHeader(buf, 1, 16, 0, 13);
+    buf.writeFloatLE(24406.5, 8);
+    buf.writeInt32LE(1783336800, 12);
+
+    const [p] = decodeDhanBuffer(buf);
+    const spotId = makeInstrumentId('NSE', 'NIFTY_SPOT');
+    const tick = dhanPacketToTick(p!, 1_783_000_000_000, new Map([['13', spotId]]));
+
+    expect(tick).not.toBeNull();
+    expect(tick!.ts).toBe(1_783_000_000_000);
+  });
 });
 
 // ---------------------------------------------------------------------------

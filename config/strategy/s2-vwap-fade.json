@@ -1,7 +1,7 @@
 {
   "strategyId": "s2-vwap-fade",
   "version": "0.1.0",
-  "enabled": false,
+  "enabled": true,
   "params": {
     "stretchPct": 0.0015,
     "decelRatio": 0.2,

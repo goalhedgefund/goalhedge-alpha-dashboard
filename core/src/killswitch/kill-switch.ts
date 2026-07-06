@@ -157,17 +157,15 @@ export class KillSwitch {
   }
 
   /**
-   * Call on the timer cadence. Trips when the local clock and the last exchange
-   * tick disagree by more than the threshold WHILE the feed is current — a
-   * negative gap (tick stamped in the future) or a positive gap inside the
-   * freshness window. A large positive gap is feed staleness, not skew, and is
-   * left to checkFeedStale.
+   * Call on the timer cadence. Trips when an exchange tick is stamped in the
+   * future beyond the threshold. Positive gaps are not clock skew for feeds
+   * where tick.ts is last-traded time rather than receive time; large positive
+   * gaps are handled by checkFeedStale while positioned.
    */
   checkClockSkew(nowMs: number): boolean {
     if (this.mode !== 'READY' || this.lastTickTs === 0) return false;
     const skew = nowMs - this.lastTickTs;
-    if (skew > this.feedStaleMs) return false;
-    if (Math.abs(skew) <= this.clockSkewMs) return false;
+    if (skew >= -this.clockSkewMs) return false;
     void this.trip('AUTO', 'CLOCK_SKEW');
     return true;
   }

@@ -10,6 +10,10 @@ import {
   type DhanQuotePacket,
 } from './packet-decoder.js';
 
+const IST_OFFSET_MS = 330 * 60_000;
+const IST_OFFSET_TOLERANCE_MS = 10 * 60_000;
+const MAX_FUTURE_TICK_MS = 2_000;
+
 export interface DhanFeedOptions {
   wsUrl: string;
   clientId: string;
@@ -29,7 +33,7 @@ export function dhanPacketToTick(
 
   const typed = p as DhanIndexPacket | DhanLtpPacket | DhanQuotePacket | DhanFullPacket;
   const ltpPaise = Math.round(typed.ltp * 100);
-  const ts = typed.ltt > 0 ? typed.ltt * 1000 : recvTs;
+  const ts = typed.ltt > 0 ? normalizeDhanLttMs(typed.ltt, recvTs) : recvTs;
 
   if (typed.code === 1 || typed.code === 2) {
     return {
@@ -64,6 +68,19 @@ export function dhanPacketToTick(
     bidQty: q.code === 8 && top !== undefined ? top.bidQty : q.buyQty,
     askQty: q.code === 8 && top !== undefined ? top.askQty : q.sellQty,
   };
+}
+
+function normalizeDhanLttMs(lttSeconds: number, recvTs: number): number {
+  const ts = lttSeconds * 1000;
+  const futureBy = ts - recvTs;
+  if (
+    futureBy > IST_OFFSET_MS - IST_OFFSET_TOLERANCE_MS &&
+    futureBy < IST_OFFSET_MS + IST_OFFSET_TOLERANCE_MS
+  ) {
+    return ts - IST_OFFSET_MS;
+  }
+  if (ts - recvTs > MAX_FUTURE_TICK_MS) return recvTs;
+  return ts;
 }
 
 /**

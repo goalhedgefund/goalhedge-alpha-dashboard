@@ -198,15 +198,13 @@ describe('chaos: automatic kill trips', () => {
     expect(desk.kill.state()).toBe('READY');
   });
 
-  it('clock skew (in-window and future-stamped ticks) → CLOCK_SKEW trip; plain staleness does not', async () => {
-    // Positive skew, feed still fresh: local clock 2s ahead of the tick stamp.
+  it('future-stamped ticks → CLOCK_SKEW trip; last-trade lag and plain staleness do not', async () => {
+    // Positive lag, feed still fresh: local clock 2s ahead of the last-trade stamp.
     const a = makeDesk({ clockSkewMs: 1_000, feedStaleMs: 10_000 });
     a.kill.noteTick(10_000);
     expect(a.kill.checkClockSkew(10_500)).toBe(false); // 0.5s within tolerance
-    expect(a.kill.checkClockSkew(12_000)).toBe(true); // 2s skew while fresh
-    await settle();
-    expect(a.kill.state()).toBe('LOCKED');
-    expect(a.kill.lastTripReason()).toBe('CLOCK_SKEW');
+    expect(a.kill.checkClockSkew(12_000)).toBe(false); // 2s last-trade lag is not clock skew
+    expect(a.kill.state()).toBe('READY');
 
     // Negative skew: a tick stamped 3s in the FUTURE relative to local time.
     const b = makeDesk({ clockSkewMs: 1_000, feedStaleMs: 10_000 });

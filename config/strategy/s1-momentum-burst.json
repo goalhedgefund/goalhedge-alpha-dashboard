@@ -1,7 +1,7 @@
 {
   "strategyId": "s1-momentum-burst",
   "version": "0.1.0",
-  "enabled": false,
+  "enabled": true,
   "params": {
     "impulsePct": 0.0008,
     "confirmTicks": 3,

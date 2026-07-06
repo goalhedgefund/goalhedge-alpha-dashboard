@@ -197,10 +197,12 @@ export class PaperHost {
   async ingestTick(tick: Tick): Promise<void> {
     if (!this.started) throw new Error('PaperHost.ingestTick before start()');
     this.opts.recorder?.record(tick);
-    // Kill-switch auto-trip inputs: every tick feeds staleness tracking, and a
-    // tick stamped in the future beyond the skew budget trips CLOCK_SKEW.
-    if (tick.ts > this.lastTickTs) this.lastTickTs = tick.ts;
-    this.kill.noteTick(tick.ts);
+    // Kill-switch/health freshness is based on arrival time. Broker feeds may
+    // expose tick.ts as last-traded/exchange time, which can lag or occasionally
+    // lead local wall time; that timestamp still drives bars/strategy below.
+    const observedTs = Math.min(tick.recvTs, this.clock.now());
+    if (observedTs > this.lastTickTs) this.lastTickTs = observedTs;
+    this.kill.noteTick(observedTs);
     this.kill.checkClockSkew(this.clock.now());
     const kind = this.opts.marketData.ingest(tick);
 
