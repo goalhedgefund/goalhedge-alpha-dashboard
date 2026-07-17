@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "build": "tsc -p tsconfig.build.json",
     "demo": "node dist/demo/demo-gateway.js",
-    "paper:live-data:dhan": "node dist/host/dhan-live-data-paper.js"
+    "paper:live-data:dhan": "node dist/host/dhan-live-data-paper.js",
+    "paper:live-data:allop": "node dist/host/allop-live-data-paper.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",

@@ -21,9 +21,10 @@ import { buildDigest, writeDigest, type DigestArtifacts, type DigestReport } fro
 import { recoverFromJournal, reconcileRecovered, type RecoveredState } from '../session/recovery.js';
 import { SessionManager, type LoadedConfigRef } from '../session/session.js';
 import { StopEngine } from '../stops/stop-engine.js';
-import { StrategyRunner } from '../strategy/runner.js';
+import { StrategyRunner, type JournalSink } from '../strategy/runner.js';
 import type { EligibilityConfig, RegimeTrend } from '../strategy/eligibility.js';
-import type { IStrategy, StrategyParams } from '../strategy/types.js';
+import type { IStrategy, StrategyLifecycle, StrategyParams } from '../strategy/types.js';
+import type { Trade } from '../domain/positions.js';
 import { LatencySampler } from '../telemetry/latency.js';
 import type { WeeklyChainResult } from '../marketdata/instrument-master.js';
 import type { FeedMarketData } from './feed-market-data.js';
@@ -42,6 +43,36 @@ export interface GatewayPort {
    * The real Gateway implements this; a journal-only sink may omit it.
    */
   publishState?(slices: GatewayStateSlices): void;
+}
+
+/**
+ * The runner surface the host drives. StrategyRunner satisfies it
+ * structurally; the ALL_OP MmRunner implements it directly — the host does
+ * not care whether entries come from one proposal or a standing quote set.
+ */
+export interface HostRunner {
+  arm(): void;
+  disarm(): void;
+  setParams(params: StrategyParams): void;
+  state(): StrategyLifecycle;
+  lastNoTrade(): string | undefined;
+  activeParamsSnapshot(): StrategyParams;
+  onUnderlyingTick(nowMs: number): Promise<void>;
+  onOptionTick(instrumentId: InstrumentId, ltpPaise: number, nowMs: number): Promise<void>;
+  onTimer(nowMs: number): Promise<void>;
+  onTrade(trade: Trade): void;
+}
+
+/** Runtime pieces wire() builds that a custom runner needs to plug into. */
+export interface HostRunnerPorts {
+  gate: RiskGate;
+  oms: Oms;
+  sessionRisk: SessionRiskState;
+  escalator: ExitEscalator;
+  clock: Clock;
+  journal: JournalSink;
+  journalHealthy: () => boolean;
+  latency: LatencySampler;
 }
 
 export interface PaperHostOptions {
@@ -87,6 +118,12 @@ export interface PaperHostOptions {
    * because the broker never learns the touch. Absent in live mode.
    */
   quoteSink?: (instrumentId: InstrumentId, quote: { bidPaise: number; askPaise: number; ltpPaise: number }) => void;
+  /**
+   * Build a custom runner (e.g. the ALL_OP MmRunner) instead of the default
+   * StrategyRunner. The factory receives the wired runtime ports; kill
+   * switch, session square-off, and gateway commands target it identically.
+   */
+  runnerFactory?: (ports: HostRunnerPorts) => HostRunner;
 }
 
 export interface HostStartResult {
@@ -117,7 +154,7 @@ export class PaperHost {
   private writer!: JournalWriter;
   private tradesWriter!: TradesWriter;
   private oms!: Oms;
-  private runner!: StrategyRunner;
+  private runner!: HostRunner;
   private kill!: KillSwitch;
   private session!: SessionManager;
   private reconciler!: Reconciler;
@@ -229,6 +266,9 @@ export class PaperHost {
     this.oms.cancelUnacked(nowMs); // unacked past timeout → cancel-and-verify
     await this.runner.onTimer(nowMs);
     await this.session.onTimer(nowMs);
+    if ((this.opts.autoArm ?? true) && this.runner.state() === 'DISARMED' && this.session.canArm().ok) {
+      this.runner.arm();
+    }
     this.maybeReconcile(nowMs);
     this.publishGateway(nowMs);
   }
@@ -357,27 +397,40 @@ export class PaperHost {
       journal: this.sink,
     });
 
-    this.runner = new StrategyRunner({
-      sessionId: opts.sessionId,
-      strategy: opts.strategy,
-      params: opts.params,
-      market: opts.market,
+    const runnerPorts: HostRunnerPorts = {
       gate,
       oms: this.oms,
-      stopEngine: new StopEngine({ ids: opts.ids, tickSizePaise: opts.market.tickSizePaise }),
       sessionRisk: this.sessionRisk,
-      ids: opts.ids,
+      escalator,
       clock: this.clock,
-      view: opts.marketData,
-      eligibility: opts.eligibility,
-      todayDate: opts.date,
       journal: this.sink,
       journalHealthy: () => this.writer.healthy(),
       latency: this.latency,
-      escalator,
-      ...(opts.regime !== undefined ? { regime: opts.regime } : {}),
-      ...(opts.cooldownSec !== undefined ? { cooldownSec: opts.cooldownSec } : {}),
-    });
+    };
+    this.runner =
+      opts.runnerFactory !== undefined
+        ? opts.runnerFactory(runnerPorts)
+        : new StrategyRunner({
+            sessionId: opts.sessionId,
+            strategy: opts.strategy,
+            params: opts.params,
+            market: opts.market,
+            gate,
+            oms: this.oms,
+            stopEngine: new StopEngine({ ids: opts.ids, tickSizePaise: opts.market.tickSizePaise }),
+            sessionRisk: this.sessionRisk,
+            ids: opts.ids,
+            clock: this.clock,
+            view: opts.marketData,
+            eligibility: opts.eligibility,
+            todayDate: opts.date,
+            journal: this.sink,
+            journalHealthy: () => this.writer.healthy(),
+            latency: this.latency,
+            escalator,
+            ...(opts.regime !== undefined ? { regime: opts.regime } : {}),
+            ...(opts.cooldownSec !== undefined ? { cooldownSec: opts.cooldownSec } : {}),
+          });
 
     const sessionBox: { session?: SessionManager } = {};
     this.kill = new KillSwitch({

@@ -1,0 +1,67 @@
+{
+  "profileId": "allop-nse-options",
+  "version": 1,
+  "asOf": "2026-07-16",
+  "exchange": "NSE",
+  "segment": "FNO_OPTIDX",
+  "currency": "INR",
+  "timezone": "Asia/Kolkata",
+  "session": { "open": "09:15", "close": "15:30" },
+  "entryCutoff": "15:10",
+  "hardSquareOff": "15:15",
+  "tickSizePaise": 5,
+  "contract": {
+    "underlying": "NIFTY",
+    "lotSize": 65,
+    "freezeQty": 1950,
+    "weeklyExpiryDay": "TUE",
+    "strikeStepPaise": 5000
+  },
+  "charges": {
+    "gstRate": 0.18,
+    "components": [
+      {
+        "name": "stt",
+        "basis": "sell_premium",
+        "rate": 0.001,
+        "gstApplicable": false,
+        "verifyAtGoLive": true
+      },
+      {
+        "name": "exchange_txn",
+        "basis": "both_premium",
+        "rate": 0.0003503,
+        "gstApplicable": true,
+        "verifyAtGoLive": true
+      },
+      {
+        "name": "sebi_fee",
+        "basis": "both_premium",
+        "rate": 0.000001,
+        "gstApplicable": true,
+        "verifyAtGoLive": true
+      },
+      {
+        "name": "stamp_duty",
+        "basis": "buy_premium",
+        "rate": 0.00003,
+        "gstApplicable": false,
+        "verifyAtGoLive": true
+      },
+      {
+        "name": "ipft",
+        "basis": "both_premium",
+        "rate": 0.000005,
+        "gstApplicable": true,
+        "verifyAtGoLive": true
+      },
+      {
+        "name": "brokerage",
+        "basis": "per_order",
+        "flatPaise": 0,
+        "gstApplicable": true,
+        "verifyAtGoLive": false
+      }
+    ]
+  }
+}

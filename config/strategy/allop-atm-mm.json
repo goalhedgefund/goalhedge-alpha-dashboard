@@ -1,0 +1,21 @@
+{
+  "strategyId": "allop-atm-mm",
+  "version": "0.1.0",
+  "enabled": true,
+  "params": {
+    "spreadCostMultiple": 3,
+    "maxLotsInventory": 5,
+    "lotsPerOrder": 1,
+    "ladderLevels": 2,
+    "ladderGapPct": 0.4,
+    "repriceTicks": 2,
+    "quoteTtlSec": 20,
+    "maxHoldSec": 600,
+    "hardStopPct": 20,
+    "deltaSkewLots": 3,
+    "knifePct": 0.35,
+    "knifeCooldownMin": 10,
+    "quoteFrom": "09:20",
+    "bidCutoff": "15:10"
+  }
+}

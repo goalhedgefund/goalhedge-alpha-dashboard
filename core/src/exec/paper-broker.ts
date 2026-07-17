@@ -18,6 +18,15 @@ export interface PaperBrokerOptions {
   fillLatencyMs?: number;
   rejectNext?: string;
   partialFillQty?: number;
+  /**
+   * Re-check resting (ACKED) limit orders on every quote update and fill the
+   * ones that have become marketable. Off by default: S1/S2 place marketable
+   * limits and their escalation tests rely on resting orders staying put.
+   * The ALL_OP market maker opts in — its passive bids sit below mid by
+   * design and MUST fill when the touch reaches them. Fill realism matches
+   * the cash MM's documented optimism: full size at the touch, no queue.
+   */
+  restingFills?: boolean;
 }
 
 export class PaperBroker implements IBrokerAdapter {
@@ -34,6 +43,7 @@ export class PaperBroker implements IBrokerAdapter {
   private rejectReason: string | undefined;
   private partialQty: number | undefined;
   private readonly fillHolds = new Map<InstrumentId, number>();
+  private readonly restingFills: boolean;
   private seq = 0;
 
   constructor(opts: PaperBrokerOptions = {}) {
@@ -43,10 +53,17 @@ export class PaperBroker implements IBrokerAdapter {
     this.fillLatencyMs = opts.fillLatencyMs ?? 0;
     this.rejectReason = opts.rejectNext;
     this.partialQty = opts.partialFillQty;
+    this.restingFills = opts.restingFills ?? false;
   }
 
   setQuote(instrumentId: InstrumentId, quote: PaperQuote): void {
     this.quotes.set(instrumentId, quote);
+    if (this.restingFills) {
+      for (const order of this.orders.values()) {
+        if (order.instrumentId !== instrumentId || order.state !== 'ACKED') continue;
+        this.later(this.fillLatencyMs, () => this.fillOrder(order));
+      }
+    }
   }
 
   rejectNext(reason: string): void {
@@ -144,10 +161,11 @@ export class PaperBroker implements IBrokerAdapter {
   }
 
   private fillOrder(order: Order): void {
-    // A cancel confirmed between ack and fill kills the pending fill — a real
-    // broker never fills an order it has already confirmed cancelled.
+    // A terminal transition between ack and fill kills the pending fill — a
+    // real broker never fills an order it has confirmed cancelled, and two
+    // queued resting-fill checks must never fill the same order twice.
     const current = this.orders.get(order.clientOrderId);
-    if (current !== undefined && (current.state === 'CANCELLED' || current.state === 'REJECTED')) return;
+    if (current !== undefined && isTerminalOrderState(current.state)) return;
     const holds = this.fillHolds.get(order.instrumentId) ?? 0;
     if (holds > 0) {
       this.fillHolds.set(order.instrumentId, holds - 1);

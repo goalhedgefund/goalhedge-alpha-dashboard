@@ -1,8 +1,9 @@
 /**
  * Demo gateway — drives the full M7 pipeline (S1 → gate → OMS → PaperBroker
  * → StopEngine) on a looping scripted scenario and publishes everything
- * through the Gateway on port 8787, so the mission-control UI has a live
- * trade lifecycle to render (~1 completed trade every ~20s).
+ * through the Gateway on port 8787 (DEMO_GATEWAY_PORT overrides; likewise
+ * DEMO_STRATEGY_ID), so the mission-control UI has a live trade lifecycle
+ * to render (~1 completed trade every ~20s).
  *
  * DEMO ONLY: session/entry windows are widened to 00:00–23:59 so it runs at
  * any wall-clock time. Never reuse this profile override for live trading.
@@ -31,10 +32,25 @@ import { RiskGate, type RiskGateContext } from '../risk/risk-gate.js';
 import { SessionRiskState } from '../risk/session-risk.js';
 import { StopEngine } from '../stops/stop-engine.js';
 import { StrategyRunner, type MarketViewProvider } from '../strategy/runner.js';
+import { AllOpAtmMm } from '../strategy/strategies/allop-atm-mm.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
-import type { StrategyView } from '../strategy/types.js';
+import type { IStrategy, StrategyView } from '../strategy/types.js';
 
-const PORT = 8787;
+const PORT = Number(process.env.DEMO_GATEWAY_PORT ?? 8787);
+// Demo defaults to S1; DEMO_STRATEGY_ID=allop-atm-mm serves the ALL_OP desk
+// skeleton (connect-test only — the MM engine lands in CP2/CP3).
+const STRATEGY_ID = process.env.DEMO_STRATEGY_ID ?? 's1-momentum-burst';
+
+function makeDemoStrategy(id: string): IStrategy {
+  switch (id) {
+    case 's1-momentum-burst':
+      return new S1MomentumBurst();
+    case 'allop-atm-mm':
+      return new AllOpAtmMm();
+    default:
+      throw new Error(`Unsupported DEMO_STRATEGY_ID=${id}`);
+  }
+}
 const STEP_MS = 500;
 const SPOT_ID = makeInstrumentId('NSE', 'SPOT');
 const CE_ID = makeInstrumentId('NSE', 'CE1');
@@ -152,7 +168,7 @@ async function main(): Promise<void> {
     session: { sessionId, mode: 'paper', phase: 'OPEN', date: today },
     kill: { state: 'READY' },
     health: { feedStatus: 'CONNECTED', lastTickTs: Date.now(), gatewayTs: Date.now() },
-    algo: { strategyId: 's1-momentum-burst', lifecycle: 'DISARMED', params: {} },
+    algo: { strategyId: STRATEGY_ID, lifecycle: 'DISARMED', params: {} },
     risk: {
       snapshot: { realizedNetPnlPaise: 0, peakNetPnlPaise: 0, lossStreak: 0, tradesTaken: 0 },
       limits: {
@@ -197,7 +213,7 @@ async function main(): Promise<void> {
   const latency = new LatencySampler();
   const runner = new StrategyRunner({
     sessionId,
-    strategy: new S1MomentumBurst(),
+    strategy: makeDemoStrategy(STRATEGY_ID),
     params: {
       impulsePct: 0.0008,
       confirmTicks: 2,
@@ -388,7 +404,7 @@ async function main(): Promise<void> {
       ...(lat.total.count > 0 ? { latency: toGatewayLatency(lat) } : {}),
     });
     gateway.set('algo', {
-      strategyId: 's1-momentum-burst',
+      strategyId: STRATEGY_ID,
       lifecycle: runner.state(),
       params: runner.activeParamsSnapshot(),
       ...(gateway.currentState().algo.lastNoTradeReason !== undefined

@@ -15,6 +15,7 @@
     "lint": "npm run lint -w core && npm run lint -w ui",
     "demo": "npm run build -w @scalper/core && npm run demo -w @scalper/core",
     "paper:live-data:dhan": "npm run build -w @scalper/core && npm run paper:live-data:dhan -w @scalper/core",
+    "paper:live-data:allop": "npm run build -w @scalper/core && npm run paper:live-data:allop -w @scalper/core",
     "ui": "npm run dev -w @scalper/ui",
     "e2e": "npm run e2e -w @scalper/ui"
   }

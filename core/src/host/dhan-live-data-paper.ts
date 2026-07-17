@@ -24,11 +24,13 @@ import {
 } from '../marketdata/instrument-master.js';
 import type { IStrategy } from '../strategy/types.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
+import { AllOpAtmMm } from '../strategy/strategies/allop-atm-mm.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
 import { S2VwapFade } from '../strategy/strategies/s2-vwap-fade.js';
 import { FeedMarketData, type OptionSpec } from './feed-market-data.js';
 import { loadDhanLiveDataPaperEnv, type DhanLiveDataPaperEnv } from './dhan-live-data-paper-env.js';
-import { PaperHost } from './paper-host.js';
+import { PaperHost, type HostRunnerPorts } from './paper-host.js';
+import { MmRunner } from '../mm/mm-runner.js';
 
 interface DhanLiveDataPaperBuild {
   host: PaperHost;
@@ -175,6 +177,8 @@ function makeStrategy(strategyId: string): IStrategy {
       return new S1MomentumBurst();
     case 's2-vwap-fade':
       return new S2VwapFade();
+    case 'allop-atm-mm':
+      return new AllOpAtmMm();
     default:
       throw new Error(`Unsupported DHAN_STRATEGY_ID=${strategyId}`);
   }
@@ -185,8 +189,18 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   const configDir = new URL('../../../config/', import.meta.url);
   const date = istDate();
   const sessionId = makeSessionId(date, 'paper');
-  const marketCfg = loadConfig(MarketProfileSchema, fileURLToPath(new URL('market/india-nse-options.json', configDir)));
-  const riskCfg = loadConfig(RiskProfileSchema, fileURLToPath(new URL('risk/paper-default.json', configDir)));
+  // ALL_OP quotes to a later cutoff (15:10) and squares off at 15:15, with an
+  // MM-shaped risk profile (many small round trips, 1-lot orders); S1/S2 keep
+  // the momentum-desk profiles.
+  const isMm = env.strategyId === 'allop-atm-mm';
+  const marketCfg = loadConfig(
+    MarketProfileSchema,
+    fileURLToPath(new URL(isMm ? 'market/allop-nse-options.json' : 'market/india-nse-options.json', configDir)),
+  );
+  const riskCfg = loadConfig(
+    RiskProfileSchema,
+    fileURLToPath(new URL(isMm ? 'risk/allop-paper.json' : 'risk/paper-default.json', configDir)),
+  );
   const strategyCfg = loadConfig(StrategyConfigSchema, fileURLToPath(new URL(`strategy/${env.strategyId}.json`, configDir)));
   if (strategyCfg.value.strategyId !== env.strategyId) {
     throw new Error(`Strategy config id mismatch: requested ${env.strategyId}, file declares ${strategyCfg.value.strategyId}`);
@@ -221,6 +235,8 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     slippageTicks: env.paperSlippageTicks,
     ackLatencyMs: env.paperAckLatencyMs,
     fillLatencyMs: env.paperFillLatencyMs,
+    // MM quotes rest passively below mid and must fill when the touch arrives.
+    restingFills: isMm,
   });
   const recorder = new Recorder({ dir: tickDir, compression: 'gzip' });
   const ids = new IdFactory(sessionId);
@@ -279,6 +295,31 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     recorder,
     gateway,
     quoteSink: (instrumentId, quote) => paper.setQuote(instrumentId, quote),
+    ...(isMm
+      ? {
+          runnerFactory: (ports: HostRunnerPorts) =>
+            new MmRunner({
+              sessionId,
+              strategyId: env.strategyId,
+              params: strategyCfg.value.params,
+              market,
+              gate: ports.gate,
+              oms: ports.oms,
+              sessionRisk: ports.sessionRisk,
+              ids,
+              clock: ports.clock,
+              view: marketData,
+              quoteGates: {
+                maxSpreadPct: env.maxSpreadPct,
+                minOi: env.minOi,
+                minVolume: env.minVolume,
+                strikeBand: env.chainDepth,
+              },
+              journal: ports.journal,
+              journalHealthy: ports.journalHealthy,
+            }),
+        }
+      : {}),
   });
   commandJournal.host = host;
   const feed = new DhanFeed({
