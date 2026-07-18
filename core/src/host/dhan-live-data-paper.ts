@@ -38,6 +38,7 @@ interface DhanLiveDataPaperBuild {
   feed: DhanFeed;
   recorder: Recorder;
   subscriptions: SubscribeRequest[];
+  notePreflightTick: (tick: Tick) => boolean;
   journalDir: string;
   tickDir: string;
   selectedStrikes: number[];
@@ -149,11 +150,16 @@ function primeSpot(marketData: FeedMarketData, spotInstrumentId: InstrumentId, s
   });
 }
 
-function latestWeeklyChain(rows: ScripRow[], date: string, underlying: string): WeeklyChainResult {
+function latestWeeklyChain(
+  rows: ScripRow[],
+  date: string,
+  underlying: string,
+  minDaysToExpiry = 0,
+): WeeklyChainResult {
   if (underlying !== 'NIFTY') {
     throw new Error(`Only NIFTY weekly chain is wired today; got DHAN_UNDERLYING_SYMBOL=${underlying}`);
   }
-  const weekly = resolveNiftyWeeklyChain(rows, date);
+  const weekly = resolveNiftyWeeklyChain(rows, date, minDaysToExpiry);
   if (weekly === undefined) {
     throw new Error(`Could not resolve NIFTY weekly chain for ${date}. Check DHAN_SCRIP_MASTER_PATH.`);
   }
@@ -208,7 +214,13 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
 
   const scripMasterPath = resolveRepoPath(root, env.scripMasterPath);
   const scripRows = loadScripMaster(scripMasterPath);
-  const weekly = latestWeeklyChain(scripRows, date, env.underlyingSymbol);
+  // ALL_OP never quotes a contract on its own expiry day (minDaysToExpiry=1
+  // rolls to the next weekly); S1/S2 configs omit the param and keep DTE 0.
+  const minDaysToExpiry =
+    typeof strategyCfg.value.params.minDaysToExpiry === 'number'
+      ? Math.max(0, Math.floor(strategyCfg.value.params.minDaysToExpiry))
+      : 0;
+  const weekly = latestWeeklyChain(scripRows, date, env.underlyingSymbol, minDaysToExpiry);
   const market = marketWithLiveChainFacts(marketCfg.value, weekly);
   const initialSpotPaise = pickInitialSpotPaise(weekly, env);
   const selectedStrikes = getChainStrikes(weekly.chain, initialSpotPaise, env.chainDepth);
@@ -216,6 +228,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   if (options.length === 0) throw new Error('No Dhan option instruments selected from the weekly chain');
 
   const spotInstrumentId = makeInstrumentId('NSE', `${env.underlyingSymbol}_SPOT`);
+  let liveSpotTickTs = 0;
   const marketData = new FeedMarketData({
     spotInstrumentId,
     options,
@@ -290,8 +303,10 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
       { name: 'strategy', hash: strategyCfg.hash, path: strategyCfg.path },
     ],
     resolveChain: () => weekly,
+    preflightLastTickTs: () => liveSpotTickTs,
     feedStaleMs: env.feedStaleMs,
     autoArm: env.autoArm && strategyCfg.value.enabled,
+    autoAckPreflight: env.autoArm && strategyCfg.value.enabled,
     recorder,
     gateway,
     quoteSink: (instrumentId, quote) => paper.setQuote(instrumentId, quote),
@@ -305,6 +320,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
               market,
               gate: ports.gate,
               oms: ports.oms,
+              escalator: ports.escalator,
               sessionRisk: ports.sessionRisk,
               ids,
               clock: ports.clock,
@@ -337,6 +353,13 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     },
     ...optionSubscriptions,
   ];
+  const notePreflightTick = (tick: Tick): boolean => {
+    if (marketData.classify(tick) !== 'spot') return false;
+    const observedTs = Math.min(tick.recvTs, Date.now());
+    if (observedTs > liveSpotTickTs) liveSpotTickTs = observedTs;
+    marketData.ingest(tick);
+    return true;
+  };
 
   return {
     host,
@@ -344,12 +367,30 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     feed,
     recorder,
     subscriptions,
+    notePreflightTick,
     journalDir,
     tickDir,
     selectedStrikes,
     initialSpotPaise,
     disabledStrategyConfig: !strategyCfg.value.enabled,
   };
+}
+
+function waitForFirstSpotTick(build: DhanLiveDataPaperBuild, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    build.feed.setTickHandler((tick: Tick) => {
+      if (build.notePreflightTick(tick)) finish(true);
+    });
+    build.feed.subscribe(build.subscriptions);
+  });
 }
 
 async function main(): Promise<void> {
@@ -366,6 +407,12 @@ async function main(): Promise<void> {
 
   await build.feed.connect();
   console.log('[scalper] connected to Dhan live market feed');
+  const gotInitialSpot = await waitForFirstSpotTick(build, env.feedStaleMs);
+  if (gotInitialSpot) {
+    console.log('[scalper] received first live spot tick for preflight');
+  } else {
+    console.warn(`[scalper] no live spot tick within ${env.feedStaleMs}ms; preflight should block ARM`);
+  }
 
   const started = await build.host.start();
   if (started.halted) {
@@ -406,7 +453,6 @@ async function main(): Promise<void> {
         void build.host.tripKill('AUTO', 'TICK_INGESTION_FAILED');
       });
   });
-  build.feed.subscribe(build.subscriptions);
   console.log(`[scalper] subscribed ${build.subscriptions.length} Dhan instruments; initial spot ${formatPaise(build.initialSpotPaise)}`);
 
   const timer = setInterval(() => {

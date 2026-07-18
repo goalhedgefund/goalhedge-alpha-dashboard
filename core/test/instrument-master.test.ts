@@ -118,6 +118,34 @@ describe('weekly vs monthly expiry flags', () => {
   });
 });
 
+describe('minDaysToExpiry roll (ALL_OP never quotes a contract on its own expiry day)', () => {
+  it('default (0) still resolves a same-day expiry — S1/S2 regression', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const opts = filterOptions(rows, 'NIFTY');
+    expect(nextWeeklyExpiry(opts, '2026-07-07')).toBe('2026-07-07');
+  });
+
+  it('minDaysToExpiry=1 on expiry day rolls to the next weekly', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const opts = filterOptions(rows, 'NIFTY');
+    expect(nextWeeklyExpiry(opts, '2026-07-07', 1)).toBe('2026-08-04');
+  });
+
+  it('minDaysToExpiry=1 off expiry day changes nothing', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const opts = filterOptions(rows, 'NIFTY');
+    expect(nextWeeklyExpiry(opts, AS_OF, 1)).toBe('2026-07-07');
+  });
+
+  it('resolveNiftyWeeklyChain honours minDaysToExpiry', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const rolled = resolveNiftyWeeklyChain(rows, '2026-07-07', 1);
+    expect(rolled?.expiryDate).toBe('2026-08-04');
+    const sameDay = resolveNiftyWeeklyChain(rows, '2026-07-07');
+    expect(sameDay?.expiryDate).toBe('2026-07-07');
+  });
+});
+
 describe('buildOptionChain', () => {
   it('chain has both CE and PE at each strike for the near weekly', () => {
     const rows = loadScripMaster(CSV_PATH);

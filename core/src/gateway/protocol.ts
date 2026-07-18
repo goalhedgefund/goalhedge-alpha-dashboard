@@ -35,11 +35,42 @@ export interface GatewayHealth {
   latency?: GatewayLatency;
 }
 
+export interface GatewayMmDefenceState {
+  right: 'CE' | 'PE';
+  reason: 'ADVERSE_BOOK' | 'COOLDOWN' | 'LOSS_STREAK' | 'TREND';
+  instrumentId?: string;
+  drawdownPct?: number;
+  untilTs?: number;
+}
+
+export interface GatewayMmState {
+  quotePhase: string;
+  scalpSlotsUsed: number;
+  scalpSlotsMax: number;
+  trendRegime?: 'NEUTRAL' | 'UP' | 'DOWN';
+  trendDriftPct?: number;
+  lossStreaks?: { CE: number; PE: number };
+  expiryDate?: string;
+  daysToExpiry?: number;
+  runnerStatus: 'AVAILABLE' | 'PENDING' | 'ACTIVE';
+  pendingRunnerInstrumentId?: string;
+  runner?: {
+    instrumentId: string;
+    entryPricePaise: number;
+    highWaterBidPaise: number;
+    stopPaise: number;
+    openedTs: number;
+    activatedTs: number;
+  };
+  defences: GatewayMmDefenceState[];
+}
+
 export interface GatewayAlgoState {
   strategyId: string;
   lifecycle: StrategyLifecycle;
   params: StrategyParams;
   lastNoTradeReason?: string;
+  mm?: GatewayMmState;
 }
 
 export interface GatewayRiskState {

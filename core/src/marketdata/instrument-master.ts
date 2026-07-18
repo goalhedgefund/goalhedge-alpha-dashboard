@@ -117,9 +117,26 @@ export function getExpiryDates(rows: ScripRow[]): string[] {
   return Array.from(seen).sort();
 }
 
-/** Next weekly expiry (flag=W) on or after `asOfDate` (YYYY-MM-DD). */
-export function nextWeeklyExpiry(rows: ScripRow[], asOfDate: string): string | undefined {
-  return getExpiryDates(rows.filter((r) => r.expiryFlag === 'W')).find((d) => d >= asOfDate);
+/** `dateStr` (YYYY-MM-DD) plus `days` calendar days, as YYYY-MM-DD. */
+function addCalendarDays(dateStr: string, days: number): string {
+  if (days <= 0) return dateStr;
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Next weekly expiry (flag=W) on or after `asOfDate` (YYYY-MM-DD).
+ * `minDaysToExpiry` > 0 skips contracts closer than that many calendar days —
+ * e.g. 1 rolls past a same-day expiry to the following week.
+ */
+export function nextWeeklyExpiry(
+  rows: ScripRow[],
+  asOfDate: string,
+  minDaysToExpiry = 0,
+): string | undefined {
+  const earliest = addCalendarDays(asOfDate, minDaysToExpiry);
+  return getExpiryDates(rows.filter((r) => r.expiryFlag === 'W')).find((d) => d >= earliest);
 }
 
 /** Next monthly expiry (flag=M) on or after `asOfDate` (YYYY-MM-DD). */
@@ -219,9 +236,10 @@ export interface WeeklyChainResult {
 export function resolveNiftyWeeklyChain(
   rows: ScripRow[],
   asOfDate: string,
+  minDaysToExpiry = 0,
 ): WeeklyChainResult | undefined {
   const niftyOptions = filterOptions(rows, 'NIFTY');
-  const expiryDate = nextWeeklyExpiry(niftyOptions, asOfDate);
+  const expiryDate = nextWeeklyExpiry(niftyOptions, asOfDate, minDaysToExpiry);
   if (expiryDate === undefined) return undefined;
 
   const chain = buildOptionChain(niftyOptions, expiryDate);
