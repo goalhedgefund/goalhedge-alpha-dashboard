@@ -50,8 +50,10 @@ export interface EntryProposal {
 
 export interface NoSignal {
   kind: 'NONE';
-  /** Machine-readable no-trade reason, journaled (deduplicated) by the runner. */
+  /** Machine-readable no-trade reason, journaled (deduplicated + heartbeat) by the runner. */
   reason?: string;
+  /** Optional diagnostic detail forwarded to the journal alongside reason. */
+  detail?: string;
 }
 
 export type StrategyDecision = EntryProposal | NoSignal;
@@ -74,6 +76,6 @@ export function numParam(params: StrategyParams, key: string, dflt: number): num
   return typeof v === 'number' && Number.isFinite(v) ? v : dflt;
 }
 
-export function none(reason: string): NoSignal {
-  return { kind: 'NONE', reason };
+export function none(reason: string, detail?: string): NoSignal {
+  return { kind: 'NONE', reason, ...(detail !== undefined ? { detail } : {}) };
 }

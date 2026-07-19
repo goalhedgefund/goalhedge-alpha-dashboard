@@ -270,7 +270,8 @@ describe('M7 E2E: signal → gate → fill → trail → exit (scripted replay)'
     );
     expect(noTradeReasons).toContain('NO_IMPULSE');
     expect(noTradeReasons).toContain('COOLDOWN');
-    // Dedup: consecutive duplicates never journaled.
+    // Within one heartbeat window the same reason is not re-emitted, so no
+    // adjacent duplicates appear in this short (<<5 min) scripted scenario.
     for (let i = 1; i < noTradeReasons.length; i++) {
       expect(noTradeReasons[i]).not.toBe(noTradeReasons[i - 1]);
     }

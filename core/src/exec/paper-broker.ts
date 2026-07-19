@@ -181,9 +181,10 @@ export class PaperBroker implements IBrokerAdapter {
         : quote.bidPaise > 0 && quote.bidPaise >= order.limitPricePaise;
       if (!marketable) return; // rests ACKED, unfilled
     }
-    const base = order.side === 'BUY'
-      ? quote?.askPaise ?? order.limitPricePaise ?? quote?.ltpPaise ?? 0
-      : quote?.bidPaise ?? order.limitPricePaise ?? quote?.ltpPaise ?? 0;
+    const touch = order.side === 'BUY' ? quote?.askPaise : quote?.bidPaise;
+    const base = touch !== undefined && touch > 0
+      ? touch
+      : order.limitPricePaise ?? quote?.ltpPaise ?? 0;
     if (base <= 0) {
       this.emit({
         type: 'REJECT',

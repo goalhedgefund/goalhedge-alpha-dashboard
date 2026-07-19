@@ -64,7 +64,7 @@ export class ExitEscalator {
 
   /** Track a submitted exit order. Entries are ignored by design. */
   track(order: Order, intent: OrderIntent): void {
-    if (intent.purpose === 'ENTRY') return;
+    if (intent.purpose === 'ENTRY' || order.state === 'FILLED') return;
     this.tracked.set(order.clientOrderId, {
       clientOrderId: order.clientOrderId,
       intent,
@@ -75,6 +75,10 @@ export class ExitEscalator {
 
   trackedCount(): number {
     return this.tracked.size;
+  }
+
+  isTracked(clientOrderId: ClientOrderId): boolean {
+    return this.tracked.has(clientOrderId);
   }
 
   /** Drive the ladder; call on the timer cadence. Re-entrant safe. */
@@ -184,6 +188,7 @@ export class ExitEscalator {
       tag: `${prev.tag}:esc-${stage.toLowerCase()}`,
       purpose: prev.purpose,
       ...(prev.protectTicks !== undefined ? { protectTicks: prev.protectTicks } : {}),
+      ...(prev.closeLotIds !== undefined ? { closeLotIds: [...prev.closeLotIds] } : {}),
     };
     if (stage === 'MARKET') {
       return { ...base, type: 'MARKET_PROTECT' };

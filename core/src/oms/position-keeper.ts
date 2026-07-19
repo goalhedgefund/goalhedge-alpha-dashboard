@@ -5,7 +5,10 @@ import type { Fill, Order } from '../domain/orders.js';
 import type { Position, Trade, TradeLeg } from '../domain/positions.js';
 import { IdFactory } from '../domain/ids.js';
 
-interface OpenLot {
+export interface OpenPositionLot {
+  /** Fill id is unique within the session and survives partial entry fills. */
+  lotId: string;
+  instrumentId: InstrumentId;
   qty: number;
   pricePaise: number;
   ts: number;
@@ -14,7 +17,13 @@ interface OpenLot {
 
 interface PositionBook {
   position: Position;
-  lots: OpenLot[];
+  lots: OpenPositionLot[];
+}
+
+export interface PositionKeeperUpdate {
+  positions: Position[];
+  trades: Trade[];
+  allocationError?: string;
 }
 
 export class PositionKeeper {
@@ -29,7 +38,7 @@ export class PositionKeeper {
     this.ids = ids ?? new IdFactory(sessionId);
   }
 
-  onFill(order: Order, fill: Fill): { positions: Position[]; trades: Trade[] } {
+  onFill(order: Order, fill: Fill): PositionKeeperUpdate {
     if (order.side === 'BUY') return { positions: [this.applyBuy(order, fill)], trades: [] };
     return this.applySell(order, fill);
   }
@@ -38,11 +47,28 @@ export class PositionKeeper {
     return Array.from(this.books.values()).map((b) => b.position);
   }
 
+  getOpenLots(instrumentId?: InstrumentId): OpenPositionLot[] {
+    const books = instrumentId === undefined
+      ? Array.from(this.books.values())
+      : [this.books.get(instrumentId)].filter((b): b is PositionBook => b !== undefined);
+    return books.flatMap((book) => book.lots.map((lot) => ({ ...lot })));
+  }
+
   private applyBuy(order: Order, fill: Fill): Position {
     const existing = this.books.get(order.instrumentId);
     const openedTs = existing?.position.openedTs ?? fill.ts;
     const positionId = existing?.position.positionId ?? this.ids.positionId();
-    const lots = [...(existing?.lots ?? []), { qty: fill.qty, pricePaise: fill.pricePaise, ts: fill.ts, clientOrderId: fill.clientOrderId }];
+    const lots = [
+      ...(existing?.lots ?? []),
+      {
+        lotId: fill.fillId,
+        instrumentId: order.instrumentId,
+        qty: fill.qty,
+        pricePaise: fill.pricePaise,
+        ts: fill.ts,
+        clientOrderId: fill.clientOrderId,
+      },
+    ];
     const qty = lots.reduce((s, l) => s + l.qty, 0);
     const avgEntryPricePaise = Math.round(lots.reduce((s, l) => s + l.qty * l.pricePaise, 0) / qty);
     const position: Position = {
@@ -62,16 +88,28 @@ export class PositionKeeper {
     return position;
   }
 
-  private applySell(order: Order, fill: Fill): { positions: Position[]; trades: Trade[] } {
+  private applySell(order: Order, fill: Fill): PositionKeeperUpdate {
     const book = this.books.get(order.instrumentId);
-    if (book === undefined) return { positions: [], trades: [] };
+    if (book === undefined) {
+      return {
+        positions: [],
+        trades: [],
+        ...(order.closeLotIds !== undefined
+          ? { allocationError: `targeted fill ${fill.fillId} has no open book for ${String(order.instrumentId)}` }
+          : {}),
+      };
+    }
     let remaining = fill.qty;
     const trades: Trade[] = [];
-    const lots = [...book.lots];
+    const lots = book.lots.map((lot) => ({ ...lot }));
+    const selected = order.closeLotIds === undefined
+      ? lots
+      : order.closeLotIds.flatMap((lotId) => lots.filter((lot) => lot.lotId === lotId));
     let realized = book.position.realizedGrossPaise;
 
-    while (remaining > 0 && lots.length > 0) {
-      const lot = lots[0] as OpenLot;
+    while (remaining > 0 && selected.length > 0) {
+      const lot = selected.shift() as OpenPositionLot;
+      if (lot.qty <= 0) continue;
       const qty = Math.min(remaining, lot.qty);
       const gross = (fill.pricePaise - lot.pricePaise) * qty;
       const entry: TradeLeg = {
@@ -106,27 +144,37 @@ export class PositionKeeper {
         grossPnlPaise: gross,
         charges,
         netPnlPaise: computeTradeNet(gross, charges),
-        exitReason: order.purpose,
+        exitReason: order.tag.split(':')[1]?.toUpperCase() ?? order.purpose,
         holdMs: fill.ts - lot.ts,
       };
       trades.push(trade);
       realized += gross;
       lot.qty -= qty;
       remaining -= qty;
-      if (lot.qty === 0) lots.shift();
     }
 
-    const qtyOpen = lots.reduce((s, l) => s + l.qty, 0);
+    const openLots = lots.filter((lot) => lot.qty > 0);
+    const qtyOpen = openLots.reduce((s, l) => s + l.qty, 0);
     const next: Position = {
       ...book.position,
       qty: qtyOpen,
-      avgEntryPricePaise: qtyOpen > 0 ? Math.round(lots.reduce((s, l) => s + l.qty * l.pricePaise, 0) / qtyOpen) : book.position.avgEntryPricePaise,
+      avgEntryPricePaise: qtyOpen > 0 ? Math.round(openLots.reduce((s, l) => s + l.qty * l.pricePaise, 0) / qtyOpen) : book.position.avgEntryPricePaise,
       state: qtyOpen > 0 ? 'OPEN' : 'CLOSED',
       realizedGrossPaise: realized,
+      openedTs: qtyOpen > 0 ? Math.min(...openLots.map((lot) => lot.ts)) : book.position.openedTs,
       updatedTs: fill.ts,
     };
     if (qtyOpen === 0) this.books.delete(order.instrumentId);
-    else this.books.set(order.instrumentId, { position: next, lots });
-    return { positions: [next], trades };
+    else this.books.set(order.instrumentId, { position: next, lots: openLots });
+    return {
+      positions: [next],
+      trades,
+      ...(order.closeLotIds !== undefined && remaining > 0
+        ? {
+            allocationError: `targeted fill ${fill.fillId} exceeded named lots by ${remaining} units ` +
+              `(order ${String(order.clientOrderId)}; lots ${order.closeLotIds.join(',')})`,
+          }
+        : {}),
+    };
   }
 }

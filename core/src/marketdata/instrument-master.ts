@@ -224,6 +224,21 @@ export function toInstrument(row: ScripRow): Instrument {
   };
 }
 
+/**
+ * Resolve the nearest upcoming NIFTY current-month futures (FUTIDX) row.
+ * Returns the row with the earliest expiry on or after `asOfDate`.
+ * Index futures carry real volume — use instead of the IDX_I spot feed for
+ * VWAP computation (spot sends qty=0 on every tick).
+ */
+export function resolveNiftyCurrentFuture(rows: ScripRow[], asOfDate: string): ScripRow | undefined {
+  const futures = rows.filter(
+    (r) => r.underlyingSymbol === 'NIFTY' && r.instrumentName === 'FUTIDX' && r.expiryDate >= asOfDate,
+  );
+  if (futures.length === 0) return undefined;
+  futures.sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+  return futures[0];
+}
+
 /** Convenience: given all scrip rows, resolve the current NIFTY weekly chain. */
 export interface WeeklyChainResult {
   expiryDate: string;

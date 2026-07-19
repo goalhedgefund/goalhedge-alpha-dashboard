@@ -265,7 +265,7 @@ describe('command channel', () => {
 
     c.send({ kind: 'command', commandId: 'cmd-2', type: 'SET_PARAMS', payload: { params: { lots: 2 } } });
     const ok = await c.expect(isAck);
-    expect(ok).toMatchObject({ accepted: true, reason: 'APPLIES_WHEN_FLAT' });
+    expect(ok).toMatchObject({ accepted: true, reason: 'PARAMS_ACCEPTED' });
     expect(runner.params).toEqual({ lots: 2 });
 
     c.send({ kind: 'command', commandId: 'cmd-3', type: 'SET_PARAMS', payload: { params: { bad: { nested: 1 } } } });
@@ -375,24 +375,38 @@ describe('journal ingestion into the state tree', () => {
     const g = makeGateway();
     expect(g.currentState().kill).toEqual({ state: 'READY' });
 
+    g.ingestJournal(
+      ev(1, 'session.started', {
+        session: {
+          sessionId: SESSION,
+          mode: 'paper',
+          date: '2026-07-03',
+          phase: 'PREFLIGHT',
+          configHashes: {},
+          startedTs: 1,
+        },
+      }),
+    );
+    expect(g.currentState().session.phase).toBe('PREFLIGHT');
+
     const checks = [
       { name: 'instrument.master', ok: true, detail: 'expiry 2026-07-07' },
       { name: 'operator.ack', ok: false },
     ];
-    g.ingestJournal(ev(1, 'session.preflight', { sessionId: SESSION, ok: false, checks }));
+    g.ingestJournal(ev(2, 'session.preflight', { sessionId: SESSION, ok: false, checks }));
     expect(g.currentState().session.preflight).toEqual(checks);
     // Untouched session fields survive the merge.
     expect(g.currentState().session.mode).toBe('paper');
 
-    g.ingestJournal(ev(2, 'session.phase', { sessionId: SESSION, phase: 'OPEN', reason: 'ready' }));
+    g.ingestJournal(ev(3, 'session.phase', { sessionId: SESSION, phase: 'OPEN', reason: 'ready' }));
     expect(g.currentState().session.phase).toBe('OPEN');
 
-    g.ingestJournal(ev(3, 'kill.tripped', { source: 'MANUAL', reason: 'operator' }));
+    g.ingestJournal(ev(4, 'kill.tripped', { source: 'MANUAL', reason: 'operator' }));
     expect(g.currentState().kill).toEqual({ state: 'TRIPPING', reason: 'operator' });
-    g.ingestJournal(ev(4, 'kill.completed', { durationMs: 5, cancelledOrders: 0, flattenedPositions: 1 }));
+    g.ingestJournal(ev(5, 'kill.completed', { durationMs: 5, cancelledOrders: 0, flattenedPositions: 1 }));
     // LOCKED, and the reason from the trip is carried forward.
     expect(g.currentState().kill).toEqual({ state: 'LOCKED', reason: 'operator' });
-    g.ingestJournal(ev(5, 'kill.rearmed', { reason: 'fixed' }));
+    g.ingestJournal(ev(6, 'kill.rearmed', { reason: 'fixed' }));
     expect(g.currentState().kill).toEqual({ state: 'READY' });
   });
 

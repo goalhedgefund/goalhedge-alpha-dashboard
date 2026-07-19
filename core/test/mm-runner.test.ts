@@ -14,8 +14,9 @@ import { isTerminalOrderState } from '../src/domain/orders.js';
 import { ManualClock } from '../src/domain/time.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
 import { MmRunner } from '../src/mm/mm-runner.js';
+import { ExitEscalator } from '../src/oms/escalation.js';
 import { Oms } from '../src/oms/oms.js';
-import { RiskGate } from '../src/risk/risk-gate.js';
+import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
 import { SessionRiskState } from '../src/risk/session-risk.js';
 import type { MarketViewProvider } from '../src/strategy/runner.js';
 import type { StrategyView } from '../src/strategy/types.js';
@@ -41,13 +42,21 @@ const T0 = Date.UTC(2026, 6, 16, 5, 0, 0); // 10:30 IST
 const PARAMS = {
   spreadCostMultiple: 3,
   maxLotsInventory: 5,
+  maxScalpLots: 4,
+  runnerLots: 1,
   lotsPerOrder: 1,
   ladderLevels: 2,
   ladderGapPct: 0.4,
   repriceTicks: 2,
   quoteTtlSec: 3600, // long TTL so tests control expiry explicitly
-  maxHoldSec: 600,
-  hardStopPct: 20,
+  maxHoldSec: 180,
+  hardStopPct: 10,
+  adverseStopPct: 5,
+  defensiveProtectTicks: 10,
+  defensiveCooldownSec: 180,
+  runnerActivationPct: 2,
+  runnerTrailPct: 3,
+  runnerMaxHoldSec: 900,
   deltaSkewLots: 3,
   knifePct: 0.35,
   knifeCooldownMin: 10,
@@ -109,10 +118,11 @@ interface Rig {
   view: FakeView;
   clock: ManualClock;
   sessionRisk: SessionRiskState;
+  escalator: ExitEscalator;
   events: JournalEvent[];
 }
 
-function rig(): Rig {
+function rig(profile: RiskProfile = riskProfile): Rig {
   const clock = new ManualClock(T0);
   const events: JournalEvent[] = [];
   let seq = 0;
@@ -125,19 +135,40 @@ function rig(): Rig {
   const paper = new PaperBroker({ clock, tickSizePaise: TICK, restingFills: true });
   const ids = new IdFactory(SESSION);
   const oms = new Oms({ sessionId: SESSION, adapter: paper, marketProfile: market, clock, ids, journal: sink });
-  const sessionRisk = new SessionRiskState(riskProfile);
+  const sessionRisk = new SessionRiskState(profile);
   const view = new FakeView();
   view.setRow(row(CE_ID, 'CE', 14_990, 15_010, T0));
   view.setRow(row(PE_ID, 'PE', 14_990, 15_010, T0));
   // The broker must know the touch too, or resting limits "fill" at placement.
   paper.setQuote(CE_ID, { bidPaise: 14_990, askPaise: 15_010, ltpPaise: 15_000 });
   paper.setQuote(PE_ID, { bidPaise: 14_990, askPaise: 15_010, ltpPaise: 15_000 });
+  const gate = new RiskGate(market, profile);
+  const gateContext = (): RiskGateContext => ({
+    nowMs: clock.now(),
+    nowHHMM: '10:30',
+    allowedInstruments: view.allowedInstruments(),
+    optionRows: view.optionRows(),
+    openPositions: oms.getPositions(),
+    session: sessionRisk.current(),
+  });
+  const escalator = new ExitEscalator({
+    oms,
+    gate,
+    gateContext,
+    ids,
+    market,
+    markPrice: (instrumentId) => view.optionRows().get(instrumentId)?.bidPaise ?? 0,
+    clock,
+    journal: sink,
+    stageTimeoutMs: 750,
+    repriceTicks: 10,
+  });
   const runner = new MmRunner({
     sessionId: SESSION,
     strategyId: 'allop-atm-mm',
     params: PARAMS,
     market,
-    gate: new RiskGate(market, riskProfile),
+    gate,
     oms,
     sessionRisk,
     ids,
@@ -145,9 +176,10 @@ function rig(): Rig {
     view,
     quoteGates: { maxSpreadPct: 0.015, minOi: 100, minVolume: 100, strikeBand: 5 },
     journal: sink,
+    escalator,
   });
   runnerBox.runner = runner;
-  return { runner, oms, paper, view, clock, sessionRisk, events };
+  return { runner, oms, paper, view, clock, sessionRisk, escalator, events };
 }
 
 function working(r: Rig) {
@@ -230,6 +262,52 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     expect(r.oms.getPositions().filter((p) => p.state !== 'CLOSED' && p.qty > 0)).toHaveLength(0);
   });
 
+  it('earns one runner from a profitable pair and closes the intended scalp lot', async () => {
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const ceBids = working(r)
+      .filter((o) => o.side === 'BUY' && o.instrumentId === CE_ID)
+      .sort((a, b) => (b.limitPricePaise ?? 0) - (a.limitPricePaise ?? 0));
+    expect(ceBids).toHaveLength(2);
+    const highEntry = ceBids[0]!.limitPricePaise!;
+    const lowEntry = ceBids[1]!.limitPricePaise!;
+
+    r.paper.setQuote(CE_ID, { bidPaise: highEntry - TICK, askPaise: highEntry, ltpPaise: highEntry });
+    r.paper.setQuote(CE_ID, { bidPaise: lowEntry - TICK, askPaise: lowEntry, ltpPaise: lowEntry });
+    const beforeLots = r.oms.getOpenLots(CE_ID);
+    expect(beforeLots).toHaveLength(2);
+    const cheapLot = beforeLots.find((lot) => lot.pricePaise === lowEntry)!;
+    const expensiveLot = beforeLots.find((lot) => lot.pricePaise === highEntry)!;
+
+    r.view.setRow(row(CE_ID, 'CE', highEntry + 195, highEntry + 205, T0 + 1_000));
+    await r.runner.onTimer(T0 + 1_000);
+    const scalpExit = working(r).find((o) => o.side === 'SELL' && o.instrumentId === CE_ID)!;
+    expect(scalpExit.tag).toBe('allop-atm-mm:scalp_exit');
+    expect(scalpExit.qty).toBe(LOT);
+    expect(scalpExit.closeLotIds).toEqual([expensiveLot.lotId]);
+
+    r.paper.setQuote(CE_ID, {
+      bidPaise: scalpExit.limitPricePaise!,
+      askPaise: scalpExit.limitPricePaise! + TICK,
+      ltpPaise: scalpExit.limitPricePaise!,
+    });
+    const afterLots = r.oms.getOpenLots(CE_ID);
+    expect(afterLots.some((lot) => lot.lotId === cheapLot.lotId)).toBe(true);
+    expect(afterLots.some((lot) => lot.lotId === expensiveLot.lotId)).toBe(false);
+    expect(r.runner.mmState().runnerStatus).toBe('ACTIVE');
+    expect(r.runner.mmState().runner?.entryPricePaise).toBe(lowEntry);
+
+    // Replenishment may already have added a fresh scalp lot. Its next ask
+    // must explicitly exclude the retained runner allocation.
+    r.paper.setQuote(CE_ID, { bidPaise: lowEntry - 500, askPaise: highEntry + 1_000, ltpPaise: highEntry });
+    await r.runner.onTimer(T0 + 2_000);
+    const nextScalpExit = working(r).find((o) => o.side === 'SELL' && o.instrumentId === CE_ID);
+    if (afterLots.length > 1) {
+      expect(nextScalpExit).toBeDefined();
+      expect(nextScalpExit?.closeLotIds).not.toContain(cheapLot.lotId);
+    }
+  });
+
   it('inventory cap: held books shrink the working bid set (5 lots total)', async () => {
     r.runner.arm();
     await r.runner.onTimer(T0);
@@ -248,7 +326,7 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     expect(heldLots + buys.length).toBeLessThanOrEqual(PARAMS.maxLotsInventory);
   });
 
-  it('latched session stop pauses bids but keeps inventory asks working', async () => {
+  it('latched session stop cancels bids and immediately flattens inventory', async () => {
     r.runner.arm();
     await r.runner.onTimer(T0);
     const bid = working(r).find((o) => o.instrumentId === CE_ID)!;
@@ -260,8 +338,86 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     await r.runner.onTimer(T0 + 2_000);
     const still = working(r);
     expect(still.filter((o) => o.side === 'BUY')).toHaveLength(0);
-    expect(still.filter((o) => o.side === 'SELL')).toHaveLength(1);
+    expect(still.filter((o) => o.side === 'SELL')).toHaveLength(0);
+    expect(r.oms.getPositions().filter((p) => p.state !== 'CLOSED' && p.qty > 0)).toHaveLength(0);
+    expect(r.oms.getOrders().some((o) => o.tag === 'allop-atm-mm:risk_exit' && o.state === 'FILLED')).toBe(true);
     expect(r.runner.lastNoTrade()).toBe('PAUSED_LOCKOUT');
+  });
+
+  it('a completed trade that trips the session stop flattens the other book in the same cycle', async () => {
+    const sensitiveRisk: RiskProfile = {
+      ...riskProfile,
+      giveBack: { armAtPct: 0.1, retainPct: 99 },
+    };
+    r = rig(sensitiveRisk);
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const ceBid = working(r).find((o) => o.instrumentId === CE_ID)!.limitPricePaise!;
+    const peBid = working(r).find((o) => o.instrumentId === PE_ID)!.limitPricePaise!;
+
+    r.paper.setQuote(CE_ID, { bidPaise: ceBid - TICK, askPaise: ceBid, ltpPaise: ceBid });
+    r.paper.setQuote(PE_ID, { bidPaise: peBid - TICK, askPaise: peBid, ltpPaise: peBid });
+    expect(r.oms.getOpenLots(CE_ID).length).toBeGreaterThan(0);
+    expect(r.oms.getOpenLots(PE_ID).length).toBeGreaterThan(0);
+
+    // Arm give-back with a small synthetic prior profit, then let the CE hard
+    // stop create the loss that latches it. PE must be liquidated immediately.
+    r.sessionRisk.recordTrade(10_001);
+    const ceStopBid = Math.floor((ceBid * 0.89) / TICK) * TICK;
+    r.view.setRow(row(CE_ID, 'CE', ceStopBid, ceStopBid + TICK, T0 + 1_000));
+    r.view.setRow(row(PE_ID, 'PE', peBid - TICK, peBid, T0 + 1_000));
+    r.paper.setQuote(CE_ID, { bidPaise: ceStopBid, askPaise: ceStopBid + TICK, ltpPaise: ceStopBid });
+
+    await r.runner.onTimer(T0 + 1_000);
+
+    expect(r.sessionRisk.current().latchedStop).toBe('GIVE_BACK');
+    expect(r.oms.getOpenLots()).toHaveLength(0);
+    expect(working(r)).toHaveLength(0);
+    expect(r.oms.getOrders().some((o) => o.instrumentId === PE_ID && o.tag === 'allop-atm-mm:risk_exit' && o.state === 'FILLED')).toBe(true);
+  });
+
+  it('polls a resting hard stop through REPRICE then MARKET until the exact lot is flat', async () => {
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const bid = working(r).find((o) => o.instrumentId === CE_ID)!;
+    r.paper.setQuote(CE_ID, {
+      bidPaise: bid.limitPricePaise! - TICK,
+      askPaise: bid.limitPricePaise!,
+      ltpPaise: bid.limitPricePaise!,
+    });
+    const lotId = r.oms.getOpenLots(CE_ID)[0]?.lotId;
+    expect(lotId).toBeDefined();
+    for (const order of working(r).filter((candidate) => candidate.side === 'BUY' && candidate.instrumentId === CE_ID)) {
+      await r.oms.cancel(order.clientOrderId);
+    }
+
+    const stopBid = Math.floor((bid.limitPricePaise! * 0.89) / TICK) * TICK;
+    r.view.setRow(row(CE_ID, 'CE', stopBid, stopBid + TICK, T0 + 1_000));
+    r.paper.setQuote(CE_ID, { bidPaise: stopBid, askPaise: stopBid + TICK, ltpPaise: stopBid });
+    r.paper.holdFills(CE_ID, 2);
+    r.clock.advance(1_000);
+    await r.runner.onTimer(r.clock.now());
+
+    const protect = working(r).find((o) => o.tag === 'allop-atm-mm:hard_stop');
+    expect(protect).toEqual(expect.objectContaining({
+      type: 'LIMIT',
+      limitPricePaise: stopBid - 10 * TICK,
+      closeLotIds: [lotId],
+    }));
+    expect(r.escalator.trackedCount()).toBe(1);
+
+    r.clock.advance(800);
+    await r.runner.onTimer(r.clock.now());
+    r.clock.advance(800);
+    await r.runner.onTimer(r.clock.now());
+
+    const stages = r.events
+      .filter((event) => event.type === 'exit.escalated')
+      .map((event) => (event as Extract<JournalEvent, { type: 'exit.escalated' }>).payload.stage);
+    expect(stages).toEqual(['REPRICE', 'MARKET']);
+    const escalated = r.oms.getOrders().filter((order) => order.tag.includes('esc-'));
+    expect(escalated.every((order) => order.closeLotIds?.[0] === lotId)).toBe(true);
+    expect(r.oms.getOpenLots(CE_ID)).toHaveLength(0);
   });
 
   it('DISARM cancels every working quote and leaves the position alone', async () => {

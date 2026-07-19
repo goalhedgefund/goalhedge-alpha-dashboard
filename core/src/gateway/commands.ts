@@ -65,7 +65,7 @@ export function registerRunnerCommands(
       }
     }
     runner.setParams(params as StrategyParams);
-    return { accepted: true, reason: 'APPLIES_WHEN_FLAT' };
+    return { accepted: true, reason: 'PARAMS_ACCEPTED' };
   });
 }
 

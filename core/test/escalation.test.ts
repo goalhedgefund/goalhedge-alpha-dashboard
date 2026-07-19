@@ -46,7 +46,7 @@ interface Harness {
   events: Array<{ type: JournalEventType; payload: unknown }>;
   gateCtx: () => RiskGateContext;
   openPosition: (qty?: number) => Promise<void>;
-  submitStopExit: (qty?: number, limit?: number) => Promise<OrderIntent>;
+  submitStopExit: (qty?: number, limit?: number, closeLotIds?: string[]) => Promise<OrderIntent>;
 }
 
 function build(overrides: { stageTimeoutMs?: number; latchedSession?: boolean } = {}): Harness {
@@ -103,7 +103,7 @@ function build(overrides: { stageTimeoutMs?: number; latchedSession?: boolean } 
     await oms.submit(entry, ok);
   };
 
-  const submitStopExit = async (qty = LOT, limit = 14_885): Promise<OrderIntent> => {
+  const submitStopExit = async (qty = LOT, limit = 14_885, closeLotIds?: string[]): Promise<OrderIntent> => {
     const intent: OrderIntent = {
       intentId: ids.intentId(),
       sessionId: SESSION,
@@ -118,6 +118,7 @@ function build(overrides: { stageTimeoutMs?: number; latchedSession?: boolean } 
       ttlMs: 500,
       tag: 's1:stop:L1_HARD_PREMIUM',
       purpose: 'STOP',
+      ...(closeLotIds !== undefined ? { closeLotIds } : {}),
     };
     const verdict = gate.evaluate(intent, gateCtx());
     expect(verdict.approved).toBe(true);
@@ -204,8 +205,10 @@ describe('escalation ladder', () => {
   it('partial fill: only the REMAINING quantity is chased', async () => {
     const h = build();
     await h.openPosition(2 * LOT);
+    const lotId = h.oms.getOpenLots(CE)[0]?.lotId;
+    expect(lotId).toBeDefined();
     h.paper.partialFillNext(LOT); // stop exit fills half, then rests PARTIAL
-    await h.submitStopExit(2 * LOT);
+    await h.submitStopExit(2 * LOT, 14_885, [lotId!]);
 
     h.clock.advance(800);
     await h.esc.poll();
@@ -214,6 +217,7 @@ describe('escalation ladder', () => {
     expect(esc1[0]).toMatchObject({ stage: 'REPRICE', remainingQty: LOT });
     const chase = h.oms.getOrders().find((o) => o.tag.includes('esc-reprice'));
     expect(chase?.qty).toBe(LOT);
+    expect(chase?.closeLotIds).toEqual([lotId]);
     expect(h.oms.getPositions().every((p) => p.state === 'CLOSED' || p.qty === 0)).toBe(true);
   });
 

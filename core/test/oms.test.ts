@@ -16,6 +16,7 @@ import type { Position } from '../src/domain/positions.js';
 import type { RiskVerdict } from '../src/domain/risk.js';
 import { ManualClock } from '../src/domain/time.js';
 import { Oms } from '../src/oms/oms.js';
+import { PositionKeeper } from '../src/oms/position-keeper.js';
 import { canTransition, IllegalOrderTransitionError, transitionOrder } from '../src/oms/state-machine.js';
 import { TokenBucket } from '../src/oms/throttle.js';
 
@@ -261,6 +262,121 @@ describe('OMS + PaperBroker lifecycle', () => {
     expect(oms.getOrders()[0]?.state).toBe('PARTIAL');
     expect(oms.getOrders()[0]?.filledQty).toBe(65);
     expect(oms.getPositions()[0]?.qty).toBe(65);
+  });
+
+  it('rejects an invalid fill-lot close allocation before it reaches the broker', async () => {
+    const clock = new ManualClock(1);
+    const ids = new IdFactory(SESSION);
+    const broker = new PaperBroker({ clock });
+    broker.setQuote(INSTR, { bidPaise: 10_000, askPaise: 10_010, ltpPaise: 10_005 });
+    const oms = new Oms({ sessionId: SESSION, adapter: broker, marketProfile: profile, clock, ids });
+    const entry = intent(ids, 'BUY');
+    await oms.submit(entry, approved(entry.intentId));
+
+    const badExit = { ...intent(ids, 'SELL'), closeLotIds: ['missing-fill-id'] };
+    const result = await oms.submit(badExit, approved(badExit.intentId));
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBe('INVALID_CLOSE_ALLOCATION');
+    expect(oms.getPositions()[0]?.qty).toBe(65);
+    expect(broker.getOrders().filter((order) => order.side === 'SELL')).toHaveLength(0);
+  });
+
+  it('reserves named lots so concurrent exits cannot close the same allocation', async () => {
+    const clock = new ManualClock(1);
+    const ids = new IdFactory(SESSION);
+    const broker = new PaperBroker({ clock });
+    broker.setQuote(INSTR, { bidPaise: 10_000, askPaise: 10_010, ltpPaise: 10_005 });
+    const oms = new Oms({ sessionId: SESSION, adapter: broker, marketProfile: profile, clock, ids });
+    const firstEntry = intent(ids, 'BUY');
+    const secondEntry = intent(ids, 'BUY');
+    await oms.submit(firstEntry, approved(firstEntry.intentId));
+    await oms.submit(secondEntry, approved(secondEntry.intentId));
+    const [firstLot, secondLot] = oms.getOpenLots(INSTR);
+    expect(firstLot).toBeDefined();
+    expect(secondLot).toBeDefined();
+
+    const firstExit = { ...intent(ids, 'SELL'), closeLotIds: [firstLot!.lotId] };
+    const firstResult = await oms.submit(firstExit, approved(firstExit.intentId));
+    expect(firstResult.accepted).toBe(true);
+
+    const duplicateExit = { ...intent(ids, 'SELL'), closeLotIds: [firstLot!.lotId] };
+    const duplicateResult = await oms.submit(duplicateExit, approved(duplicateExit.intentId));
+    expect(duplicateResult.accepted).toBe(false);
+    expect(duplicateResult.reason).toBe('INVALID_CLOSE_ALLOCATION');
+
+    const independentExit = { ...intent(ids, 'SELL'), closeLotIds: [secondLot!.lotId] };
+    const independentResult = await oms.submit(independentExit, approved(independentExit.intentId));
+    expect(independentResult.accepted).toBe(true);
+  });
+
+  it('never spills an oversized targeted fill into an unnamed lot', () => {
+    const ids = new IdFactory(SESSION);
+    const keeper = new PositionKeeper(SESSION, profile, ids);
+    const buyOrder = (clientOrderId: ClientOrderId): Order => ({
+      clientOrderId,
+      intentId: ids.intentId(),
+      sessionId: SESSION,
+      instrumentId: INSTR,
+      side: 'BUY',
+      qty: 65,
+      filledQty: 65,
+      avgFillPricePaise: 10_010,
+      type: 'LIMIT',
+      limitPricePaise: 10_010,
+      state: 'FILLED',
+      purpose: 'ENTRY',
+      tag: 's1:entry',
+      createdTs: 1,
+      updatedTs: 1,
+    });
+    const firstBuyId = ids.clientOrderId();
+    const secondBuyId = ids.clientOrderId();
+    keeper.onFill(buyOrder(firstBuyId), {
+      clientOrderId: firstBuyId,
+      fillId: 'lot-1',
+      ts: 1,
+      qty: 65,
+      pricePaise: 10_010,
+    });
+    keeper.onFill(buyOrder(secondBuyId), {
+      clientOrderId: secondBuyId,
+      fillId: 'lot-2',
+      ts: 2,
+      qty: 65,
+      pricePaise: 10_020,
+    });
+
+    const sellId = ids.clientOrderId();
+    const sell: Order = {
+      clientOrderId: sellId,
+      intentId: ids.intentId(),
+      sessionId: SESSION,
+      instrumentId: INSTR,
+      side: 'SELL',
+      qty: 130,
+      filledQty: 130,
+      avgFillPricePaise: 9_900,
+      type: 'MARKET',
+      state: 'FILLED',
+      purpose: 'STOP',
+      tag: 's1:hard_stop',
+      closeLotIds: ['lot-1'],
+      createdTs: 3,
+      updatedTs: 3,
+    };
+    const update = keeper.onFill(sell, {
+      clientOrderId: sellId,
+      fillId: 'oversized-targeted-fill',
+      ts: 3,
+      qty: 130,
+      pricePaise: 9_900,
+    });
+
+    expect(update.trades).toHaveLength(1);
+    expect(update.trades[0]?.qty).toBe(65);
+    expect(update.allocationError).toContain('exceeded named lots by 65 units');
+    expect(keeper.getOpenLots(INSTR).map((lot) => lot.lotId)).toEqual(['lot-2']);
+    expect(keeper.getPositions()[0]?.qty).toBe(65);
   });
 
   it('handles adapter rejects', async () => {

@@ -158,6 +158,14 @@ export class Gateway {
       case 'trade.completed':
         this.set('trades', [...this.state.trades, ev.payload.trade]);
         break;
+      case 'session.started':
+        this.set('session', {
+          sessionId: ev.payload.session.sessionId,
+          mode: ev.payload.session.mode,
+          phase: ev.payload.session.phase,
+          date: ev.payload.session.date,
+        });
+        break;
       case 'md.bar': {
         if (ev.payload.bar.tf !== '1m') break; // chart shows 1m only
         const bars = [...this.state.bars, ev.payload.bar];

@@ -17,6 +17,7 @@ import type { GatewayState } from '../gateway/protocol.js';
 import {
   getChainStrikes,
   loadScripMaster,
+  resolveNiftyCurrentFuture,
   resolveNiftyWeeklyChain,
   toInstrument,
   type ScripRow,
@@ -227,7 +228,25 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   const { options, subscriptions: optionSubscriptions } = buildOptionSpecs(weekly, selectedStrikes, env.optionExchangeSegment);
   if (options.length === 0) throw new Error('No Dhan option instruments selected from the weekly chain');
 
-  const spotInstrumentId = makeInstrumentId('NSE', `${env.underlyingSymbol}_SPOT`);
+  // Resolve the spot feed instrument. Index (IDX_I) sends qty=0 on every tick
+  // so VWAP never computes. Default to NIFTY current-month futures (FUTIDX)
+  // which carry real volume. Override via DHAN_SPOT_SECURITY_ID / DHAN_SPOT_EXCHANGE_SEGMENT.
+  let spotBrokerToken = env.spotSecurityId;
+  let spotSegment = env.spotExchangeSegment;
+  if (!spotBrokerToken || !spotSegment) {
+    const futRow = resolveNiftyCurrentFuture(scripRows, date);
+    if (futRow === undefined) {
+      throw new Error(
+        `Could not resolve NIFTY current-month futures from ${env.scripMasterPath}. ` +
+        `Set DHAN_SPOT_SECURITY_ID + DHAN_SPOT_EXCHANGE_SEGMENT to use a manual override.`,
+      );
+    }
+    spotBrokerToken = futRow.securityId;
+    spotSegment = env.optionExchangeSegment;
+    console.log(`[scalper] spot feed: NIFTY futures ${futRow.tradingSymbol} (id=${spotBrokerToken}, expiry=${futRow.expiryDate})`);
+  }
+
+  const spotInstrumentId = makeInstrumentId('NSE', spotBrokerToken);
   let liveSpotTickTs = 0;
   const marketData = new FeedMarketData({
     spotInstrumentId,
@@ -346,10 +365,9 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   });
   const subscriptions: SubscribeRequest[] = [
     {
-      exchangeSegment: env.spotExchangeSegment,
-      brokerToken: env.spotSecurityId,
+      exchangeSegment: spotSegment,
+      brokerToken: spotBrokerToken,
       instrumentId: spotInstrumentId,
-      requestCode: 15,
     },
     ...optionSubscriptions,
   ];

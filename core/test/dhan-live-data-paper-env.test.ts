@@ -31,8 +31,8 @@ DHAN_SCRIP_MASTER_PATH=data/dhan/api-scrip-master.csv
     expect(env.accessToken).toBe('token-1');
     expect(env.scripMasterPath).toBe('data/dhan/api-scrip-master.csv');
     expect(env.strategyId).toBe('s1-momentum-burst');
-    expect(env.spotSecurityId).toBe('13');
-    expect(env.spotExchangeSegment).toBe('IDX_I');
+    expect(env.spotSecurityId).toBe('');
+    expect(env.spotExchangeSegment).toBe('');
     expect(env.optionExchangeSegment).toBe('NSE_FNO');
     expect(env.feedRequestCode).toBe(21);
     expect(env.autoArm).toBe(false);

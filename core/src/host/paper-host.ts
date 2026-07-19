@@ -7,7 +7,7 @@ import type { Tick } from '../domain/marketdata.js';
 import { formatHHMMIst, systemClock, type Clock } from '../domain/time.js';
 import type { IBrokerAdapter } from '../exec/adapter.js';
 import { TradesWriter } from '../exec/trades-writer.js';
-import { toGatewayLatency, type GatewayStateSlices } from '../gateway/protocol.js';
+import { toGatewayLatency, type GatewayMmState, type GatewayStateSlices } from '../gateway/protocol.js';
 import { mirrorEvent } from '../journal/mirror.js';
 import { JournalWriter, type FsyncPolicy } from '../journal/writer.js';
 import { Persistence } from '../persistence/db.js';
@@ -57,6 +57,7 @@ export interface HostRunner {
   state(): StrategyLifecycle;
   lastNoTrade(): string | undefined;
   activeParamsSnapshot(): StrategyParams;
+  mmState?(): GatewayMmState;
   onUnderlyingTick(nowMs: number): Promise<void>;
   onOptionTick(instrumentId: InstrumentId, ltpPaise: number, nowMs: number): Promise<void>;
   onTimer(nowMs: number): Promise<void>;
@@ -100,11 +101,15 @@ export interface PaperHostOptions {
   configs: ReadonlyArray<LoadedConfigRef>;
   /** Preflight chain probe; a stub resolved from the option set by default. */
   resolveChain?: () => WeeklyChainResult | undefined;
+  /** Timestamp used by preflight feed freshness. Defaults to marketData.lastSpotTs(). */
+  preflightLastTickTs?: () => number;
   feedStaleMs?: number;
 
   reconcileEveryMs?: number;
   /** Auto-ARM once preflight passes (headless paper/soak). Default true. */
   autoArm?: boolean;
+  /** Auto-ACK preflight once technical checks pass. Default true for legacy tests/headless runs. */
+  autoAckPreflight?: boolean;
   recorder?: TickRecorderPort;
   gateway?: GatewayPort;
   /**
@@ -218,7 +223,8 @@ export class PaperHost {
       }
     }
 
-    const ack = this.session.acknowledge('host');
+    const shouldAutoAck = this.opts.autoAckPreflight ?? true;
+    const ack = shouldAutoAck ? this.session.acknowledge('host') : { accepted: false };
     if ((this.opts.autoArm ?? true) && ack.accepted && this.session.canArm().ok) {
       this.runner.arm();
     }
@@ -472,7 +478,7 @@ export class PaperHost {
       }),
       preflight: {
         resolveChain: opts.resolveChain ?? (() => this.defaultChain()),
-        lastTickTs: () => opts.marketData.lastSpotTs(),
+        lastTickTs: opts.preflightLastTickTs ?? (() => opts.marketData.lastSpotTs()),
         feedStaleMs: opts.feedStaleMs ?? 5_000,
         killSelfTest: () => this.kill.selfTest(),
         journalReady: () => this.writer.ready(),
@@ -570,6 +576,7 @@ export class PaperHost {
         lifecycle: this.runner.state(),
         params: this.runner.activeParamsSnapshot(),
         ...(noTrade !== undefined ? { lastNoTradeReason: noTrade } : {}),
+        ...(this.runner.mmState !== undefined ? { mm: this.runner.mmState() } : {}),
       },
     };
     gw.publishState(slices);

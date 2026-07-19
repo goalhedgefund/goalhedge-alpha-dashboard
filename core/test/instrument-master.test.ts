@@ -17,6 +17,7 @@ import {
   loadScripMaster,
   nextMonthlyExpiry,
   nextWeeklyExpiry,
+  resolveNiftyCurrentFuture,
   resolveNiftyWeeklyChain,
   toInstrument,
 } from '../src/marketdata/instrument-master.js';
@@ -206,6 +207,36 @@ describe('toInstrument', () => {
     const row = filterOptions(rows, 'NIFTY')[0]!;
     const instr = toInstrument(row);
     expect(instr.id).toBe(`NSE:${row.securityId}`);
+  });
+});
+
+describe('resolveNiftyCurrentFuture', () => {
+  it('returns the nearest FUTIDX row on or after asOfDate', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const fut = resolveNiftyCurrentFuture(rows, AS_OF);
+    expect(fut).toBeDefined();
+    expect(fut!.instrumentName).toBe('FUTIDX');
+    expect(fut!.underlyingSymbol).toBe('NIFTY');
+    expect(fut!.expiryDate).toBe('2026-07-31');
+    expect(fut!.securityId).toBe('38001');
+  });
+
+  it('rolls to the next month when called after the near-month expiry', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const fut = resolveNiftyCurrentFuture(rows, '2026-08-01');
+    expect(fut?.expiryDate).toBe('2026-08-28');
+    expect(fut?.securityId).toBe('38002');
+  });
+
+  it('returns undefined when no futures remain after a far-future date', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    expect(resolveNiftyCurrentFuture(rows, '2030-01-01')).toBeUndefined();
+  });
+
+  it('is not confused by option rows in the same file', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    const fut = resolveNiftyCurrentFuture(rows, AS_OF);
+    expect(fut?.optionType).toBe('XX');
   });
 });
 

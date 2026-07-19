@@ -51,6 +51,11 @@ export interface StrategyRunnerOptions {
   /** Entry guard: when this returns false (broken journal) no new entry is proposed. */
   journalHealthy?: () => boolean;
   cooldownSec?: number;
+  /**
+   * How often (ms) an unchanged no-trade reason is re-emitted as a heartbeat so
+   * the audit log is never silent for more than this interval. Default 5 minutes.
+   */
+  noTradeHeartbeatMs?: number;
   /** When present, stop exits ride the reprice→market escalation ladder. */
   escalator?: ExitEscalator;
   /** When present, times the entry decision hops (t_recv→t_sent) for the HUD + digest. */
@@ -79,11 +84,14 @@ export class StrategyRunner {
   private exitInFlight = false;
   private cooldownUntilMs = 0;
   private lastNoTradeReason: string | undefined;
+  private lastNoTradeEmitMs = 0;
   private readonly cooldownMs: number;
+  private readonly noTradeHeartbeatMs: number;
 
   constructor(private readonly opts: StrategyRunnerOptions) {
     this.activeParams = { ...opts.params };
     this.cooldownMs = (opts.cooldownSec ?? 60) * 1000;
+    this.noTradeHeartbeatMs = opts.noTradeHeartbeatMs ?? 5 * 60 * 1000;
   }
 
   state(): StrategyLifecycle {
@@ -94,6 +102,7 @@ export class StrategyRunner {
     if (this.lifecycle === 'DISARMED' || this.lifecycle === 'COOLDOWN') {
       this.lifecycle = 'ARMED';
       this.lastNoTradeReason = undefined;
+      this.lastNoTradeEmitMs = 0;
       this.opts.strategy.reset();
     }
   }
@@ -131,7 +140,7 @@ export class StrategyRunner {
     // latched journal failure). Protection for open positions (driveStops) is
     // NOT gated here — a broken journal must never strand an existing position.
     if (this.opts.journalHealthy?.() === false) {
-      this.noTrade('JOURNAL_UNHEALTHY');
+      this.noTrade('JOURNAL_UNHEALTHY', nowMs);
       return;
     }
 
@@ -141,7 +150,7 @@ export class StrategyRunner {
       highVolDay: this.opts.regime?.highVolDay() ?? false,
     });
     if (!global.pass) {
-      this.noTrade(global.reason, global.detail);
+      this.noTrade(global.reason, nowMs, global.detail);
       return;
     }
 
@@ -154,7 +163,7 @@ export class StrategyRunner {
     lat?.mark('signal');
     if (decision.kind === 'NONE') {
       this.finishLatency();
-      this.noTrade(decision.reason ?? 'NO_SIGNAL');
+      this.noTrade(decision.reason ?? 'NO_SIGNAL', nowMs, decision.detail);
       return;
     }
 
@@ -168,7 +177,7 @@ export class StrategyRunner {
     });
     if (!option.pass) {
       this.finishLatency();
-      this.noTrade(option.reason, option.detail);
+      this.noTrade(option.reason, nowMs, option.detail);
       return;
     }
 
@@ -179,6 +188,7 @@ export class StrategyRunner {
       ...(decision.note !== undefined ? { note: decision.note } : {}),
     });
     this.lastNoTradeReason = undefined;
+    this.lastNoTradeEmitMs = 0;
 
     const intent = this.buildEntryIntent(decision, nowMs);
     this.journal('intent.proposed', { intent });
@@ -343,7 +353,8 @@ export class StrategyRunner {
         this.lifecycle = 'COOLDOWN';
         this.cooldownUntilMs = nowMs + this.cooldownMs;
         this.lastNoTradeReason = undefined;
-        this.noTrade('COOLDOWN');
+        this.lastNoTradeEmitMs = 0;
+        this.noTrade('COOLDOWN', nowMs);
       }
       this.applyParamsIfFlat();
       this.opts.strategy.reset();
@@ -354,6 +365,7 @@ export class StrategyRunner {
     if (this.lifecycle === 'COOLDOWN' && nowMs >= this.cooldownUntilMs) {
       this.lifecycle = 'ARMED';
       this.lastNoTradeReason = undefined;
+      this.lastNoTradeEmitMs = 0;
     }
   }
 
@@ -406,9 +418,18 @@ export class StrategyRunner {
     };
   }
 
-  private noTrade(reason: string, detail?: string): void {
-    if (reason === this.lastNoTradeReason) return;
+  /**
+   * Emit a strategy.noTrade journal event. Fires immediately on any reason
+   * change, and also as a periodic heartbeat (default every 5 min) when the
+   * reason is stable — so the log is never silent for more than one heartbeat
+   * interval regardless of how long the blocking condition persists.
+   */
+  private noTrade(reason: string, nowMs: number, detail?: string): void {
+    const changed = reason !== this.lastNoTradeReason;
+    const heartbeat = nowMs - this.lastNoTradeEmitMs >= this.noTradeHeartbeatMs;
+    if (!changed && !heartbeat) return;
     this.lastNoTradeReason = reason;
+    this.lastNoTradeEmitMs = nowMs;
     this.journal('strategy.noTrade', {
       strategyId: this.opts.strategy.id,
       reason,

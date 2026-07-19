@@ -246,7 +246,14 @@ export class KillSwitch {
     push('oms.positions.readable', () => Array.isArray(this.opts.oms.getPositions()));
     push('clock.sane', () => this.clock.now() > 0);
     push('gate.approves.kill.exit', () => {
+      // Validate the exit lane in a market-open context so pre-open launches
+      // do not fail preflight just because the session clock has not reached
+      // 09:15 yet.
       const ctx = this.opts.gateContext();
+      const openCtx: RiskGateContext = {
+        ...ctx,
+        nowHHMM: this.opts.market.session.open,
+      };
       const instrumentId = ctx.allowedInstruments.values().next().value as InstrumentId | undefined;
       if (instrumentId === undefined) return false;
       const fake: Position = {
@@ -263,7 +270,7 @@ export class KillSwitch {
         updatedTs: this.clock.now(),
       };
       const intent = buildFlattenIntent(this.flattenPorts(), fake, 'KILL', 'kill:SELF_TEST');
-      return this.opts.gate.evaluate(intent, ctx).approved;
+      return this.opts.gate.evaluate(intent, openCtx).approved;
     });
 
     return { ok: checks.every((c) => c.ok), checks };

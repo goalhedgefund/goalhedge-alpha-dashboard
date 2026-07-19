@@ -35,9 +35,9 @@ function Wait-UntilLaunchTime {
 
 $logDir = Join-Path $RepoRoot "logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$script:LogPath = Join-Path $logDir ("dhan-paper-s1-launch-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+$script:LogPath = Join-Path $logDir ("dhan-paper-allop-launch-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
 
-Write-LaunchLog "Starting S1 Dhan live-data paper launch."
+Write-LaunchLog "Starting ALL_OP Dhan live-data paper launch."
 Write-LaunchLog "RepoRoot=$RepoRoot"
 Write-LaunchLog "EnvPath=$EnvPath"
 
@@ -57,10 +57,10 @@ foreach ($key in @("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_SCRIP_MASTER_PAT
 }
 
 $env:DHAN_ENV_PATH = $EnvPath
-$env:DHAN_STRATEGY_ID = "s1-momentum-burst"
-$env:DHAN_GATEWAY_PORT = "8787"
-$env:DHAN_JOURNAL_ROOT = "journals\s1-momentum-burst"
-$env:DHAN_RECORDER_ROOT = "data\dhan\ticks-s1-momentum-burst"
+$env:DHAN_STRATEGY_ID = "allop-atm-mm"
+$env:DHAN_GATEWAY_PORT = "8789"
+$env:DHAN_JOURNAL_ROOT = "journals\allop-atm-mm"
+$env:DHAN_RECORDER_ROOT = "data\dhan\ticks-allop-atm-mm"
 $env:DHAN_AUTO_ARM = "true"
 
 Write-LaunchLog "Strategy forced to $env:DHAN_STRATEGY_ID."
@@ -77,7 +77,7 @@ Write-LaunchLog "Starting compiled paper runner (SkipBuild=$SkipBuild)."
 
 Set-Location -LiteralPath $RepoRoot
 if ($SkipBuild) {
-  node core\dist\host\dhan-live-data-paper.js *>&1 | Tee-Object -FilePath $script:LogPath -Append
+  node core\dist\host\allop-live-data-paper.js *>&1 | Tee-Object -FilePath $script:LogPath -Append
 } else {
-  npm run paper:live-data:dhan *>&1 | Tee-Object -FilePath $script:LogPath -Append
+  npm run paper:live-data:allop *>&1 | Tee-Object -FilePath $script:LogPath -Append
 }

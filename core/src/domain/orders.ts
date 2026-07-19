@@ -46,6 +46,12 @@ export interface OrderIntent {
   purpose: IntentPurpose;
   /** Mandatory for ENTRY intents (Risk Gate enforces). */
   stopPlan?: StopPlan;
+  /**
+   * Internal OMS allocation hint for covered exits. The broker still receives
+   * one ordinary sell order; PositionKeeper uses these fill-lot ids only to
+   * attribute the close to the intended inventory slices.
+   */
+  closeLotIds?: string[];
   confidence?: number;
 }
 
@@ -83,6 +89,8 @@ export interface Order {
   state: OrderState;
   purpose: IntentPurpose;
   tag: string;
+  /** Internal close allocation copied from the originating intent. */
+  closeLotIds?: string[];
   brokerOrderId?: string;
   rejectReason?: string;
   createdTs: number;

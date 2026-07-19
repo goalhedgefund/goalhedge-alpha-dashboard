@@ -32,6 +32,13 @@ export interface JournalPayloads {
     note?: string;
   };
   'strategy.noTrade': { strategyId: string; reason: string; detail?: string };
+  'mm.state': {
+    event: 'RUNNER_PENDING' | 'RUNNER_ACTIVE' | 'RUNNER_CLOSED' | 'DEFENSIVE_EXIT';
+    instrumentId?: string;
+    right?: 'CE' | 'PE';
+    lotId?: string;
+    detail?: string;
+  };
   'intent.proposed': { intent: OrderIntent };
   'risk.verdict': { verdict: RiskVerdict };
   'order.created': { order: Order };
@@ -88,6 +95,7 @@ const ALL_EVENT_TYPES = [
   'md.bar',
   'strategy.signal',
   'strategy.noTrade',
+  'mm.state',
   'intent.proposed',
   'risk.verdict',
   'order.created',

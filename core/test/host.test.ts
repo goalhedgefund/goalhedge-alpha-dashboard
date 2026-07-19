@@ -28,6 +28,7 @@ const CE_ID: InstrumentId = makeInstrumentId('NSE', 'CE1');
 const PE_ID: InstrumentId = makeInstrumentId('NSE', 'PE1');
 const ATM = 2_450_000;
 const START_10AM_IST = Date.UTC(2026, 6, 3, 4, 30, 0); // 10:00 IST
+const START_08AM_IST = Date.UTC(2026, 6, 3, 2, 30, 0); // 08:00 IST
 
 const S1_PARAMS = {
   impulsePct: 0.0008, confirmTicks: 2, lots: 1, ttlMs: 1500, tickSizePaise: 5,
@@ -112,6 +113,51 @@ async function runFullSession(dir: string): Promise<{ host: PaperHost; paper: Pa
 }
 
 describe('PaperHost — end-to-end paper session (M10 §3)', () => {
+  it('auto-arms once the session reaches OPEN even if the host started pre-market', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-autoarm-'));
+    const clock = new ManualClock(START_08AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+    marketData.ingest(spotTick(START_08AM_IST, ATM, 100));
+    marketData.ingest(optionTick(CE_ID, START_08AM_IST, 14_990, 15_000, 15_000));
+    marketData.ingest(optionTick(PE_ID, START_08AM_IST, 14_990, 15_000, 15_000));
+
+    const host = buildHost(dir, clock, marketData, paper, { autoArm: true });
+    const started = await host.start();
+    expect(started).toEqual({ recovered: false, halted: false });
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+    expect(host.runnerState()).toBe('DISARMED');
+
+    clock.set(Date.UTC(2026, 6, 3, 3, 50, 0)); // 09:20 IST
+    await host.onTimer(clock.now());
+
+    expect(host.sessionPhase()).toBe('OPEN');
+    expect(host.runnerState()).toBe('ARMED');
+    await host.close();
+  }, 20_000);
+
+  it('can require an explicit operator ACK before ARM', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-no-autoack-'));
+    const clock = new ManualClock(START_10AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+    marketData.ingest(spotTick(START_10AM_IST, ATM, 100));
+    marketData.ingest(optionTick(CE_ID, START_10AM_IST, 14_990, 15_000, 15_000));
+    marketData.ingest(optionTick(PE_ID, START_10AM_IST, 14_990, 15_000, 15_000));
+
+    const host = buildHost(dir, clock, marketData, paper, { autoArm: false, autoAckPreflight: false });
+    await host.start();
+
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+    expect(host.canArm()).toMatchObject({ ok: false, reason: 'PREFLIGHT_NOT_ACKED' });
+    expect(host.runnerState()).toBe('DISARMED');
+
+    expect(host.acknowledgePreflight('operator')).toMatchObject({ accepted: true });
+    expect(host.sessionPhase()).toBe('OPEN');
+    expect(host.canArm()).toMatchObject({ ok: true });
+    await host.close();
+  }, 20_000);
+
   it('runs a full trade, journals it, writes trades.jsonl + digest, reconciles GREEN', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-full-'));
     const { host } = await runFullSession(dir);

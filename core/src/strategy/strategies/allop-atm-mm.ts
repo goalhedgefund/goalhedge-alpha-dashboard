@@ -1,25 +1,22 @@
 import { none, type IStrategy, type StrategyDecision } from '../types.js';
 
 /**
- * ALL_OP — daily ATM option market maker.
+ * ALL_OP daily ATM option market maker.
  * Design: D:\Claude\workstation\docs\ALLOP_DESIGN.md.
  *
- * CP1 placeholder: registers the strategy id so the config, hosts, gateway,
- * and the workstation ALL_OP tab wire end-to-end. The real desk is an
- * MmRunner + QuotingEngine (CP2/CP3) managing a standing bid/ask set — it
- * will not flow through IStrategy.decide. Until then this stub never
- * proposes an entry, and the desk surfaces MM_ENGINE_NOT_BUILT as its
- * no-trade reason.
+ * Registers the strategy id for the shared host lifecycle. ALL_OP execution
+ * is owned by MmRunner + QuotingEngine and intentionally does not flow
+ * through IStrategy.decide.
  */
 export class AllOpAtmMm implements IStrategy {
   readonly id = 'allop-atm-mm';
-  readonly version = '0.1.0';
+  readonly version = '0.2.1';
 
   reset(): void {
     // stateless
   }
 
   decide(): StrategyDecision {
-    return none('MM_ENGINE_NOT_BUILT');
+    return none('MM_RUNNER_OWNS_EXECUTION');
   }
 }

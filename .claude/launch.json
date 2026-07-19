@@ -8,6 +8,12 @@
       "port": 8787
     },
     {
+      "name": "allop-live-data-paper",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "paper:live-data:allop", "-w", "@scalper/core"],
+      "port": 8789
+    },
+    {
       "name": "ui",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "-w", "@scalper/ui"],

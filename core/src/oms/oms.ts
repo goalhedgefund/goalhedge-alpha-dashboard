@@ -9,7 +9,7 @@ import type { RiskVerdict } from '../domain/risk.js';
 import { systemClock, type Clock } from '../domain/time.js';
 import type { BrokerOrderEvent, IBrokerAdapter } from '../exec/adapter.js';
 import type { TradesWriter } from '../exec/trades-writer.js';
-import { PositionKeeper } from './position-keeper.js';
+import { PositionKeeper, type OpenPositionLot } from './position-keeper.js';
 import { TokenBucket } from './throttle.js';
 import { transitionOrder } from './state-machine.js';
 
@@ -75,6 +75,10 @@ export class Oms {
    */
   async submit(intent: OrderIntent, verdict: RiskVerdict, onSent?: () => void): Promise<SubmitResult> {
     if (!verdict.approved) return { order: this.draftOrder(intent), accepted: false, reason: verdict.reason ?? 'RISK_REJECTED' };
+    const allocationError = this.closeAllocationError(intent);
+    if (allocationError !== undefined) {
+      return { order: this.draftOrder(intent), accepted: false, reason: allocationError };
+    }
     const bucket = intent.purpose === 'ENTRY' ? this.throttle : this.exitThrottle;
     if (!bucket.tryTake()) return { order: this.draftOrder(intent), accepted: false, reason: 'THROTTLED' };
 
@@ -170,6 +174,34 @@ export class Oms {
     return this.positionKeeper.getPositions();
   }
 
+  getOpenLots(instrumentId?: Parameters<PositionKeeper['getOpenLots']>[0]): OpenPositionLot[] {
+    return this.positionKeeper.getOpenLots(instrumentId);
+  }
+
+  private closeAllocationError(intent: OrderIntent): string | undefined {
+    if (intent.closeLotIds === undefined) return undefined;
+    if (intent.side !== 'SELL' || intent.purpose === 'ENTRY') return 'INVALID_CLOSE_ALLOCATION';
+    const unique = new Set(intent.closeLotIds);
+    if (unique.size !== intent.closeLotIds.length) return 'INVALID_CLOSE_ALLOCATION';
+    const reserved = new Set(
+      this.getOrders()
+        .filter(
+          (order) =>
+            !isTerminalOrderState(order.state) &&
+            order.side === 'SELL' &&
+            order.instrumentId === intent.instrumentId,
+        )
+        .flatMap((order) => order.closeLotIds ?? []),
+    );
+    if (intent.closeLotIds.some((lotId) => reserved.has(lotId))) return 'INVALID_CLOSE_ALLOCATION';
+    const selected = this.positionKeeper
+      .getOpenLots(intent.instrumentId)
+      .filter((lot) => unique.has(lot.lotId));
+    if (selected.length !== unique.size) return 'INVALID_CLOSE_ALLOCATION';
+    const selectedQty = selected.reduce((sum, lot) => sum + lot.qty, 0);
+    return selectedQty === intent.qty ? undefined : 'INVALID_CLOSE_ALLOCATION';
+  }
+
   private draftOrder(intent: OrderIntent): Order {
     const now = this.clock.now();
     const type: OrderType = intent.type === 'LIMIT' ? 'LIMIT' : intent.limitPricePaise !== undefined ? 'LIMIT' : 'MARKET';
@@ -187,6 +219,7 @@ export class Oms {
       state: 'DRAFT',
       purpose: intent.purpose,
       tag: intent.tag,
+      ...(intent.closeLotIds !== undefined ? { closeLotIds: [...intent.closeLotIds] } : {}),
       createdTs: now,
       updatedTs: now,
     };
@@ -240,6 +273,9 @@ export class Oms {
       : this.transition(next, state, fill);
     this.orders.set(transitioned.clientOrderId, transitioned);
     const updates = this.positionKeeper.onFill(transitioned, fill);
+    if (updates.allocationError !== undefined) {
+      this.emit('diag.error', { where: 'position-keeper.closeAllocation', message: updates.allocationError });
+    }
     for (const position of updates.positions) {
       const isFreshOpen = transitioned.side === 'BUY' && position.openedTs === fill.ts;
       if (isFreshOpen) this.emit('position.opened', { position });

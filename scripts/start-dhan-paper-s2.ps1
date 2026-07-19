@@ -1,6 +1,8 @@
 param(
   [string]$RepoRoot = "D:\Claude\scalper",
-  [string]$EnvPath = "D:\DHAN_LOGIN\.env"
+  [string]$EnvPath = "D:\DHAN_LOGIN\.env",
+  [switch]$SkipBuild,
+  [switch]$SkipLaunchWindow
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +11,26 @@ function Write-LaunchLog {
   param([string]$Message)
   $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
   Add-Content -LiteralPath $script:LogPath -Value "[$stamp] $Message"
+}
+
+function Wait-UntilLaunchTime {
+  param(
+    [int]$TargetHour,
+    [int]$TargetMinute
+  )
+
+  $now = Get-Date
+  $target = Get-Date -Hour $TargetHour -Minute $TargetMinute -Second 0
+  if ($now -ge $target) {
+    Write-LaunchLog "Launch window already reached ($($target.ToString('HH:mm')) IST)."
+    return
+  }
+
+  $delay = [int][Math]::Ceiling(($target - $now).TotalSeconds)
+  if ($delay -gt 0) {
+    Write-LaunchLog "Waiting $delay seconds until $($target.ToString('HH:mm')) IST."
+    Start-Sleep -Seconds $delay
+  }
 }
 
 $logDir = Join-Path $RepoRoot "logs"
@@ -36,7 +58,7 @@ foreach ($key in @("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_SCRIP_MASTER_PAT
 
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "s2-vwap-fade"
-$env:DHAN_AUTO_ARM = "false"
+$env:DHAN_AUTO_ARM = "true"
 $env:DHAN_GATEWAY_PORT = "8788"
 $env:DHAN_JOURNAL_ROOT = "journals\s2-vwap-fade"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-s2-vwap-fade"
@@ -46,7 +68,16 @@ Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."
 Write-LaunchLog "Auto-arm forced to $env:DHAN_AUTO_ARM."
-Write-LaunchLog "Running npm run paper:live-data:dhan."
+if ($SkipLaunchWindow) {
+  Write-LaunchLog "Skipping launch-window wait."
+} else {
+  Wait-UntilLaunchTime -TargetHour 9 -TargetMinute 20
+}
+Write-LaunchLog "Starting compiled paper runner (SkipBuild=$SkipBuild)."
 
 Set-Location -LiteralPath $RepoRoot
-npm run paper:live-data:dhan *>&1 | Tee-Object -FilePath $script:LogPath -Append
+if ($SkipBuild) {
+  node core\dist\host\dhan-live-data-paper.js *>&1 | Tee-Object -FilePath $script:LogPath -Append
+} else {
+  npm run paper:live-data:dhan *>&1 | Tee-Object -FilePath $script:LogPath -Append
+}

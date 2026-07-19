@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "enabled": true,
   "params": {
-    "impulsePct": 0.0008,
+    "impulsePct": 0.00035,
     "confirmTicks": 3,
     "minImbalance": 0,
     "lots": 1,

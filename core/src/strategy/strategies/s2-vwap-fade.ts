@@ -27,7 +27,12 @@ export class S2VwapFade implements IStrategy {
     const p = view.params;
     const f = view.underlyingFeatures;
     const spot = view.spotPaise;
-    if (f?.vwapPaise === undefined || spot === undefined) return none('WARMUP');
+    if (f?.vwapPaise === undefined || spot === undefined) {
+      const missing: string[] = [];
+      if (f?.vwapPaise === undefined) missing.push('vwap');
+      if (spot === undefined) missing.push('spot');
+      return none('WARMUP', missing.join('+'));
+    }
 
     const stretch = (spot - f.vwapPaise) / f.vwapPaise;
     const stretchPct = numParam(p, 'stretchPct', 0.0015);

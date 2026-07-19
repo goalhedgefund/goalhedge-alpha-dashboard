@@ -89,4 +89,18 @@ describe('OptionChainState', () => {
     expect(row?.gamma).toBeGreaterThan(0);
     expect(row?.vega).toBeGreaterThan(0);
   });
+
+  it('retains a quoted held strike after it leaves the visible ATM window', () => {
+    const chain = new OptionChainState({ instruments, strikeStepPaise: 5000, depth: 0 });
+    const held = instruments[0]!;
+    chain.updateSpot(29_250_00);
+    chain.updateTick(tick(held.id, 12_500, 10));
+    expect(chain.visibleRows().map((row) => row.instrumentId)).toContain(held.id);
+
+    chain.updateSpot(29_350_00);
+    expect(chain.visibleRows().map((row) => row.instrumentId)).not.toContain(held.id);
+    expect(chain.allRows().find((row) => row.instrumentId === held.id)).toEqual(
+      expect.objectContaining({ ltpPaise: 12_500, bidPaise: 12_495, askPaise: 12_505 }),
+    );
+  });
 });
