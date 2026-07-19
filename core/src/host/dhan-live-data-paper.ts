@@ -376,7 +376,20 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   };
 }
 
-function waitForFirstSpotTick(build: DhanLiveDataPaperBuild, timeoutMs: number): Promise<boolean> {
+async function startFeedForPreflight(build: DhanLiveDataPaperBuild, timeoutMs: number): Promise<boolean> {
+  build.feed.setTickHandler((tick: Tick) => {
+    build.notePreflightTick(tick);
+  });
+  build.feed.subscribe(build.subscriptions);
+
+  try {
+    await build.feed.connect();
+    console.log('[scalper] connected to Dhan live market feed');
+  } catch (err) {
+    console.log(`[scalper] Dhan live market feed unavailable; gateway stays online and retries: ${String(err)}`);
+    return false;
+  }
+
   return new Promise((resolve) => {
     let done = false;
     const finish = (ok: boolean): void => {
@@ -389,7 +402,6 @@ function waitForFirstSpotTick(build: DhanLiveDataPaperBuild, timeoutMs: number):
     build.feed.setTickHandler((tick: Tick) => {
       if (build.notePreflightTick(tick)) finish(true);
     });
-    build.feed.subscribe(build.subscriptions);
   });
 }
 
@@ -405,13 +417,11 @@ async function main(): Promise<void> {
     console.warn('[scalper] strategy config is enabled=false; auto-arm and UI ARM are blocked until the config is enabled.');
   }
 
-  await build.feed.connect();
-  console.log('[scalper] connected to Dhan live market feed');
-  const gotInitialSpot = await waitForFirstSpotTick(build, env.feedStaleMs);
+  const gotInitialSpot = await startFeedForPreflight(build, env.feedStaleMs);
   if (gotInitialSpot) {
     console.log('[scalper] received first live spot tick for preflight');
   } else {
-    console.warn(`[scalper] no live spot tick within ${env.feedStaleMs}ms; preflight should block ARM`);
+    console.log(`[scalper] no live spot tick within ${env.feedStaleMs}ms; preflight should block ARM until the feed recovers`);
   }
 
   const started = await build.host.start();

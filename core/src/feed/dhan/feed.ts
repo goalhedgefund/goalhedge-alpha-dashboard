@@ -172,6 +172,15 @@ export class DhanFeed implements IFeedAdapter {
 
       ws.addEventListener('error', () => {
         if (this.ws !== ws) return;
+        this.connected = false;
+        this.stopKeepAlive();
+        this.ws = null;
+        try {
+          ws.close();
+        } catch {
+          /* ignore close failure during error cleanup */
+        }
+        if (this.shouldReconnect) this.scheduleReconnect();
         if (!resolved) {
           resolved = true;
           reject(new Error('DhanFeed WebSocket connection failed'));
@@ -256,7 +265,7 @@ export class DhanFeed implements IFeedAdapter {
     if (this.reconnectTimer !== undefined) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      if (this.shouldReconnect) void this.connect();
+      if (this.shouldReconnect) void this.connect().catch(() => undefined);
     }, this.opts.reconnectDelayMs);
   }
 
