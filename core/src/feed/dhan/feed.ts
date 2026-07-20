@@ -17,7 +17,7 @@ const MAX_FUTURE_TICK_MS = 2_000;
 export interface DhanFeedOptions {
   wsUrl: string;
   clientId: string;
-  accessToken: string;
+  accessToken: string | (() => string);
   requestCode?: number;
   reconnectDelayMs?: number;
 }
@@ -100,6 +100,7 @@ export class DhanFeed implements IFeedAdapter {
   private shouldReconnect = true;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private keepAliveTimer: NodeJS.Timeout | undefined;
+  private reconnectAttempt = 0;
   private pendingSubscriptions: SubscribeRequest[] = [];
   private tokenToInstrument = new Map<string, InstrumentId>();
   private handler: ((tick: Tick) => void) | undefined;
@@ -127,7 +128,8 @@ export class DhanFeed implements IFeedAdapter {
       this.shouldReconnect = true;
       const url = new URL(this.opts.wsUrl);
       url.searchParams.set('version', '2');
-      url.searchParams.set('token', this.opts.accessToken);
+      const token = typeof this.opts.accessToken === 'function' ? this.opts.accessToken() : this.opts.accessToken;
+      url.searchParams.set('token', token);
       url.searchParams.set('clientId', this.opts.clientId);
       url.searchParams.set('authType', '2');
 
@@ -139,6 +141,7 @@ export class DhanFeed implements IFeedAdapter {
       ws.addEventListener('open', () => {
         if (this.ws !== ws) return;
         this.connected = true;
+        this.reconnectAttempt = 0;
         this.flushSubscriptions();
         this.startKeepAlive();
         if (!resolved) {
@@ -263,10 +266,14 @@ export class DhanFeed implements IFeedAdapter {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer !== undefined) return;
+    const exponentialDelay = Math.min(60_000, this.opts.reconnectDelayMs * 2 ** Math.min(this.reconnectAttempt, 5));
+    this.reconnectAttempt += 1;
+    // Spread reconnects from the three paper gateways after a Dhan throttle.
+    const jitterMs = Math.floor(Math.random() * Math.min(1_000, exponentialDelay * 0.2));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       if (this.shouldReconnect) void this.connect().catch(() => undefined);
-    }, this.opts.reconnectDelayMs);
+    }, exponentialDelay + jitterMs);
   }
 
   private startKeepAlive(): void {

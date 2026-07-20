@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 
-export const DHAN_DEFAULT_ENV_PATH = 'D:\\DHAN_LOGIN\\.env';
+export const DHAN_DEFAULT_ENV_PATH = 'D:\\Claude\\workstation\\secrets\\dhan\\.env';
 export const DHAN_DEFAULT_WS_URL = 'wss://api-feed.dhan.co';
 
 export interface DhanLiveDataPaperEnv {

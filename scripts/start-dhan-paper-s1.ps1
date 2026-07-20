@@ -76,10 +76,22 @@ $sessionDir = Join-Path $RepoRoot "journals\s1-momentum-burst\$today\dhan-live-d
 $eventsPath = Join-Path $sessionDir "events.jsonl"
 if (Test-Path -LiteralPath $eventsPath) {
   $recoveryHalt = Select-String -LiteralPath $eventsPath -SimpleMatch 'RECOVERED_OPEN_POSITION' | Select-Object -Last 1
-  if ($recoveryHalt) {
+  $positions = @{}
+  Get-Content -LiteralPath $eventsPath | ForEach-Object {
+    try {
+      $event = $_ | ConvertFrom-Json
+      if ($event.type -eq "position.updated") {
+        $positions[$event.payload.position.positionId] = $event.payload.position
+      }
+    } catch {
+      # Keep a recoverable journal readable even if a crash left a partial line.
+    }
+  }
+  $hasOpenPaperPosition = @($positions.Values | Where-Object { $_.state -ne "CLOSED" -and $_.qty -gt 0 }).Count -gt 0
+  if ($recoveryHalt -or $hasOpenPaperPosition) {
     $archiveDir = "$sessionDir-recovery-$(Get-Date -Format 'HHmmss')"
     Move-Item -LiteralPath $sessionDir -Destination $archiveDir
-    Write-LaunchLog "Archived recovery-halted paper session to $archiveDir."
+    Write-LaunchLog "Archived prior paper session to $archiveDir (recoveryHalt=$($null -ne $recoveryHalt), openPosition=$hasOpenPaperPosition)."
   }
 }
 

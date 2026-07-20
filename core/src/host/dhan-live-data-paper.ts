@@ -360,7 +360,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   const feed = new DhanFeed({
     wsUrl: env.wsUrl,
     clientId: env.clientId,
-    accessToken: env.accessToken,
+    accessToken: () => loadDhanLiveDataPaperEnv().accessToken,
     requestCode: env.feedRequestCode,
   });
   const subscriptions: SubscribeRequest[] = [
