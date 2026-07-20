@@ -44,6 +44,8 @@ export interface MmParams {
   /** Consecutive losing defensive exits on one right before the cooldown escalates. 0 disables. */
   lossStreakEscalation: number;
   escalatedCooldownSec: number;
+  /** Maximum scalp lots on one side (CE or PE), excluding the runner. Limits clustering risk. */
+  maxLotsPerSide: number;
   quoteFrom: string;
   bidCutoff: string;
 }
@@ -84,6 +86,7 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     trendResumePct: boundedParam(params, 'trendResumePct', 0.1, 0, 100),
     lossStreakEscalation: Math.floor(boundedParam(params, 'lossStreakEscalation', 2, 0, 100)),
     escalatedCooldownSec: boundedParam(params, 'escalatedCooldownSec', 900, 0, 86_400),
+    maxLotsPerSide: Math.floor(boundedParam(params, 'maxLotsPerSide', 2, 1, 100)),
     quoteFrom: strParam(params, 'quoteFrom', '09:20'),
     bidCutoff: strParam(params, 'bidCutoff', '15:10'),
   };
@@ -308,10 +311,16 @@ export class QuotingEngine {
 
     const ceLots = this.heldLots(input.books, 'CE', lotSize);
     const peLots = this.heldLots(input.books, 'PE', lotSize);
+    // Per-side scalp counts exclude the runner lot so it doesn't consume a side slot.
+    const runnerRight = input.runner !== undefined
+      ? input.books.find((b) => b.instrumentId === input.runner!.instrumentId)?.right
+      : undefined;
+    const ceScalpLots = ceLots - (runnerRight === 'CE' ? runnerUnits / lotSize : 0);
+    const peScalpLots = peLots - (runnerRight === 'PE' ? runnerUnits / lotSize : 0);
     const defensiveRights = new Set(defences.map((d) => d.right));
     const skip: Record<OptionRight, boolean> = {
-      CE: defensiveRights.has('CE') || ceLots - peLots >= p.deltaSkewLots,
-      PE: defensiveRights.has('PE') || peLots - ceLots >= p.deltaSkewLots,
+      CE: defensiveRights.has('CE') || ceLots - peLots >= p.deltaSkewLots || ceScalpLots >= p.maxLotsPerSide,
+      PE: defensiveRights.has('PE') || peLots - ceLots >= p.deltaSkewLots || peScalpLots >= p.maxLotsPerSide,
     };
 
     const rights: Array<{ right: OptionRight; row?: OptionChainRow }> = [

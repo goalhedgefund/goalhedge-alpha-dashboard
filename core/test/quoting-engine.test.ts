@@ -557,6 +557,49 @@ describe('v0.3 trend regime filter (never bid against the tape)', () => {
   });
 });
 
+describe('maxLotsPerSide cap (clustering defence)', () => {
+  it('suppresses CE bids once CE scalp lots reach maxLotsPerSide; PE still quotes', () => {
+    const e = engine({ maxLotsPerSide: 2, maxScalpLots: 4, maxLotsInventory: 5 });
+    const b = book('CE', 2, 15_000); // 2 CE scalp lots — at the cap
+    const out = e.evaluate(baseInput({ books: [b] }));
+    const bids = out.desired.filter((d) => d.side === 'BUY');
+    expect(bids.some((d) => d.instrumentId === CE_ID)).toBe(false);
+    expect(bids.some((d) => d.instrumentId === PE_ID)).toBe(true);
+  });
+
+  it('runner lot does not count toward per-side cap', () => {
+    const e = engine({ maxLotsPerSide: 2, maxScalpLots: 4, maxLotsInventory: 5, runnerLots: 1 });
+    // 1 CE scalp lot + 1 CE runner lot = only 1 scalp slot used
+    const ceBook = book('CE', 2, 15_000);
+    const runnerLotId = ceBook.lots![0]!.lotId;
+    const out = e.evaluate(baseInput({
+      books: [ceBook],
+      runner: {
+        lotId: runnerLotId,
+        qty: LOT,
+        entryPricePaise: 15_000,
+        openedTs: NOW - 60_000,
+        instrumentId: CE_ID,
+        activatedTs: NOW - 30_000,
+        highWaterBidPaise: 16_000,
+        stopPaise: 15_100,
+      },
+    }));
+    // 2 CE lots - 1 runner = 1 scalp lot on CE side, below cap — CE bids should show
+    const bids = out.desired.filter((d) => d.side === 'BUY');
+    expect(bids.some((d) => d.instrumentId === CE_ID)).toBe(true);
+  });
+
+  it('both sides cap independently', () => {
+    const e = engine({ maxLotsPerSide: 2, maxScalpLots: 4, maxLotsInventory: 5 });
+    const ceBook = book('CE', 2, 15_000);
+    const peBook = book('PE', 2, 15_000);
+    const out = e.evaluate(baseInput({ books: [ceBook, peBook] }));
+    const bids = out.desired.filter((d) => d.side === 'BUY');
+    expect(bids).toHaveLength(0); // both sides at cap
+  });
+});
+
 describe('v0.3 escalating same-right loss-streak cooldown', () => {
   it('first losing defensive exit applies the normal 180s cooldown', () => {
     const e = engine();

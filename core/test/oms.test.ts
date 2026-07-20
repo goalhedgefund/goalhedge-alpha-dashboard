@@ -379,6 +379,61 @@ describe('OMS + PaperBroker lifecycle', () => {
     expect(keeper.getPositions()[0]?.qty).toBe(65);
   });
 
+  it('FIFO-recovery: when named lot is missing (already closed), applies fill to remaining open lots', () => {
+    // Simulates the async race: an exit order's fill arrives after the named lot
+    // was already closed by another exit (e.g. a prior fill not yet propagated).
+    const ids = new IdFactory(SESSION);
+    const keeper = new PositionKeeper(SESSION, profile, ids);
+    const buyOrder = (clientOrderId: ClientOrderId, fillId: string, pricePaise: number): void => {
+      const order: Order = {
+        clientOrderId,
+        intentId: ids.intentId(),
+        sessionId: SESSION,
+        instrumentId: INSTR,
+        side: 'BUY',
+        qty: 65,
+        filledQty: 65,
+        avgFillPricePaise: pricePaise,
+        type: 'LIMIT',
+        limitPricePaise: pricePaise,
+        state: 'FILLED',
+        purpose: 'ENTRY',
+        tag: 's1:entry',
+        createdTs: 1,
+        updatedTs: 1,
+      };
+      keeper.onFill(order, { clientOrderId, fillId, ts: 1, qty: 65, pricePaise });
+    };
+    buyOrder(ids.clientOrderId(), 'lot-a', 10_000);
+    buyOrder(ids.clientOrderId(), 'lot-b', 10_200);
+
+    // Close lot-a via a legitimate first exit.
+    const closeA = ids.clientOrderId();
+    keeper.onFill(
+      { clientOrderId: closeA, intentId: ids.intentId(), sessionId: SESSION, instrumentId: INSTR,
+        side: 'SELL', qty: 65, filledQty: 65, avgFillPricePaise: 10_300, type: 'LIMIT',
+        limitPricePaise: 10_300, state: 'FILLED', purpose: 'EXIT', tag: 's1:scalp_exit',
+        closeLotIds: ['lot-a'], createdTs: 2, updatedTs: 2 },
+      { clientOrderId: closeA, fillId: 'fill-exit-a', ts: 2, qty: 65, pricePaise: 10_300 },
+    );
+    expect(keeper.getOpenLots(INSTR).map((l) => l.lotId)).toEqual(['lot-b']);
+
+    // Now a duplicate exit targeting the already-closed lot-a arrives (the race case).
+    const duplicateId = ids.clientOrderId();
+    const update = keeper.onFill(
+      { clientOrderId: duplicateId, intentId: ids.intentId(), sessionId: SESSION, instrumentId: INSTR,
+        side: 'SELL', qty: 65, filledQty: 65, avgFillPricePaise: 10_400, type: 'LIMIT',
+        limitPricePaise: 10_400, state: 'FILLED', purpose: 'EXIT', tag: 's1:scalp_exit',
+        closeLotIds: ['lot-a'], createdTs: 3, updatedTs: 3 },
+      { clientOrderId: duplicateId, fillId: 'fill-dup', ts: 3, qty: 65, pricePaise: 10_400 },
+    );
+    // FIFO recovery should close lot-b and keep the position in sync.
+    expect(update.allocationError).toBeDefined(); // still logged as an error
+    expect(update.trades).toHaveLength(1);
+    expect(update.trades[0]?.exitReason).toContain('FIFO_RECOVERY');
+    expect(keeper.getPositions()[0]?.qty ?? 0).toBe(0); // book is flat — in sync with broker
+  });
+
   it('handles adapter rejects', async () => {
     const ids = new IdFactory(SESSION);
     const broker = new PaperBroker({ clock: new ManualClock(1) });

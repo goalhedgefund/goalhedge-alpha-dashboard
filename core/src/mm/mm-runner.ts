@@ -70,6 +70,10 @@ export class MmRunner {
   private pendingRunnerLotId: string | undefined;
   private quotePhase: MmQuotePhase | 'IDLE' = 'IDLE';
   private defences: MmDefenceState[] = [];
+  // Lot IDs reserved by a live or recently-placed exit order. Prevents a second
+  // exit being emitted for the same lot before the first fill is processed by
+  // the position-keeper (async fill-processing race).
+  private readonly reservedLotIds = new Set<string>();
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -186,6 +190,8 @@ export class MmRunner {
   onTrade(trade: Trade): void {
     const exitOrder = this.opts.oms.getOrder(trade.exit.clientOrderId);
     const exitTag = exitOrder?.tag.split(':')[1];
+    // Release reservations for the lots closed by this trade.
+    for (const lotId of exitOrder?.closeLotIds ?? []) this.reservedLotIds.delete(lotId);
     const right = this.opts.view.optionRows().get(trade.instrumentId)?.right ?? this.rightById.get(trade.instrumentId);
 
     if (
@@ -360,8 +366,11 @@ export class MmRunner {
         where: 'mm.place',
         message: `submit not accepted (${result.reason ?? 'unknown'}) for ${order.reason} ${order.side} ${String(order.instrumentId)}`,
       });
-    } else if (isUrgentExit(order.reason)) {
-      this.opts.escalator?.track(result.order, intent);
+    } else {
+      if (isUrgentExit(order.reason)) this.opts.escalator?.track(result.order, intent);
+      // Reserve named lots so the next reconcile cycle cannot emit a second
+      // exit for the same lot while the fill is in flight.
+      for (const lotId of order.closeLotIds ?? []) this.reservedLotIds.add(lotId);
     }
   }
 
@@ -384,12 +393,14 @@ export class MmRunner {
       const right = rows.get(position.instrumentId)?.right ?? this.rightById.get(position.instrumentId);
       if (right === undefined) continue;
       const row = rows.get(position.instrumentId);
-      const lots = this.opts.oms.getOpenLots(position.instrumentId).map((lot) => ({
-        lotId: lot.lotId,
-        qty: lot.qty,
-        entryPricePaise: lot.pricePaise,
-        openedTs: lot.ts,
-      }));
+      const lots = this.opts.oms.getOpenLots(position.instrumentId)
+        .filter((lot) => !this.reservedLotIds.has(lot.lotId))
+        .map((lot) => ({
+          lotId: lot.lotId,
+          qty: lot.qty,
+          entryPricePaise: lot.pricePaise,
+          openedTs: lot.ts,
+        }));
       books.push({
         instrumentId: position.instrumentId,
         right,
@@ -485,6 +496,19 @@ export class MmRunner {
 
   private syncInventoryState(detail: string): void {
     const lots = this.opts.oms.getOpenLots();
+    // Release reservations for lots that are no longer open (closed or never existed)
+    // and have no live working exit order — handles the cancel-before-fill case.
+    if (this.reservedLotIds.size > 0) {
+      const openIds = new Set(lots.map((l) => l.lotId));
+      const liveExitLotIds = new Set(
+        this.liveOrders()
+          .filter((o) => o.side === 'SELL')
+          .flatMap((o) => o.closeLotIds ?? []),
+      );
+      for (const lotId of this.reservedLotIds) {
+        if (!openIds.has(lotId) || !liveExitLotIds.has(lotId)) this.reservedLotIds.delete(lotId);
+      }
+    }
     if (this.pendingRunnerLotId !== undefined && !lots.some((lot) => lot.lotId === this.pendingRunnerLotId)) {
       this.pendingRunnerLotId = undefined;
     }

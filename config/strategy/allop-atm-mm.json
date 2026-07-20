@@ -1,6 +1,6 @@
 {
   "strategyId": "allop-atm-mm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "enabled": true,
   "params": {
     "spreadCostMultiple": 3,
@@ -9,7 +9,8 @@
     "runnerLots": 1,
     "lotsPerOrder": 1,
     "ladderLevels": 2,
-    "ladderGapPct": 0.4,
+    "ladderGapPct": 2.0,
+    "maxLotsPerSide": 2,
     "repriceTicks": 2,
     "quoteTtlSec": 20,
     "maxHoldSec": 180,
