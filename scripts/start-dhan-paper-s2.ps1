@@ -1,6 +1,6 @@
 param(
-  [string]$RepoRoot = "D:\Claude\scalper",
-  [string]$EnvPath = "D:\DHAN_LOGIN\.env",
+  [string]$RepoRoot = "D:\Claude\workstation\services\scalper",
+  [string]$EnvPath = "D:\Claude\workstation\secrets\dhan\.env",
   [switch]$SkipBuild,
   [switch]$SkipLaunchWindow
 )
@@ -68,6 +68,21 @@ Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."
 Write-LaunchLog "Auto-arm forced to $env:DHAN_AUTO_ARM."
+
+# A paper-only runner cannot safely re-adopt a simulated position after a
+# crashed launch. Preserve the failed session for audit, then start clean.
+$today = Get-Date -Format "yyyy-MM-dd"
+$sessionDir = Join-Path $RepoRoot "journals\s2-vwap-fade\$today\dhan-live-data-paper"
+$eventsPath = Join-Path $sessionDir "events.jsonl"
+if (Test-Path -LiteralPath $eventsPath) {
+  $recoveryHalt = Select-String -LiteralPath $eventsPath -SimpleMatch 'RECOVERED_OPEN_POSITION' | Select-Object -Last 1
+  if ($recoveryHalt) {
+    $archiveDir = "$sessionDir-recovery-$(Get-Date -Format 'HHmmss')"
+    Move-Item -LiteralPath $sessionDir -Destination $archiveDir
+    Write-LaunchLog "Archived recovery-halted paper session to $archiveDir."
+  }
+}
+
 if ($SkipLaunchWindow) {
   Write-LaunchLog "Skipping launch-window wait."
 } else {
@@ -76,6 +91,8 @@ if ($SkipLaunchWindow) {
 Write-LaunchLog "Starting compiled paper runner (SkipBuild=$SkipBuild)."
 
 Set-Location -LiteralPath $RepoRoot
+# Allow node's stderr (console.warn/error) without killing the PS1 process.
+$ErrorActionPreference = "Continue"
 if ($SkipBuild) {
   node core\dist\host\dhan-live-data-paper.js *>&1 | Tee-Object -FilePath $script:LogPath -Append
 } else {
