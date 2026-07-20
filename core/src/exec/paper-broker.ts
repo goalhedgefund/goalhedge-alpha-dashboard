@@ -104,8 +104,10 @@ export class PaperBroker implements IBrokerAdapter {
     if (reject !== undefined) {
       this.later(this.ackLatencyMs, () =>
         {
+          const current = this.orders.get(order.clientOrderId);
+          if (current === undefined || isTerminalOrderState(current.state)) return;
           const ts = this.clock.now();
-          this.orders.set(order.clientOrderId, { ...order, state: 'REJECTED', rejectReason: reject, updatedTs: ts });
+          this.orders.set(order.clientOrderId, { ...current, state: 'REJECTED', rejectReason: reject, updatedTs: ts });
           this.emit({
             type: 'REJECT',
             clientOrderId: order.clientOrderId,
@@ -119,8 +121,10 @@ export class PaperBroker implements IBrokerAdapter {
     }
 
     this.later(this.ackLatencyMs, () => {
+      const current = this.orders.get(order.clientOrderId);
+      if (current === undefined || isTerminalOrderState(current.state)) return;
       const ackTs = this.clock.now();
-      this.orders.set(order.clientOrderId, { ...order, state: 'ACKED', brokerOrderId: `PAPER-${order.clientOrderId}`, updatedTs: ackTs });
+      this.orders.set(order.clientOrderId, { ...current, state: 'ACKED', brokerOrderId: `PAPER-${order.clientOrderId}`, updatedTs: ackTs });
       this.emit({
         type: 'ACK',
         clientOrderId: order.clientOrderId,

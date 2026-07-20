@@ -10,7 +10,7 @@ import { none, type IStrategy, type StrategyDecision } from '../types.js';
  */
 export class AllOpAtmMm implements IStrategy {
   readonly id = 'allop-atm-mm';
-  readonly version = '0.2.1';
+  readonly version = '0.4.0';
 
   reset(): void {
     // stateless

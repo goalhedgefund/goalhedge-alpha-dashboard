@@ -60,12 +60,14 @@ function subMessages(ws: FakeWebSocket): Array<{ InstrumentCount: number; Instru
 describe('DhanFeed feed-flap behavior (03-TESTING-PLAN §4)', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     instances.length = 0;
   });
 
   it('dedupes subscriptions across a reconnect storm and ignores stale socket ticks', async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     vi.stubGlobal('WebSocket', FakeWebSocket);
     const token1 = makeInstrumentId('NSE', '101');
     const token2 = makeInstrumentId('NSE', '102');

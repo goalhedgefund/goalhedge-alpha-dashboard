@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config/loader.js';
-import { MarketProfileSchema, type MarketProfile } from '../src/config/schemas.js';
+import { MarketProfileSchema, StrategyConfigSchema, type MarketProfile } from '../src/config/schemas.js';
 import { makeInstrumentId, type InstrumentId } from '../src/domain/ids.js';
 import type { OptionRight } from '../src/domain/instrument.js';
 import type { OptionChainRow } from '../src/domain/marketdata.js';
@@ -17,6 +17,10 @@ const configDir = new URL('../../config/', import.meta.url);
 const market: MarketProfile = loadConfig(
   MarketProfileSchema,
   fileURLToPath(new URL('market/india-nse-options.json', configDir)),
+).value;
+const strategy = loadConfig(
+  StrategyConfigSchema,
+  fileURLToPath(new URL('strategy/allop-atm-mm.json', configDir)),
 ).value;
 
 const LOT = market.contract.lotSize;
@@ -567,9 +571,9 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
     expect(bids.some((d) => d.instrumentId === PE_ID)).toBe(true);
   });
 
-  it('runner lot does not count toward per-side cap', () => {
+  it('runner inventory counts toward the per-side cap', () => {
     const e = engine({ maxLotsPerSide: 2, maxScalpLots: 4, maxLotsInventory: 5, runnerLots: 1 });
-    // 1 CE scalp lot + 1 CE runner lot = only 1 scalp slot used
+    // Both lots consume CE directional capacity, regardless of runner status.
     const ceBook = book('CE', 2, 15_000);
     const runnerLotId = ceBook.lots![0]!.lotId;
     const out = e.evaluate(baseInput({
@@ -585,9 +589,9 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
         stopPaise: 15_100,
       },
     }));
-    // 2 CE lots - 1 runner = 1 scalp lot on CE side, below cap — CE bids should show
+    // Two total CE lots reach the side cap, so no additional CE bid is allowed.
     const bids = out.desired.filter((d) => d.side === 'BUY');
-    expect(bids.some((d) => d.instrumentId === CE_ID)).toBe(true);
+    expect(bids.some((d) => d.instrumentId === CE_ID)).toBe(false);
   });
 
   it('both sides cap independently', () => {
@@ -597,6 +601,47 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
     const out = e.evaluate(baseInput({ books: [ceBook, peBook] }));
     const bids = out.desired.filter((d) => d.side === 'BUY');
     expect(bids).toHaveLength(0); // both sides at cap
+  });
+});
+
+describe('v0.4 production long-cap policy', () => {
+  it('is frozen at two global lots, one per right, with runner disabled', () => {
+    expect(strategy.version).toBe('0.4.0');
+    expect(strategy.params).toEqual(expect.objectContaining({
+      maxLotsInventory: 2,
+      maxScalpLots: 2,
+      maxLotsPerSide: 1,
+      runnerLots: 0,
+      ladderLevels: 1,
+    }));
+  });
+
+  it('plans at most one CE and one PE even with multiple requested ladder levels', () => {
+    const e = engine({
+      maxLotsInventory: 2,
+      maxScalpLots: 2,
+      maxLotsPerSide: 1,
+      runnerLots: 0,
+      ladderLevels: 3,
+    });
+    const bids = e.evaluate(baseInput()).desired.filter((order) => order.side === 'BUY');
+    expect(bids).toHaveLength(2);
+    expect(bids.filter((order) => order.instrumentId === CE_ID)).toHaveLength(1);
+    expect(bids.filter((order) => order.instrumentId === PE_ID)).toHaveLength(1);
+  });
+
+  it('leaves capacity unused rather than doubling the only quotable right', () => {
+    const e = engine({
+      maxLotsInventory: 2,
+      maxScalpLots: 2,
+      maxLotsPerSide: 1,
+      runnerLots: 0,
+      ladderLevels: 3,
+    });
+    const bids = e.evaluate(baseInput({ atmCe: row(CE_ID, 'CE', 0, 15_010) }))
+      .desired.filter((order) => order.side === 'BUY');
+    expect(bids).toHaveLength(1);
+    expect(bids[0]?.instrumentId).toBe(PE_ID);
   });
 });
 

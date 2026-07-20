@@ -105,9 +105,6 @@ export class PositionKeeper {
     const selected = order.closeLotIds === undefined
       ? lots
       : order.closeLotIds.flatMap((lotId) => lots.filter((lot) => lot.lotId === lotId));
-    // True only when at least one named lot was present before the loop starts.
-    // Used to distinguish "named lots were missing" from "fill exceeded named lot qty".
-    const namedLotsFound = order.closeLotIds === undefined || selected.length > 0;
     let realized = book.position.realizedGrossPaise;
 
     while (remaining > 0 && selected.length > 0) {
@@ -156,45 +153,6 @@ export class PositionKeeper {
       remaining -= qty;
     }
 
-    // Safety net: named lots were entirely absent from the book (lot already closed
-    // by another fill — async race). Apply remaining fill FIFO so the position
-    // stays in sync with the broker. Does NOT apply to oversized fills where the
-    // named lot existed but the fill quantity exceeded it.
-    let fifoRecoveryApplied = false;
-    if (remaining > 0 && order.closeLotIds !== undefined && !namedLotsFound) {
-      fifoRecoveryApplied = true;
-      const fifo = lots.filter((l) => l.qty > 0 && !order.closeLotIds!.includes(l.lotId));
-      while (remaining > 0 && fifo.length > 0) {
-        const lot = fifo.shift() as OpenPositionLot;
-        const qty = Math.min(remaining, lot.qty);
-        const gross = (fill.pricePaise - lot.pricePaise) * qty;
-        const charges = computeCharges(
-          [
-            { side: 'BUY', qty, pricePaise: lot.pricePaise, orderId: lot.clientOrderId },
-            { side: 'SELL', qty, pricePaise: fill.pricePaise, orderId: fill.clientOrderId },
-          ],
-          this.marketProfile,
-        );
-        trades.push({
-          tradeId: this.ids.tradeId() as TradeId,
-          sessionId: this.sessionId,
-          strategyId: order.tag.split(':')[0] ?? order.tag,
-          instrumentId: order.instrumentId,
-          qty,
-          entry: { side: 'BUY', qty, pricePaise: lot.pricePaise, ts: lot.ts, clientOrderId: lot.clientOrderId },
-          exit: { side: 'SELL', qty, pricePaise: fill.pricePaise, ts: fill.ts, clientOrderId: fill.clientOrderId },
-          grossPnlPaise: gross,
-          charges,
-          netPnlPaise: computeTradeNet(gross, charges),
-          exitReason: `${order.tag.split(':')[1]?.toUpperCase() ?? order.purpose}:FIFO_RECOVERY`,
-          holdMs: fill.ts - lot.ts,
-        });
-        realized += gross;
-        lot.qty -= qty;
-        remaining -= qty;
-      }
-    }
-
     const openLots = lots.filter((lot) => lot.qty > 0);
     const qtyOpen = openLots.reduce((s, l) => s + l.qty, 0);
     const next: Position = {
@@ -211,13 +169,10 @@ export class PositionKeeper {
     return {
       positions: [next],
       trades,
-      ...(order.closeLotIds !== undefined && (remaining > 0 || fifoRecoveryApplied)
+      ...(order.closeLotIds !== undefined && remaining > 0
         ? {
-            allocationError: fifoRecoveryApplied && remaining === 0
-              ? `targeted fill ${fill.fillId} named lots missing; FIFO recovery applied ` +
-                `(order ${String(order.clientOrderId)}; lots ${order.closeLotIds.join(',')})`
-              : `targeted fill ${fill.fillId} exceeded named lots by ${remaining} units ` +
-                `(order ${String(order.clientOrderId)}; lots ${order.closeLotIds.join(',')})`,
+            allocationError: `targeted fill ${fill.fillId} exceeded named lots by ${remaining} units ` +
+              `(order ${String(order.clientOrderId)}; lots ${order.closeLotIds.join(',')})`,
           }
         : {}),
     };

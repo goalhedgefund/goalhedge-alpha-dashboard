@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fc from 'fast-check';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -217,6 +217,47 @@ describe('PaperBroker conformance', () => {
     await broker.cancelOrder(ids.clientOrderId());
     expect(events[0]?.type).toBe('CANCELLED');
   });
+
+  it('cancel-before-ACK cannot resurrect or fill a paper order', async () => {
+    vi.useFakeTimers();
+    try {
+      const clock = new ManualClock(1);
+      const ids = new IdFactory(SESSION);
+      const broker = new PaperBroker({ clock, ackLatencyMs: 80, fillLatencyMs: 80, restingFills: true });
+      broker.setQuote(INSTR, { bidPaise: 10_000, askPaise: 10_010, ltpPaise: 10_005 });
+      const events: BrokerOrderEvent[] = [];
+      broker.onOrderEvent((ev) => events.push(ev));
+      const order: Order = {
+        clientOrderId: ids.clientOrderId(),
+        intentId: ids.intentId(),
+        sessionId: SESSION,
+        instrumentId: INSTR,
+        side: 'BUY',
+        qty: 65,
+        filledQty: 0,
+        avgFillPricePaise: 0,
+        type: 'LIMIT',
+        limitPricePaise: 10_020,
+        state: 'SENT',
+        purpose: 'ENTRY',
+        tag: 's1:entry',
+        createdTs: 1,
+        updatedTs: 1,
+      };
+
+      await broker.placeOrder(order);
+      await broker.cancelOrder(order.clientOrderId);
+      await vi.advanceTimersByTimeAsync(500);
+      broker.setQuote(INSTR, { bidPaise: 10_000, askPaise: 10_005, ltpPaise: 10_005 });
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(events.map((event) => event.type)).toEqual(['CANCELLED']);
+      expect(broker.getOrders()).toEqual([expect.objectContaining({ state: 'CANCELLED', filledQty: 0 })]);
+      expect(broker.getPositions()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('OMS + PaperBroker lifecycle', () => {
@@ -379,7 +420,7 @@ describe('OMS + PaperBroker lifecycle', () => {
     expect(keeper.getPositions()[0]?.qty).toBe(65);
   });
 
-  it('FIFO-recovery: when named lot is missing (already closed), applies fill to remaining open lots', () => {
+  it('a stale targeted fill never closes a different open lot', () => {
     // Simulates the async race: an exit order's fill arrives after the named lot
     // was already closed by another exit (e.g. a prior fill not yet propagated).
     const ids = new IdFactory(SESSION);
@@ -427,11 +468,10 @@ describe('OMS + PaperBroker lifecycle', () => {
         closeLotIds: ['lot-a'], createdTs: 3, updatedTs: 3 },
       { clientOrderId: duplicateId, fillId: 'fill-dup', ts: 3, qty: 65, pricePaise: 10_400 },
     );
-    // FIFO recovery should close lot-b and keep the position in sync.
-    expect(update.allocationError).toBeDefined(); // still logged as an error
-    expect(update.trades).toHaveLength(1);
-    expect(update.trades[0]?.exitReason).toContain('FIFO_RECOVERY');
-    expect(keeper.getPositions()[0]?.qty ?? 0).toBe(0); // book is flat — in sync with broker
+    expect(update.allocationError).toContain('exceeded named lots by 65 units');
+    expect(update.trades).toHaveLength(0);
+    expect(keeper.getOpenLots(INSTR).map((lot) => lot.lotId)).toEqual(['lot-b']);
+    expect(keeper.getPositions()[0]?.qty).toBe(65);
   });
 
   it('handles adapter rejects', async () => {

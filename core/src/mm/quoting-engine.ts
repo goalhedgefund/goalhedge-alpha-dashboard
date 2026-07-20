@@ -311,17 +311,13 @@ export class QuotingEngine {
 
     const ceLots = this.heldLots(input.books, 'CE', lotSize);
     const peLots = this.heldLots(input.books, 'PE', lotSize);
-    // Per-side scalp counts exclude the runner lot so it doesn't consume a side slot.
-    const runnerRight = input.runner !== undefined
-      ? input.books.find((b) => b.instrumentId === input.runner!.instrumentId)?.right
-      : undefined;
-    const ceScalpLots = ceLots - (runnerRight === 'CE' ? runnerUnits / lotSize : 0);
-    const peScalpLots = peLots - (runnerRight === 'PE' ? runnerUnits / lotSize : 0);
     const defensiveRights = new Set(defences.map((d) => d.right));
     const skip: Record<OptionRight, boolean> = {
-      CE: defensiveRights.has('CE') || ceLots - peLots >= p.deltaSkewLots || ceScalpLots >= p.maxLotsPerSide,
-      PE: defensiveRights.has('PE') || peLots - ceLots >= p.deltaSkewLots || peScalpLots >= p.maxLotsPerSide,
+      CE: defensiveRights.has('CE') || ceLots - peLots >= p.deltaSkewLots,
+      PE: defensiveRights.has('PE') || peLots - ceLots >= p.deltaSkewLots,
     };
+    const heldByRight: Record<OptionRight, number> = { CE: ceLots, PE: peLots };
+    const plannedByRight: Record<OptionRight, number> = { CE: 0, PE: 0 };
 
     const rights: Array<{ right: OptionRight; row?: OptionChainRow }> = [
       { right: 'CE', ...(input.atmCe !== undefined ? { row: input.atmCe } : {}) },
@@ -331,7 +327,7 @@ export class QuotingEngine {
     for (let level = 0; level < p.ladderLevels; level++) {
       for (const { right, row } of rights) {
         if (remainingLots < p.lotsPerOrder) break;
-        if (skip[right] || row === undefined) continue;
+        if (skip[right] || heldByRight[right] + plannedByRight[right] >= p.maxLotsPerSide || row === undefined) continue;
         if (row.bidPaise <= 0 || row.askPaise <= 0) continue;
         const mid = (row.bidPaise + row.askPaise) / 2;
         const minSpread = this.minSpreadPct(mid);
@@ -350,6 +346,7 @@ export class QuotingEngine {
           reason: 'QUOTE_BID',
           stopPlan: { hardStopPremiumPaise: hardStop, timeStopSec: p.maxHoldSec },
         });
+        plannedByRight[right] += p.lotsPerOrder;
         remainingLots -= p.lotsPerOrder;
       }
     }
