@@ -76,6 +76,7 @@ $sessionDir = Join-Path $RepoRoot "journals\allop-atm-mm\$today\dhan-live-data-p
 $eventsPath = Join-Path $sessionDir "events.jsonl"
 if (Test-Path -LiteralPath $eventsPath) {
   $recoveryHalt = Select-String -LiteralPath $eventsPath -SimpleMatch 'RECOVERED_OPEN_POSITION' | Select-Object -Last 1
+  $sessionStop = Select-String -LiteralPath $eventsPath -SimpleMatch '"type":"risk.sessionStop"' | Select-Object -Last 1
   $positions = @{}
   Get-Content -LiteralPath $eventsPath | ForEach-Object {
     try {
@@ -88,10 +89,10 @@ if (Test-Path -LiteralPath $eventsPath) {
     }
   }
   $hasOpenPaperPosition = @($positions.Values | Where-Object { $_.state -ne "CLOSED" -and $_.qty -gt 0 }).Count -gt 0
-  if ($recoveryHalt -or $hasOpenPaperPosition) {
+  if ($recoveryHalt -or $sessionStop -or $hasOpenPaperPosition) {
     $archiveDir = "$sessionDir-recovery-$(Get-Date -Format 'HHmmss')"
     Move-Item -LiteralPath $sessionDir -Destination $archiveDir
-    Write-LaunchLog "Archived prior paper session to $archiveDir (recoveryHalt=$($null -ne $recoveryHalt), openPosition=$hasOpenPaperPosition)."
+    Write-LaunchLog "Archived prior paper session to $archiveDir (recoveryHalt=$($null -ne $recoveryHalt), sessionStop=$($null -ne $sessionStop), openPosition=$hasOpenPaperPosition)."
   }
 }
 
