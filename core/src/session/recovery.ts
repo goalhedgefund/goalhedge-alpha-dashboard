@@ -17,6 +17,8 @@ export interface RecoveryOptions {
 }
 
 export interface RecoveredState {
+  /** Original events, replayed into the gateway after a process restart. */
+  events: JournalEvent[];
   session: SessionState | undefined;
   /** Last journaled phase (before the crash). */
   phase: SessionPhase | undefined;
@@ -88,6 +90,7 @@ export function reduceJournal(events: readonly JournalEvent[], riskProfile: Risk
   }
 
   return {
+    events: [...events],
     session,
     phase,
     configHashes,
@@ -110,7 +113,7 @@ export async function recoverFromJournal(path: string, opts: RecoveryOptions): P
   const { events, partialTail } = await readJournal(path, { strictSeq: opts.strictSeq ?? true });
   const reduced = reduceJournal(events, opts.riskProfile);
   await prepareJournalForResume(path);
-  return { ...reduced, partialTail };
+  return { ...reduced, events, partialTail };
 }
 
 /**

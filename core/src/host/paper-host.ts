@@ -204,6 +204,12 @@ export class PaperHost {
         ? undefined
         : this.opts.persistence ?? new Persistence(join(this.opts.journalDir, 'scalper.db'));
     this.wire();
+    // Rehydrate the gateway's in-memory UI state from the durable journal.
+    // Risk and recovery gates are rebuilt above; this replay restores trades,
+    // orders, positions, and the event stream after a process restart.
+    if (recovered !== undefined) {
+      for (const event of recovered.events) this.opts.gateway?.ingestJournal(event);
+    }
 
     await this.session.runPreflight();
 
