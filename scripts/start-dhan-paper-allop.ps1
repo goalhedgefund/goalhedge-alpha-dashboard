@@ -62,12 +62,15 @@ $env:DHAN_GATEWAY_PORT = "8789"
 $env:DHAN_JOURNAL_ROOT = "journals\allop-atm-mm"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-allop-atm-mm"
 $env:DHAN_AUTO_ARM = "true"
+# Dhan WS takes ~12-15s to deliver the first spot tick after connect; give preflight 20s.
+$env:DHAN_FEED_STALE_MS = "20000"
 
 Write-LaunchLog "Strategy forced to $env:DHAN_STRATEGY_ID."
 Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."
 Write-LaunchLog "Auto-arm forced to $env:DHAN_AUTO_ARM."
+Write-LaunchLog "Feed stale threshold: $env:DHAN_FEED_STALE_MS ms."
 
 # A paper-only runner cannot safely re-adopt a simulated position after a
 # crashed launch. Preserve the failed session for audit, then start clean.
@@ -91,8 +94,8 @@ if (Test-Path -LiteralPath $eventsPath) {
   $hasOpenPaperPosition = @($positions.Values | Where-Object { $_.state -ne "CLOSED" -and $_.qty -gt 0 }).Count -gt 0
   if ($recoveryHalt -or $sessionStop -or $hasOpenPaperPosition) {
     $archiveDir = "$sessionDir-recovery-$(Get-Date -Format 'HHmmss')"
-    Move-Item -LiteralPath $sessionDir -Destination $archiveDir
-    Write-LaunchLog "Archived prior paper session to $archiveDir (recoveryHalt=$($null -ne $recoveryHalt), sessionStop=$($null -ne $sessionStop), openPosition=$hasOpenPaperPosition)."
+    Copy-Item -LiteralPath $sessionDir -Destination $archiveDir -Recurse
+    Write-LaunchLog "Copied prior paper session to $archiveDir for audit; active journal retained for recovery (recoveryHalt=$($null -ne $recoveryHalt), sessionStop=$($null -ne $sessionStop), openPosition=$hasOpenPaperPosition)."
   }
 }
 

@@ -91,8 +91,8 @@ if (Test-Path -LiteralPath $eventsPath) {
   $hasOpenPaperPosition = @($positions.Values | Where-Object { $_.state -ne "CLOSED" -and $_.qty -gt 0 }).Count -gt 0
   if ($recoveryHalt -or $sessionStop -or $hasOpenPaperPosition) {
     $archiveDir = "$sessionDir-recovery-$(Get-Date -Format 'HHmmss')"
-    Move-Item -LiteralPath $sessionDir -Destination $archiveDir
-    Write-LaunchLog "Archived prior paper session to $archiveDir (recoveryHalt=$($null -ne $recoveryHalt), sessionStop=$($null -ne $sessionStop), openPosition=$hasOpenPaperPosition)."
+    Copy-Item -LiteralPath $sessionDir -Destination $archiveDir -Recurse
+    Write-LaunchLog "Copied prior paper session to $archiveDir for audit; active journal retained for recovery (recoveryHalt=$($null -ne $recoveryHalt), sessionStop=$($null -ne $sessionStop), openPosition=$hasOpenPaperPosition)."
   }
 }
 
