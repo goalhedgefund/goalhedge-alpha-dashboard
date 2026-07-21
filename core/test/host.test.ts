@@ -236,7 +236,7 @@ function writeJournal(dir: string, events: Array<Omit<JournalEvent, 'seq' | 'ts'
 }
 
 describe('PaperHost — crash recovery (M10 §3, 03 §4)', () => {
-  it('safe-halts when recovery finds an open position (cannot re-adopt in v1)', async () => {
+  it('abandons recovered open positions in paper mode and arms (no halt)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-recover-halt-'));
     const openPos: Position = {
       positionId: 'p1' as PositionId, sessionId: SESSION, strategyId: 's1', instrumentId: CE_ID,
@@ -250,16 +250,15 @@ describe('PaperHost — crash recovery (M10 §3, 03 §4)', () => {
     const clock = new ManualClock(START_10AM_IST + 60_000);
     const marketData = makeMarketData();
     const paper = new PaperBroker({ clock });
-    // Broker also reports the open position (agrees) — still unsafe to re-adopt.
-    paper.setPositionQty(CE_ID, openPos);
+    // Paper broker starts empty on restart; journal has open position — orphaned lot.
     marketData.ingest(spotTick(clock.now(), ATM, 100));
 
     const host = buildHost(dir, clock, marketData, paper);
     const res = await host.start();
-    expect(res.halted).toBe(true);
-    expect(res.reason).toBe('RECOVERED_OPEN_POSITION');
-    expect(host.sessionPhase()).toBe('HALTED');
-    expect(host.runnerState()).not.toBe('ARMED');
+    // Paper mode: ephemeral broker, no real exposure — abandoned with diag.error warning, continues.
+    expect(res.halted).toBe(false);
+    expect(host.sessionPhase()).toBe('OPEN');
+    expect(host.runnerState()).toBe('ARMED');
     await host.close();
   }, 20_000);
 

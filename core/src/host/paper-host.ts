@@ -217,15 +217,26 @@ export class PaperHost {
     // A recovered open position can't be safely re-adopted in v1, and any
     // OMS-vs-broker mismatch is dangerous — both safe-halt (operator flattens
     // then restarts). A flat, clean book resumes.
+    //
+    // Paper-mode exception: the paper broker is ephemeral (starts empty on every
+    // restart), so recovered open positions are always journal artifacts — there is
+    // no real exposure to protect. Abandon them with a diagnostic warning and let
+    // trading resume. A genuine OMS-vs-broker mismatch (diffs on both sides) still
+    // halts even in paper mode.
     if (recovered !== undefined) {
       const diffs = reconcileRecovered(recovered, this.opts.broker.getPositions());
       const openPositions = recovered.positions.length > 0;
       if (diffs.length > 0 || openPositions) {
         const reason = openPositions ? 'RECOVERED_OPEN_POSITION' : 'RECON_MISMATCH_ON_RECOVERY';
-        this.sink('diag.error', { where: 'recovery', message: reason });
-        this.session.halt(reason);
-        this.started = true;
-        return { recovered: true, halted: true, reason };
+        if (this.mode === 'paper' && reason === 'RECOVERED_OPEN_POSITION') {
+          // Abandon the orphaned lots in the journal; broker starts flat.
+          this.sink('diag.error', { where: 'recovery', message: 'RECOVERED_OPEN_POSITION:PAPER_ABANDONED' });
+        } else {
+          this.sink('diag.error', { where: 'recovery', message: reason });
+          this.session.halt(reason);
+          this.started = true;
+          return { recovered: true, halted: true, reason };
+        }
       }
     }
 
