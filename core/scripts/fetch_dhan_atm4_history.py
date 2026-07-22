@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""
 Fetch weekly OP(-) research data from Dhan HQ and materialize an ATM +/- 4
-strike tick corpus for both scalp and hedge CE/PE legs.
+strike tick corpus for scalp CE/PE legs.
 
 This is a fallback data-collection helper for the backtest harness.
 It uses the official `dhanhq` Python client and the repo's Dhan env file.
@@ -138,22 +138,6 @@ def resolve_weekly_chain(rows: list[ScripRow], as_of: str, min_days: int = 0) ->
         if r.expiry_date == expiry:
             chain[r.strike_paise][r.option_type] = r
     return expiry, chain
-
-
-def resolve_expiry_offset(rows: list[ScripRow], base_expiry: str, offset: int) -> tuple[str, dict[int, dict[str, ScripRow]]]:
-    opts = [r for r in filter_options(rows, "NIFTY") if r.expiry_flag == "W"]
-    expiries = resolve_expiries(opts)
-    try:
-        idx = expiries.index(base_expiry)
-    except ValueError as exc:
-        raise RuntimeError(f"base expiry {base_expiry} not found") from exc
-    target_index = min(idx + max(0, offset), len(expiries) - 1)
-    target = expiries[target_index]
-    chain: dict[int, dict[str, ScripRow]] = defaultdict(dict)
-    for r in opts:
-        if r.expiry_date == target:
-            chain[r.strike_paise][r.option_type] = r
-    return target, chain
 
 
 def choose_strikes(chain: dict[int, dict[str, ScripRow]], spot_paise: int, depth: int) -> list[int]:
@@ -327,9 +311,6 @@ def main() -> int:
 
     min_days = 1
     scalp_expiry, scalp_chain = resolve_weekly_chain(rows, date_str, min_days=min_days)
-    hedge_offset = 3
-    hedge_expiry, hedge_chain = resolve_expiry_offset(rows, scalp_expiry, hedge_offset)
-
     option_segment = env.get("DHAN_OPTION_EXCHANGE_SEGMENT", "NSE_FNO")
     underlying_security_id = env.get("DHAN_UNDERLYING_SECURITY_ID", env.get("DHAN_SPOT_SECURITY_ID", "13"))
     # /charts/rollingoption expects the option exchange segment (NSE_FNO),
@@ -342,14 +323,9 @@ def main() -> int:
     scalp_atm = strikes[len(strikes) // 2]
     scalp_row_ce = scalp_chain.get(scalp_atm, {}).get("CE")
     scalp_row_pe = scalp_chain.get(scalp_atm, {}).get("PE")
-    hedge_atm = min(hedge_chain, key=lambda strike: abs(strike - scalp_atm)) if hedge_chain else None
-    hedge_row_ce = hedge_chain.get(hedge_atm, {}).get("CE") if hedge_atm is not None else None
-    hedge_row_pe = hedge_chain.get(hedge_atm, {}).get("PE") if hedge_atm is not None else None
     legs = (
         ("scalp", scalp_row_ce, "CALL"),
         ("scalp", scalp_row_pe, "PUT"),
-        ("hedge", hedge_row_ce, "CALL"),
-        ("hedge", hedge_row_pe, "PUT"),
     )
     for leg_name, row, side in legs:
         if row is None:
@@ -382,7 +358,7 @@ def main() -> int:
             gz.write("\n")
 
     print(f"Wrote {len(all_ticks)} synthetic ticks to {out_path}")
-    print(f"Scalp expiry: {scalp_expiry}; hedge expiry: {hedge_expiry}; ATM +/-4 CE/PE fetched for both weekly legs")
+    print(f"Scalp weekly expiry: {scalp_expiry}; ATM +/-4 CE/PE fetched")
     return 0
 
 

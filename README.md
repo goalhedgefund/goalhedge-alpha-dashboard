@@ -56,9 +56,9 @@ npm run paper:live-data:dhan
 ## OP(-) weekly ATM±4 backtest data
 
 Use `core/scripts/fetch_dhan_atm4_history.py` to download one trading day of
-Dhan research data for the weekly scalp and hedge expiries. It fetches both CE
-and PE at ATM−4 through ATM+4 and writes compressed synthetic ticks suitable
-for the OP(-) backtest corpus.
+Dhan research data for the weekly scalp expiry. It fetches both CE and PE at
+ATM−4 through ATM+4 and writes compressed synthetic ticks suitable for the
+OP(-) backtest corpus. Hedge-expiry downloads are intentionally excluded.
 
 Example:
 
