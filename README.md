@@ -53,6 +53,28 @@ Run:
 npm run paper:live-data:dhan
 ```
 
+## OP(-) weekly ATM±4 backtest data
+
+Use `core/scripts/fetch_dhan_atm4_history.py` to download one trading day of
+Dhan research data for the weekly scalp and hedge expiries. It fetches both CE
+and PE at ATM−4 through ATM+4 and writes compressed synthetic ticks suitable
+for the OP(-) backtest corpus.
+
+Example:
+
+```bash
+python core/scripts/fetch_dhan_atm4_history.py \
+  --date 2026-07-22 \
+  --out core/data/dhan/ticks-op-minus-atm-short/2026-07-22
+```
+
+For a backfill, run the command once per trading day, changing `--date` and
+the matching output directory. The script reads `DHAN_CLIENT_ID`,
+`DHAN_ACCESS_TOKEN`, and `DHAN_SCRIP_MASTER_PATH` from the configured Dhan
+env file (`DHAN_ENV_PATH` can override its location). It skips no-data days
+by returning a non-zero exit code, so callers should continue across market
+holidays.
+
 ## Layout
 
 - `core/` — trading engine (TypeScript, strict; no UI dependencies)

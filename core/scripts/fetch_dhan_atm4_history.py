@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 r"""
-Fetch OP(-) research data from Dhan HQ and materialize a tick corpus.
+Fetch weekly OP(-) research data from Dhan HQ and materialize an ATM +/- 4
+strike tick corpus for both scalp and hedge CE/PE legs.
 
 This is a fallback data-collection helper for the backtest harness.
 It uses the official `dhanhq` Python client and the repo's Dhan env file.
@@ -11,7 +12,7 @@ still run. That is good enough for research backfills, but it is not a
 replacement for a real tick corpus.
 
 Usage:
-  python scripts/fetch-dhan-op-minus-history.py --date YYYY-MM-DD --out DIR
+  python scripts/fetch_dhan_atm4_history.py --date YYYY-MM-DD --out DIR
 
 Environment:
   DHAN_ENV_PATH                  Dhan env file (default:
