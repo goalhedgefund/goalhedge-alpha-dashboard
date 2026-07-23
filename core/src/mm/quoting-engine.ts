@@ -22,6 +22,8 @@ export interface MmParams {
   ladderLevels: number;
   ladderGapPct: number;
   repriceTicks: number;
+  /** Minimum lifetime for a passive entry quote before repricing it. */
+  minRequoteMs: number;
   quoteTtlSec: number;
   /** Maximum age of an ordinary scalp lot. */
   maxHoldSec: number;
@@ -41,6 +43,8 @@ export interface MmParams {
   trendPct: number;
   /** Hysteresis: the regime clears only when |drift| falls back below this. */
   trendResumePct: number;
+  /** Require a confirmed directional regime before opening a long-option bid. */
+  directionalOnly: boolean;
   /** Consecutive losing defensive exits on one right before the cooldown escalates. 0 disables. */
   lossStreakEscalation: number;
   escalatedCooldownSec: number;
@@ -59,6 +63,11 @@ function boundedParam(params: StrategyParams, key: string, dflt: number, min: nu
   return Math.min(max, Math.max(min, numParam(params, key, dflt)));
 }
 
+function boolParam(params: StrategyParams, key: string, dflt: boolean): boolean {
+  const value = params[key];
+  return typeof value === 'boolean' ? value : dflt;
+}
+
 export function resolveMmParams(params: StrategyParams): MmParams {
   const maxLotsInventory = Math.floor(boundedParam(params, 'maxLotsInventory', 5, 1, 100));
   return {
@@ -70,6 +79,7 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     ladderLevels: Math.floor(boundedParam(params, 'ladderLevels', 2, 1, 20)),
     ladderGapPct: boundedParam(params, 'ladderGapPct', 0.4, 0, 100),
     repriceTicks: Math.floor(boundedParam(params, 'repriceTicks', 2, 0, 100)),
+    minRequoteMs: Math.floor(boundedParam(params, 'minRequoteMs', 2_000, 0, 60_000)),
     quoteTtlSec: boundedParam(params, 'quoteTtlSec', 20, 1, 86_400),
     maxHoldSec: boundedParam(params, 'maxHoldSec', 180, 1, 86_400),
     hardStopPct: boundedParam(params, 'hardStopPct', 10, 0.1, 99),
@@ -84,6 +94,7 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     knifeCooldownMin: boundedParam(params, 'knifeCooldownMin', 10, 0, 1_440),
     trendPct: boundedParam(params, 'trendPct', 0.2, 0, 100),
     trendResumePct: boundedParam(params, 'trendResumePct', 0.1, 0, 100),
+    directionalOnly: boolParam(params, 'directionalOnly', false),
     lossStreakEscalation: Math.floor(boundedParam(params, 'lossStreakEscalation', 2, 0, 100)),
     escalatedCooldownSec: boundedParam(params, 'escalatedCooldownSec', 900, 0, 86_400),
     maxLotsPerSide: Math.floor(boundedParam(params, 'maxLotsPerSide', 2, 1, 100)),
@@ -312,9 +323,10 @@ export class QuotingEngine {
     const ceLots = this.heldLots(input.books, 'CE', lotSize);
     const peLots = this.heldLots(input.books, 'PE', lotSize);
     const defensiveRights = new Set(defences.map((d) => d.right));
+    const noDirectionalSetup = p.directionalOnly && this.trendRegime === 'NEUTRAL';
     const skip: Record<OptionRight, boolean> = {
-      CE: defensiveRights.has('CE') || ceLots - peLots >= p.deltaSkewLots,
-      PE: defensiveRights.has('PE') || peLots - ceLots >= p.deltaSkewLots,
+      CE: noDirectionalSetup || defensiveRights.has('CE') || ceLots - peLots >= p.deltaSkewLots,
+      PE: noDirectionalSetup || defensiveRights.has('PE') || peLots - ceLots >= p.deltaSkewLots,
     };
     const heldByRight: Record<OptionRight, number> = { CE: ceLots, PE: peLots };
     const plannedByRight: Record<OptionRight, number> = { CE: 0, PE: 0 };

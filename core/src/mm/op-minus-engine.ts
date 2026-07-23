@@ -3,15 +3,25 @@ import type { MarketProfile } from '../config/schemas.js';
 import type { InstrumentId } from '../domain/ids.js';
 import type { OptionRight } from '../domain/instrument.js';
 import type { OptionChainRow } from '../domain/marketdata.js';
+import type { UnderlyingFeatures } from '../marketdata/features/library.js';
 import type { IntentType, StopPlan } from '../domain/orders.js';
 import { numParam, type StrategyParams } from '../strategy/types.js';
 
 export interface OpMinusParams {
   scalpLotsPerRight: number;
+  /** Legacy fallback retained for old configuration files. */
   rewardRiskRatio: number;
+  targetPremiumPct: number;
+  hardStopPremiumPct: number;
   runnerLots: number;
   quoteTtlSec: number;
+  minRequoteMs: number;
   maxHoldSec: number;
+  defensiveCooldownSec: number;
+  rangeFilterEnabled: boolean;
+  maxAbsRet30Pct: number;
+  maxVwapDistancePct: number;
+  entryImprovementTicks: number;
   defensiveProtectTicks: number;
   repriceTicks: number;
   quoteFrom: string;
@@ -27,13 +37,26 @@ function strParam(params: StrategyParams, key: string, dflt: string): string {
   return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : dflt;
 }
 
+function boolParam(params: StrategyParams, key: string, dflt: boolean): boolean {
+  const value = params[key];
+  return typeof value === 'boolean' ? value : dflt;
+}
+
 export function resolveOpMinusParams(params: StrategyParams): OpMinusParams {
   return {
     scalpLotsPerRight: Math.floor(boundedParam(params, 'scalpLotsPerRight', 2, 1, 20)),
     rewardRiskRatio: boundedParam(params, 'rewardRiskRatio', 2, 0.1, 20),
+    targetPremiumPct: boundedParam(params, 'targetPremiumPct', 5, 0.1, 50),
+    hardStopPremiumPct: boundedParam(params, 'hardStopPremiumPct', 9, 0.1, 100),
     runnerLots: Math.min(1, Math.floor(boundedParam(params, 'runnerLots', 1, 0, 1))),
     quoteTtlSec: boundedParam(params, 'quoteTtlSec', 20, 1, 86_400),
+    minRequoteMs: Math.floor(boundedParam(params, 'minRequoteMs', 2_000, 0, 60_000)),
     maxHoldSec: boundedParam(params, 'maxHoldSec', 180, 1, 86_400),
+    defensiveCooldownSec: boundedParam(params, 'defensiveCooldownSec', 300, 0, 86_400),
+    rangeFilterEnabled: boolParam(params, 'rangeFilterEnabled', false),
+    maxAbsRet30Pct: boundedParam(params, 'maxAbsRet30Pct', 0.001, 0.00001, 0.1),
+    maxVwapDistancePct: boundedParam(params, 'maxVwapDistancePct', 0.0015, 0.00001, 0.1),
+    entryImprovementTicks: Math.floor(boundedParam(params, 'entryImprovementTicks', 1, 0, 20)),
     defensiveProtectTicks: Math.floor(boundedParam(params, 'defensiveProtectTicks', 10, 1, 100)),
     repriceTicks: Math.floor(boundedParam(params, 'repriceTicks', 2, 0, 100)),
     quoteFrom: strParam(params, 'quoteFrom', '09:20'),
@@ -68,6 +91,8 @@ export interface OpMinusInput {
   nowHHMM: string;
   scalpCe?: OptionChainRow;
   scalpPe?: OptionChainRow;
+  spotPaise?: number;
+  underlying?: UnderlyingFeatures;
   shortBooks: readonly OpMinusShortBookInput[];
   latchedStop: boolean;
   runner?: OpMinusActiveRunnerInput;
@@ -98,7 +123,7 @@ export interface OpMinusDesiredOrder {
 
 export interface OpMinusEvaluation {
   desired: OpMinusDesiredOrder[];
-  phase: 'SCALPING' | 'EXIT_ONLY' | 'PAUSED_WINDOW' | 'PAUSED_LOCKOUT';
+  phase: 'SCALPING' | 'EXIT_ONLY' | 'PAUSED_WINDOW' | 'PAUSED_LOCKOUT' | 'PAUSED_REGIME';
   pauseReason?: string;
   runnerCandidateLotId?: string;
 }
@@ -132,14 +157,22 @@ export class OpMinusEngine {
   }
 
   targetPaise(entryPricePaise: number): number {
+    const percentageTarget = entryPricePaise * (1 - this.params.targetPremiumPct / 100);
     return floorTick(
-      Math.max(this.market.tickSizePaise, entryPricePaise - this.params.rewardRiskRatio * this.costRiskPaise(entryPricePaise)),
+      Math.max(
+        this.market.tickSizePaise,
+        Math.min(percentageTarget, entryPricePaise - this.params.rewardRiskRatio * this.costRiskPaise(entryPricePaise)),
+      ),
       this.market.tickSizePaise,
     );
   }
 
   hardStopPaise(entryPricePaise: number): number {
-    return ceilTick(entryPricePaise + this.costRiskPaise(entryPricePaise), this.market.tickSizePaise);
+    const percentageStop = entryPricePaise * (1 + this.params.hardStopPremiumPct / 100);
+    return ceilTick(
+      Math.max(percentageStop, entryPricePaise + this.costRiskPaise(entryPricePaise)),
+      this.market.tickSizePaise,
+    );
   }
 
   runnerCostStopPaise(entryPricePaise: number): number {
@@ -180,6 +213,15 @@ export class OpMinusEngine {
       };
     }
 
+    if (!this.rangeReady(input)) {
+      return {
+        desired,
+        phase: 'PAUSED_REGIME',
+        pauseReason: 'trend or VWAP stretch outside short-premium range',
+        ...(candidate !== undefined ? { runnerCandidateLotId: candidate } : {}),
+      };
+    }
+
     return {
       desired: [...desired, ...this.missingShortEntries(input)],
       phase: 'SCALPING',
@@ -206,7 +248,12 @@ export class OpMinusEngine {
           side: 'SELL',
           qty: lot,
           type: 'LIMIT',
-          limitPricePaise: row.bidPaise,
+          // Do not cross the whole spread on a naked short entry. Rest just
+          // inside the ask and let the market trade through the quote.
+          limitPricePaise: Math.max(
+            row.bidPaise,
+            row.askPaise - this.params.entryImprovementTicks * this.market.tickSizePaise,
+          ),
           purpose: 'ENTRY',
           reason: 'SHORT_ENTRY',
           stopPlan: {
@@ -274,6 +321,19 @@ export class OpMinusEngine {
       }))
       .sort((a, b) => b.progress - a.progress || a.lot.openedTs - b.lot.openedTs);
     return candidates[0]?.lot.lotId;
+  }
+
+  private rangeReady(input: OpMinusInput): boolean {
+    if (!this.params.rangeFilterEnabled) return true;
+    const spot = input.spotPaise;
+    const features = input.underlying;
+    const vwap = features?.vwapPaise;
+    const ret30 = features?.ret30s;
+    if (spot === undefined || spot <= 0 || vwap === undefined || vwap <= 0 || ret30 === undefined) return false;
+    return (
+      Math.abs(ret30) <= this.params.maxAbsRet30Pct &&
+      Math.abs((spot - vwap) / vwap) <= this.params.maxVwapDistancePct
+    );
   }
 
   private forceAllShortsClosed(input: OpMinusInput): OpMinusDesiredOrder[] {

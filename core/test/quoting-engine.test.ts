@@ -102,7 +102,7 @@ function baseInput(overrides: Partial<MmQuoteInput> = {}): MmQuoteInput {
   };
 }
 
-function engine(paramOverrides: Record<string, number | string> = {}): QuotingEngine {
+function engine(paramOverrides: Record<string, number | string | boolean> = {}): QuotingEngine {
   return new QuotingEngine(market, { ...PARAMS, ...paramOverrides });
 }
 
@@ -521,6 +521,19 @@ describe('v0.3 trend regime filter (never bid against the tape)', () => {
     expect(bids.some((d) => d.instrumentId === CE_ID)).toBe(false);
   });
 
+  it('directional-only mode waits in neutral, then opens only with the trend', () => {
+    const e = engine({ directionalOnly: true });
+    let out = drift(e, [[0, SPOT]]);
+    expect(out.trendRegime).toBe('NEUTRAL');
+    expect(out.desired.some((d) => d.side === 'BUY')).toBe(false);
+
+    out = drift(e, [[60_000, SPOT], [120_000, Math.round(SPOT * 1.0025)]]);
+    const bids = out.desired.filter((d) => d.side === 'BUY');
+    expect(out.trendRegime).toBe('UP');
+    expect(bids).toHaveLength(2);
+    expect(bids.every((bid) => bid.instrumentId === CE_ID)).toBe(true);
+  });
+
   it('hysteresis: regime holds until |drift| falls below trendResumePct', () => {
     const e = engine();
     // Enter UP, then drift decays to +0.15% (above resume 0.10%) — still UP.
@@ -604,15 +617,17 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.4 production long-cap policy', () => {
-  it('is frozen at two global lots, one per right, with runner disabled', () => {
-    expect(strategy.version).toBe('0.4.0');
+describe('v0.5 production directional long-option policy', () => {
+  it('is frozen at one global lot, with the runner disabled and neutral entries suppressed', () => {
+    expect(strategy.version).toBe('0.5.0');
     expect(strategy.params).toEqual(expect.objectContaining({
-      maxLotsInventory: 2,
-      maxScalpLots: 2,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
       maxLotsPerSide: 1,
       runnerLots: 0,
       ladderLevels: 1,
+      directionalOnly: true,
+      minRequoteMs: 5_000,
     }));
   });
 

@@ -46,6 +46,9 @@ const params = {
   scalpLotsPerRight: 2,
   rewardRiskRatio: 2,
   runnerLots: 1,
+  targetPremiumPct: 5,
+  hardStopPremiumPct: 9,
+  rangeFilterEnabled: false,
   maxHoldSec: 180,
   quoteFrom: '09:20',
   entryCutoff: '15:10',
@@ -88,12 +91,35 @@ describe('OP(-) naked short engine', () => {
     expect(entries.filter((order) => order.instrumentId === scalpPe.instrumentId)).toHaveLength(2);
   });
 
-  it('uses one modeled intraday cost as risk and two costs as target return', () => {
+  it('uses premium-based stop and target levels that are never tighter than costs', () => {
     const engine = new OpMinusEngine(market, params);
     const cost = engine.costRiskPaise(10_000);
     expect(cost).toBeGreaterThan(0);
-    expect(engine.hardStopPaise(10_000)).toBe(10_000 + cost);
-    expect(engine.targetPaise(10_000)).toBe(10_000 - 2 * cost);
+    expect(engine.hardStopPaise(10_000)).toBe(10_900);
+    expect(engine.targetPaise(10_000)).toBe(9_500);
+  });
+
+  it('pauses new short entries when the range filter detects trend or VWAP stretch', () => {
+    const evaluation = new OpMinusEngine(market, {
+      ...params,
+      rangeFilterEnabled: true,
+      maxAbsRet30Pct: 0.001,
+      maxVwapDistancePct: 0.0015,
+    }).evaluate(baseInput({
+      spotPaise: 2_510_000,
+      underlying: {
+        ret1s: 0.001,
+        ret5s: 0.002,
+        ret30s: 0.003,
+        vwapPaise: 2_500_000,
+        atr1mPaise: 1_000,
+        tickVelocityPerSec: 1,
+        volumeBurstRatio: 1,
+        codexScore: { bull: 0, bear: 0, signal: 'WAIT', trend: 'flat', indicators: { last: 2_510_000 } },
+      },
+    }));
+    expect(evaluation.phase).toBe('PAUSED_REGIME');
+    expect(evaluation.desired.filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
   });
 
   it('reserves one global runner candidate and targets only its paired lot on that right', () => {

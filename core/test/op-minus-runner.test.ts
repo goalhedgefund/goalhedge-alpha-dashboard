@@ -19,6 +19,12 @@ import type { StrategyView } from '../src/strategy/types.js';
 const configDir = new URL('../../config/', import.meta.url);
 const market = loadConfig(MarketProfileSchema, fileURLToPath(new URL('market/allop-nse-options.json', configDir))).value;
 const risk = loadConfig(RiskProfileSchema, fileURLToPath(new URL('risk/op-minus-paper.json', configDir))).value;
+const testRisk = {
+  ...risk,
+  // Legacy sequencing coverage needs four concurrently filled paper shorts.
+  maxConcurrentPositions: 4,
+  maxLotsPerOrder: 2,
+};
 const LOT = market.contract.lotSize;
 const TICK = market.tickSizePaise;
 const SESSION = makeSessionId('2026-07-22', 'paper');
@@ -68,8 +74,8 @@ function rig() {
   }
   const ids = new IdFactory(SESSION);
   const oms = new Oms({ sessionId: SESSION, adapter: paper, marketProfile: market, clock, ids, journal: sink });
-  const sessionRisk = new SessionRiskState(risk);
-  const gate = new RiskGate(market, risk);
+  const sessionRisk = new SessionRiskState(testRisk);
+  const gate = new RiskGate(market, testRisk);
   const gateContext = (): RiskGateContext => ({
     nowMs: clock.now(), nowHHMM: '10:30', allowedInstruments: view.allowedInstruments(), optionRows: view.optionRows(),
     atmStrikePaise: ATM, strikeBand: 5, maxSpreadPct: 0.015, minOi: 100, minVolume: 100,
@@ -88,6 +94,8 @@ function rig() {
     params: {
       scalpLotsPerRight: 2, rewardRiskRatio: 2, runnerLots: 1,
       quoteTtlSec: 3_600, maxHoldSec: 180, defensiveProtectTicks: 10, repriceTicks: 2,
+      targetPremiumPct: 5, hardStopPremiumPct: 9, minRequoteMs: 0,
+      rangeFilterEnabled: false, entryImprovementTicks: 100,
       quoteFrom: '09:20', entryCutoff: '15:10',
     },
     market, scalpExpiry: SCALP_EXPIRY,

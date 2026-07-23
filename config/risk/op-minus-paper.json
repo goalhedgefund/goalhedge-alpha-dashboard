@@ -3,11 +3,11 @@
   "version": 1,
   "mode": "paper",
   "capitalPaise": 100000000,
-  "perTradeRiskPct": 5,
-  "dailyMaxLossPct": 5,
+  "perTradeRiskPct": 0.5,
+  "dailyMaxLossPct": 1,
   "giveBack": { "armAtPct": 3, "retainPct": 50 },
   "lossStreak": { "count": 5, "cooldownMin": 15 },
-  "maxTradesPerDay": 200,
-  "maxConcurrentPositions": 6,
+  "maxTradesPerDay": 8,
+  "maxConcurrentPositions": 2,
   "maxLotsPerOrder": 1
 }

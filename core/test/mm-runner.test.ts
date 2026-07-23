@@ -30,6 +30,14 @@ const riskProfile: RiskProfile = loadConfig(
   RiskProfileSchema,
   fileURLToPath(new URL('risk/allop-paper.json', configDir)),
 ).value;
+const testRiskProfile: RiskProfile = {
+  ...riskProfile,
+  // Runner lifecycle tests exercise multi-lot reconciliation, not the tighter
+  // production allocation cap.
+  perTradeRiskPct: 10,
+  maxConcurrentPositions: 5,
+  maxLotsPerOrder: 5,
+};
 
 const LOT = market.contract.lotSize;
 const TICK = market.tickSizePaise;
@@ -48,6 +56,7 @@ const PARAMS = {
   ladderLevels: 2,
   ladderGapPct: 0.4,
   repriceTicks: 2,
+  minRequoteMs: 0,
   quoteTtlSec: 3600, // long TTL so tests control expiry explicitly
   maxHoldSec: 180,
   hardStopPct: 10,
@@ -60,6 +69,7 @@ const PARAMS = {
   deltaSkewLots: 3,
   knifePct: 0.35,
   knifeCooldownMin: 10,
+  directionalOnly: false,
   quoteFrom: '09:20',
   bidCutoff: '15:10',
 };
@@ -122,7 +132,7 @@ interface Rig {
   events: JournalEvent[];
 }
 
-function rig(profile: RiskProfile = riskProfile): Rig {
+function rig(profile: RiskProfile = testRiskProfile): Rig {
   const clock = new ManualClock(T0);
   const events: JournalEvent[] = [];
   let seq = 0;
@@ -346,7 +356,7 @@ describe('MmRunner reconciliation through gate → OMS', () => {
 
   it('a completed trade that trips the session stop flattens the other book in the same cycle', async () => {
     const sensitiveRisk: RiskProfile = {
-      ...riskProfile,
+      ...testRiskProfile,
       giveBack: { armAtPct: 0.1, retainPct: 99 },
     };
     r = rig(sensitiveRisk);

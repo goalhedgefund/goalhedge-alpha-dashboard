@@ -1,17 +1,24 @@
 {
   "strategyId": "op-minus-atm-short",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "enabled": true,
   "params": {
-    "scalpLotsPerRight": 2,
-    "rewardRiskRatio": 2,
-    "runnerLots": 1,
-    "quoteTtlSec": 20,
-    "maxHoldSec": 180,
+    "scalpLotsPerRight": 1,
+    "targetPremiumPct": 5,
+    "hardStopPremiumPct": 9,
+    "runnerLots": 0,
+    "quoteTtlSec": 30,
+    "minRequoteMs": 5000,
+    "maxHoldSec": 300,
+    "defensiveCooldownSec": 600,
+    "rangeFilterEnabled": true,
+    "maxAbsRet30Pct": 0.001,
+    "maxVwapDistancePct": 0.0015,
+    "entryImprovementTicks": 1,
     "defensiveProtectTicks": 10,
     "repriceTicks": 2,
     "minDaysToExpiry": 1,
-    "quoteFrom": "09:20",
-    "entryCutoff": "15:10"
+    "quoteFrom": "09:45",
+    "entryCutoff": "14:30"
   }
 }

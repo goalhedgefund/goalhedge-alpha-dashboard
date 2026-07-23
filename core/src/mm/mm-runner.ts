@@ -300,6 +300,20 @@ export class MmRunner {
         if (match !== undefined) {
           matchedDesired.add(match);
         } else {
+          // Keep passive entry quotes on the book long enough to earn queue
+          // position; repricing every tick was creating thousands of cancels.
+          if (
+            order.purpose === 'ENTRY' &&
+            nowMs - order.createdTs < this.engine.activeParams().minRequoteMs
+          ) {
+            blockOrderAllocation(
+              order,
+              blockedBroadLanes,
+              blockedLotLanes,
+              blockedAllocatedSellInstruments,
+            );
+            continue;
+          }
           blockOrderAllocation(
             order,
             blockedBroadLanes,

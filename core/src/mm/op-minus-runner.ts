@@ -64,6 +64,7 @@ export class OpMinusRunner {
   private activeRunner: OpMinusActiveRunnerInput | undefined;
   private pendingRunnerLotId: string | undefined;
   private quotePhase = 'IDLE';
+  private readonly cooldownUntilByRight = new Map<OptionRight, number>();
   private readonly reservedLotIds = new Set<string>();
 
   constructor(private readonly opts: OpMinusRunnerOptions) {
@@ -153,6 +154,7 @@ export class OpMinusRunner {
   onTrade(trade: Trade): void {
     const exitOrder = this.opts.oms.getOrder(trade.exit.clientOrderId);
     const exitTag = exitOrder?.tag.split(':')[1];
+    const right = this.opts.view.optionRows().get(trade.instrumentId)?.right;
     for (const lotId of exitOrder?.closeLotIds ?? []) this.reservedLotIds.delete(lotId);
 
     if (exitTag === 'target' && this.pendingRunnerLotId !== undefined) {
@@ -161,6 +163,16 @@ export class OpMinusRunner {
         if (trade.netPnlPaise > 0) this.activatePendingRunner(trade.exit.ts);
         else this.pendingRunnerLotId = undefined;
       }
+    }
+    if (
+      right !== undefined &&
+      trade.netPnlPaise < 0 &&
+      (exitTag === 'hard_stop' || exitTag === 'scalp_timeout' || exitTag === 'risk_exit')
+    ) {
+      this.cooldownUntilByRight.set(
+        right,
+        trade.exit.ts + this.engine.activeParams().defensiveCooldownSec * 1_000,
+      );
     }
     this.syncInventoryState(`exit ${exitTag ?? trade.exitReason}`);
 
@@ -190,7 +202,11 @@ export class OpMinusRunner {
       const evaluation = this.engine.evaluate(this.buildInput(nowMs));
       this.quotePhase = evaluation.phase;
       this.captureRunnerCandidate(evaluation);
-      let desired = evaluation.desired;
+      let desired = evaluation.desired.filter((order) => {
+        if (order.purpose !== 'ENTRY') return true;
+        const right = this.opts.view.optionRows().get(order.instrumentId)?.right;
+        return right === undefined || (this.cooldownUntilByRight.get(right) ?? 0) <= nowMs;
+      });
 
       if (this.opts.journalHealthy?.() === false) {
         desired = desired.filter((order) => order.purpose !== 'ENTRY');
@@ -225,6 +241,13 @@ export class OpMinusRunner {
           priceMatches(order.limitPricePaise, candidate.limitPricePaise, tolerance));
         if (match !== undefined) matched.add(match);
         else {
+          if (
+            order.purpose === 'ENTRY' &&
+            nowMs - order.createdTs < this.engine.activeParams().minRequoteMs
+          ) {
+            blockOrder(order, blockedBroad, blockedLots);
+            continue;
+          }
           blockOrder(order, blockedBroad, blockedLots);
           await this.opts.oms.cancel(order.clientOrderId).catch((error: unknown) => {
             this.journal('diag.error', { where: 'op-minus.cancel', message: String(error) });
@@ -288,6 +311,7 @@ export class OpMinusRunner {
 
   private buildInput(nowMs: number): OpMinusInput {
     const rows = this.opts.view.optionRows();
+    const strategyView = this.opts.view.strategyView(nowMs);
     const positions = this.opts.oms.getPositions().filter((position) => position.state !== 'CLOSED' && position.qty > 0);
     const existingCycleRow = positions
       .map((position) => rows.get(position.instrumentId))
@@ -314,6 +338,8 @@ export class OpMinusRunner {
     return {
       nowMs,
       nowHHMM: formatHHMMIst(nowMs),
+      ...(strategyView.spotPaise !== undefined ? { spotPaise: strategyView.spotPaise } : {}),
+      ...(strategyView.underlyingFeatures !== undefined ? { underlying: strategyView.underlyingFeatures } : {}),
       ...(scalpCe !== undefined ? { scalpCe } : {}),
       ...(scalpPe !== undefined ? { scalpPe } : {}),
       shortBooks,
