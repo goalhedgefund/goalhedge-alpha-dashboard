@@ -10,7 +10,7 @@ export interface Position {
   sessionId: SessionId;
   strategyId: string;
   instrumentId: InstrumentId;
-  /** v1 is always BUY (long premium). */
+  /** Entry side: BUY for long premium, SELL for a short option. */
   side: Side;
   /** Current open quantity in units. */
   qty: number;

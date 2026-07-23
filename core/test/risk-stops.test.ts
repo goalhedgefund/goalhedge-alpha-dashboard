@@ -194,12 +194,16 @@ describe('SessionRiskState latches', () => {
     expect(state.current().latchedStop).toBe('DAILY_LOSS');
     state.operatorReset();
     expect(state.current().latchedStop).toBeUndefined();
+    expect(state.current().lossStreak).toBe(0);
 
     const streak = new SessionRiskState(risk);
     streak.recordTrade(-1);
     streak.recordTrade(-1);
     streak.recordTrade(-1);
     expect(streak.current().latchedStop).toBe('LOSS_STREAK');
+    streak.operatorReset();
+    expect(streak.current().lossStreak).toBe(0);
+    expect(streak.current().latchedStop).toBeUndefined();
   });
 
   it('give-back and max-trades latch until operator reset', () => {
@@ -220,6 +224,16 @@ describe('SessionRiskState latches', () => {
     expect(maxTrades.current().latchedStop).toBe('MAX_TRADES');
     maxTrades.operatorReset();
     expect(maxTrades.current().latchedStop).toBeUndefined();
+  });
+
+  it('can disable only the loss-streak latch for the active session', () => {
+    const state = new SessionRiskState(risk);
+    state.disableLossStreak();
+    state.recordTrade(-1);
+    state.recordTrade(-1);
+    state.recordTrade(-1);
+    expect(state.current().lossStreak).toBe(3);
+    expect(state.current().latchedStop).toBeUndefined();
   });
 });
 

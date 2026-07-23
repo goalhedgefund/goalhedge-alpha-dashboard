@@ -55,6 +55,8 @@ export interface JournalPayloads {
     premiumPaise: number;
   };
   'risk.sessionStop': { kind: SessionStopKind; detail?: string };
+  'risk.sessionReset': { reason: string };
+  'risk.lossStreakDisabled': { reason: string };
   'kill.tripped': { source: 'MANUAL' | 'AUTO'; reason: string };
   'kill.completed': { durationMs: number; cancelledOrders: number; flattenedPositions: number };
   'kill.rearmed': { reason: string };
@@ -107,6 +109,8 @@ const ALL_EVENT_TYPES = [
   'stop.moved',
   'stop.triggered',
   'risk.sessionStop',
+  'risk.sessionReset',
+  'risk.lossStreakDisabled',
   'kill.tripped',
   'kill.completed',
   'kill.rearmed',

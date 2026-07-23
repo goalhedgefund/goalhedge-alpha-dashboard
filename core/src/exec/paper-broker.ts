@@ -232,7 +232,7 @@ export class PaperBroker implements IBrokerAdapter {
 
   private applyPosition(order: Order, fill: Fill): void {
     const existing = this.positions.get(order.instrumentId);
-    if (order.side === 'BUY') {
+    if (existing === undefined || existing.side === order.side) {
       const oldQty = existing?.qty ?? 0;
       const oldValue = (existing?.avgEntryPricePaise ?? 0) * oldQty;
       const qty = oldQty + fill.qty;
@@ -241,7 +241,7 @@ export class PaperBroker implements IBrokerAdapter {
         sessionId: order.sessionId,
         strategyId: order.tag.split(':')[0] ?? order.tag,
         instrumentId: order.instrumentId,
-        side: 'BUY',
+        side: order.side,
         qty,
         avgEntryPricePaise: Math.round((oldValue + fill.qty * fill.pricePaise) / qty),
         state: 'OPEN',
@@ -252,9 +252,12 @@ export class PaperBroker implements IBrokerAdapter {
       return;
     }
 
-    if (existing === undefined) return;
     const qty = Math.max(0, existing.qty - fill.qty);
-    const realizedGrossPaise = existing.realizedGrossPaise + (fill.pricePaise - existing.avgEntryPricePaise) * Math.min(fill.qty, existing.qty);
+    const closeQty = Math.min(fill.qty, existing.qty);
+    const grossPerUnit = existing.side === 'BUY'
+      ? fill.pricePaise - existing.avgEntryPricePaise
+      : existing.avgEntryPricePaise - fill.pricePaise;
+    const realizedGrossPaise = existing.realizedGrossPaise + grossPerUnit * closeQty;
     if (qty === 0) {
       this.positions.delete(order.instrumentId);
       return;

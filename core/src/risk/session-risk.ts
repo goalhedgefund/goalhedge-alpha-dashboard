@@ -10,6 +10,7 @@ export interface SessionRiskSnapshot {
 }
 
 export class SessionRiskState {
+  private lossStreakDisabled = false;
   private snapshot: SessionRiskSnapshot = {
     realizedNetPnlPaise: 0,
     peakNetPnlPaise: 0,
@@ -37,7 +38,13 @@ export class SessionRiskState {
 
   operatorReset(): void {
     const { latchedStop: _latchedStop, ...rest } = this.snapshot;
-    this.snapshot = rest;
+    // A lockout reset is a fresh loss-streak window. Keep realised P&L,
+    // peak P&L, and the daily trade count for all other risk limits.
+    this.snapshot = { ...rest, lossStreak: 0 };
+  }
+
+  disableLossStreak(): void {
+    this.lossStreakDisabled = true;
   }
 
   current(): SessionRiskSnapshot {
@@ -59,7 +66,7 @@ export class SessionRiskState {
         return;
       }
     }
-    if (this.snapshot.lossStreak >= this.profile.lossStreak.count) {
+    if (!this.lossStreakDisabled && this.snapshot.lossStreak >= this.profile.lossStreak.count) {
       this.latch('LOSS_STREAK');
       return;
     }

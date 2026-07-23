@@ -1,7 +1,7 @@
 import type { MarketProfile } from '../config/schemas.js';
 import { computeCharges, computeTradeNet } from '../charges/engine.js';
 import type { ClientOrderId, InstrumentId, SessionId, TradeId } from '../domain/ids.js';
-import type { Fill, Order } from '../domain/orders.js';
+import type { Fill, Order, Side } from '../domain/orders.js';
 import type { Position, Trade, TradeLeg } from '../domain/positions.js';
 import { IdFactory } from '../domain/ids.js';
 
@@ -13,6 +13,8 @@ export interface OpenPositionLot {
   pricePaise: number;
   ts: number;
   clientOrderId: ClientOrderId;
+  /** Omitted for legacy long lots; SELL identifies a short-entry fill. */
+  entrySide?: Side;
 }
 
 interface PositionBook {
@@ -39,8 +41,8 @@ export class PositionKeeper {
   }
 
   onFill(order: Order, fill: Fill): PositionKeeperUpdate {
-    if (order.side === 'BUY') return { positions: [this.applyBuy(order, fill)], trades: [] };
-    return this.applySell(order, fill);
+    if (order.purpose === 'ENTRY') return this.applyEntry(order, fill);
+    return this.applyExit(order, fill);
   }
 
   getPositions(): Position[] {
@@ -54,8 +56,15 @@ export class PositionKeeper {
     return books.flatMap((book) => book.lots.map((lot) => ({ ...lot })));
   }
 
-  private applyBuy(order: Order, fill: Fill): Position {
+  private applyEntry(order: Order, fill: Fill): PositionKeeperUpdate {
     const existing = this.books.get(order.instrumentId);
+    if (existing !== undefined && existing.position.side !== order.side) {
+      return {
+        positions: [],
+        trades: [],
+        allocationError: `entry fill ${fill.fillId} side ${order.side} conflicts with ${existing.position.side} book`,
+      };
+    }
     const openedTs = existing?.position.openedTs ?? fill.ts;
     const positionId = existing?.position.positionId ?? this.ids.positionId();
     const lots = [
@@ -67,6 +76,7 @@ export class PositionKeeper {
         pricePaise: fill.pricePaise,
         ts: fill.ts,
         clientOrderId: fill.clientOrderId,
+        ...(order.side === 'SELL' ? { entrySide: 'SELL' as const } : {}),
       },
     ];
     const qty = lots.reduce((s, l) => s + l.qty, 0);
@@ -76,7 +86,7 @@ export class PositionKeeper {
       sessionId: this.sessionId,
       strategyId: order.tag.split(':')[0] ?? order.tag,
       instrumentId: order.instrumentId,
-      side: 'BUY',
+      side: order.side,
       qty,
       avgEntryPricePaise,
       state: 'OPEN',
@@ -85,10 +95,10 @@ export class PositionKeeper {
       updatedTs: fill.ts,
     };
     this.books.set(order.instrumentId, { position, lots });
-    return position;
+    return { positions: [position], trades: [] };
   }
 
-  private applySell(order: Order, fill: Fill): PositionKeeperUpdate {
+  private applyExit(order: Order, fill: Fill): PositionKeeperUpdate {
     const book = this.books.get(order.instrumentId);
     if (book === undefined) {
       return {
@@ -97,6 +107,14 @@ export class PositionKeeper {
         ...(order.closeLotIds !== undefined
           ? { allocationError: `targeted fill ${fill.fillId} has no open book for ${String(order.instrumentId)}` }
           : {}),
+      };
+    }
+    const expectedExitSide: Side = book.position.side === 'BUY' ? 'SELL' : 'BUY';
+    if (order.side !== expectedExitSide) {
+      return {
+        positions: [],
+        trades: [],
+        allocationError: `exit fill ${fill.fillId} side ${order.side} cannot close ${book.position.side} book`,
       };
     }
     let remaining = fill.qty;
@@ -111,16 +129,19 @@ export class PositionKeeper {
       const lot = selected.shift() as OpenPositionLot;
       if (lot.qty <= 0) continue;
       const qty = Math.min(remaining, lot.qty);
-      const gross = (fill.pricePaise - lot.pricePaise) * qty;
+      const entrySide = lot.entrySide ?? book.position.side;
+      const gross = entrySide === 'BUY'
+        ? (fill.pricePaise - lot.pricePaise) * qty
+        : (lot.pricePaise - fill.pricePaise) * qty;
       const entry: TradeLeg = {
-        side: 'BUY',
+        side: entrySide,
         qty,
         pricePaise: lot.pricePaise,
         ts: lot.ts,
         clientOrderId: lot.clientOrderId,
       };
       const exit: TradeLeg = {
-        side: 'SELL',
+        side: order.side,
         qty,
         pricePaise: fill.pricePaise,
         ts: fill.ts,
@@ -128,8 +149,8 @@ export class PositionKeeper {
       };
       const charges = computeCharges(
         [
-          { side: 'BUY', qty, pricePaise: lot.pricePaise, orderId: lot.clientOrderId },
-          { side: 'SELL', qty, pricePaise: fill.pricePaise, orderId: fill.clientOrderId },
+          { side: entrySide, qty, pricePaise: lot.pricePaise, orderId: lot.clientOrderId },
+          { side: order.side, qty, pricePaise: fill.pricePaise, orderId: fill.clientOrderId },
         ],
         this.marketProfile,
       );

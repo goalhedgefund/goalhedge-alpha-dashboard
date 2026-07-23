@@ -29,6 +29,10 @@ export interface RunnerCommandOptions {
   isLocked?: () => boolean;
   /** Session readiness gate: ARM refused unless the session is armable. */
   canArm?: () => { ok: boolean; reason?: string };
+  /** Operator action to clear a session-risk latch after the book is flat. */
+  resetSessionRisk?: (reason: string) => { accepted: boolean; reason?: string };
+  /** Operator action to disable only the loss-streak latch for this session. */
+  disableLossStreak?: (reason: string) => { accepted: boolean; reason?: string };
 }
 
 /**
@@ -66,6 +70,18 @@ export function registerRunnerCommands(
     }
     runner.setParams(params as StrategyParams);
     return { accepted: true, reason: 'PARAMS_ACCEPTED' };
+  });
+
+  gateway.onCommand('RESET_SESSION_RISK', (payload) => {
+    const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
+    if (reason === '') return { accepted: false, reason: 'RESET_REASON_REQUIRED' };
+    return opts.resetSessionRisk?.(reason) ?? { accepted: false, reason: 'RESET_UNAVAILABLE' };
+  });
+
+  gateway.onCommand('DISABLE_LOSS_STREAK', (payload) => {
+    const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
+    if (reason === '') return { accepted: false, reason: 'DISABLE_REASON_REQUIRED' };
+    return opts.disableLossStreak?.(reason) ?? { accepted: false, reason: 'DISABLE_UNAVAILABLE' };
   });
 }
 

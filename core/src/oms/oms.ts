@@ -180,7 +180,7 @@ export class Oms {
 
   private closeAllocationError(intent: OrderIntent): string | undefined {
     if (intent.closeLotIds === undefined) return undefined;
-    if (intent.side !== 'SELL' || intent.purpose === 'ENTRY') return 'INVALID_CLOSE_ALLOCATION';
+    if (intent.purpose === 'ENTRY') return 'INVALID_CLOSE_ALLOCATION';
     const unique = new Set(intent.closeLotIds);
     if (unique.size !== intent.closeLotIds.length) return 'INVALID_CLOSE_ALLOCATION';
     const reserved = new Set(
@@ -188,7 +188,7 @@ export class Oms {
         .filter(
           (order) =>
             !isTerminalOrderState(order.state) &&
-            order.side === 'SELL' &&
+            order.side === intent.side &&
             order.instrumentId === intent.instrumentId,
         )
         .flatMap((order) => order.closeLotIds ?? []),
@@ -198,6 +198,10 @@ export class Oms {
       .getOpenLots(intent.instrumentId)
       .filter((lot) => unique.has(lot.lotId));
     if (selected.length !== unique.size) return 'INVALID_CLOSE_ALLOCATION';
+    const expectedEntrySide = intent.side === 'BUY' ? 'SELL' : 'BUY';
+    if (selected.some((lot) => (lot.entrySide ?? 'BUY') !== expectedEntrySide)) {
+      return 'INVALID_CLOSE_ALLOCATION';
+    }
     const selectedQty = selected.reduce((sum, lot) => sum + lot.qty, 0);
     return selectedQty === intent.qty ? undefined : 'INVALID_CLOSE_ALLOCATION';
   }
@@ -277,7 +281,7 @@ export class Oms {
       this.emit('diag.error', { where: 'position-keeper.closeAllocation', message: updates.allocationError });
     }
     for (const position of updates.positions) {
-      const isFreshOpen = transitioned.side === 'BUY' && position.openedTs === fill.ts;
+      const isFreshOpen = transitioned.purpose === 'ENTRY' && position.openedTs === fill.ts;
       if (isFreshOpen) this.emit('position.opened', { position });
       else this.emit('position.updated', { position });
       if (position.state === 'CLOSED') this.emit('position.closed', { positionId: position.positionId, sessionId: position.sessionId });

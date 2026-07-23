@@ -18,7 +18,7 @@ import {
   getChainStrikes,
   loadScripMaster,
   resolveNiftyCurrentFuture,
-  resolveNiftyWeeklyChain,
+  resolveNiftyOptionChain,
   toInstrument,
   type ScripRow,
   type WeeklyChainResult,
@@ -26,12 +26,14 @@ import {
 import type { IStrategy } from '../strategy/types.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
 import { AllOpAtmMm } from '../strategy/strategies/allop-atm-mm.js';
+import { OpMinusAtmShort } from '../strategy/strategies/op-minus-atm-short.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
 import { S2VwapFade } from '../strategy/strategies/s2-vwap-fade.js';
 import { FeedMarketData, type OptionSpec } from './feed-market-data.js';
 import { loadDhanLiveDataPaperEnv, type DhanLiveDataPaperEnv } from './dhan-live-data-paper-env.js';
 import { PaperHost, type HostRunnerPorts } from './paper-host.js';
 import { MmRunner } from '../mm/mm-runner.js';
+import { OpMinusRunner } from '../mm/op-minus-runner.js';
 
 interface DhanLiveDataPaperBuild {
   host: PaperHost;
@@ -160,7 +162,7 @@ function latestWeeklyChain(
   if (underlying !== 'NIFTY') {
     throw new Error(`Only NIFTY weekly chain is wired today; got DHAN_UNDERLYING_SYMBOL=${underlying}`);
   }
-  const weekly = resolveNiftyWeeklyChain(rows, date, minDaysToExpiry);
+  const weekly = resolveNiftyOptionChain(rows, date, minDaysToExpiry);
   if (weekly === undefined) {
     throw new Error(`Could not resolve NIFTY weekly chain for ${date}. Check DHAN_SCRIP_MASTER_PATH.`);
   }
@@ -186,6 +188,8 @@ function makeStrategy(strategyId: string): IStrategy {
       return new S2VwapFade();
     case 'allop-atm-mm':
       return new AllOpAtmMm();
+    case 'op-minus-atm-short':
+      return new OpMinusAtmShort();
     default:
       throw new Error(`Unsupported DHAN_STRATEGY_ID=${strategyId}`);
   }
@@ -199,14 +203,16 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   // ALL_OP quotes to a later cutoff (15:10) and squares off at 15:15, with an
   // MM-shaped risk profile (many small round trips, 1-lot orders); S1/S2 keep
   // the momentum-desk profiles.
-  const isMm = env.strategyId === 'allop-atm-mm';
+  const isAllOp = env.strategyId === 'allop-atm-mm';
+  const isOpMinus = env.strategyId === 'op-minus-atm-short';
+  const isMm = isAllOp || isOpMinus;
   const marketCfg = loadConfig(
     MarketProfileSchema,
     fileURLToPath(new URL(isMm ? 'market/allop-nse-options.json' : 'market/india-nse-options.json', configDir)),
   );
   const riskCfg = loadConfig(
     RiskProfileSchema,
-    fileURLToPath(new URL(isMm ? 'risk/allop-paper.json' : 'risk/paper-default.json', configDir)),
+    fileURLToPath(new URL(isOpMinus ? 'risk/op-minus-paper.json' : isAllOp ? 'risk/allop-paper.json' : 'risk/paper-default.json', configDir)),
   );
   const strategyCfg = loadConfig(StrategyConfigSchema, fileURLToPath(new URL(`strategy/${env.strategyId}.json`, configDir)));
   if (strategyCfg.value.strategyId !== env.strategyId) {
@@ -329,7 +335,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     recorder,
     gateway,
     quoteSink: (instrumentId, quote) => paper.setQuote(instrumentId, quote),
-    ...(isMm
+    ...(isAllOp
       ? {
           runnerFactory: (ports: HostRunnerPorts) =>
             new MmRunner({
@@ -354,6 +360,32 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
               journalHealthy: ports.journalHealthy,
             }),
         }
+      : isOpMinus
+        ? {
+            runnerFactory: (ports: HostRunnerPorts) =>
+              new OpMinusRunner({
+                sessionId,
+                strategyId: env.strategyId,
+                params: strategyCfg.value.params,
+                market,
+                scalpExpiry: weekly.expiryDate,
+                gate: ports.gate,
+                oms: ports.oms,
+                escalator: ports.escalator,
+                sessionRisk: ports.sessionRisk,
+                ids,
+                clock: ports.clock,
+                view: marketData,
+                quoteGates: {
+                  maxSpreadPct: env.maxSpreadPct,
+                  minOi: env.minOi,
+                  minVolume: env.minVolume,
+                  strikeBand: env.chainDepth,
+                },
+                journal: ports.journal,
+                journalHealthy: ports.journalHealthy,
+              }),
+          }
       : {}),
   });
   commandJournal.host = host;
@@ -461,6 +493,8 @@ async function main(): Promise<void> {
         if (build.disabledStrategyConfig) return { ok: false, reason: 'STRATEGY_DISABLED' };
         return build.host.canArm();
       },
+      resetSessionRisk: (reason) => build.host.resetSessionRisk(reason),
+      disableLossStreak: (reason) => build.host.disableLossStreak(reason),
     },
   );
   registerKillCommands(build.gateway, {

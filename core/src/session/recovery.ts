@@ -84,6 +84,12 @@ export function reduceJournal(events: readonly JournalEvent[], riskProfile: Risk
         trades.push(ev.payload.trade);
         sessionRisk.recordTrade(ev.payload.trade.netPnlPaise);
         break;
+      case 'risk.sessionReset':
+        sessionRisk.operatorReset();
+        break;
+      case 'risk.lossStreakDisabled':
+        sessionRisk.disableLossStreak();
+        break;
       default:
         break;
     }

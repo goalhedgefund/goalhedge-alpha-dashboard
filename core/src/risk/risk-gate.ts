@@ -110,10 +110,20 @@ export class RiskGate {
     }
     if (row.oi < (ctx.minOi ?? 0) || row.volume < (ctx.minVolume ?? 0)) return reject('LIQUIDITY_FLOOR');
 
-    if (intent.stopPlan === undefined) return reject('MISSING_STOP_PLAN');
-    const entry = intent.limitPricePaise ?? row.askPaise;
-    const riskPaise = Math.max(0, entry - intent.stopPlan.hardStopPremiumPaise) * intent.qty;
-    if (entry <= 0 || intent.stopPlan.hardStopPremiumPaise >= entry) return reject('INVALID_STOP_PLAN', riskPaise);
+    const entry = intent.limitPricePaise ?? (intent.side === 'BUY' ? row.askPaise : row.bidPaise);
+    if (entry <= 0) return reject('INVALID_STOP_PLAN', 0);
+    let riskPaise: number;
+    if (intent.riskMode === 'FULL_PREMIUM') {
+      if (intent.side !== 'BUY') return reject('INVALID_STOP_PLAN', 0);
+      riskPaise = entry * intent.qty;
+    } else {
+      if (intent.stopPlan === undefined) return reject('MISSING_STOP_PLAN');
+      const stopDistance = intent.side === 'BUY'
+        ? entry - intent.stopPlan.hardStopPremiumPaise
+        : intent.stopPlan.hardStopPremiumPaise - entry;
+      riskPaise = Math.max(0, stopDistance) * intent.qty;
+      if (stopDistance <= 0) return reject('INVALID_STOP_PLAN', riskPaise);
+    }
     if (!this.costGatePasses(intent, row, entry)) return reject('COST_GATE', riskPaise);
     const budget = Math.round(this.risk.capitalPaise * (this.risk.perTradeRiskPct / 100));
     if (riskPaise > budget) return reject('PER_TRADE_RISK', riskPaise);
@@ -138,11 +148,13 @@ export class RiskGate {
 
     const expectedMovePaise = Math.round(entryPaise * (cfg.minExpectedMovePct / 100));
     if (expectedMovePaise <= 0) return false;
-    const expectedExitPaise = entryPaise + expectedMovePaise;
+    const expectedExitPaise = intent.side === 'BUY'
+      ? entryPaise + expectedMovePaise
+      : Math.max(this.market.tickSizePaise, entryPaise - expectedMovePaise);
     const charges = computeCharges(
       [
-        { side: 'BUY', qty: intent.qty, pricePaise: entryPaise },
-        { side: 'SELL', qty: intent.qty, pricePaise: expectedExitPaise },
+        { side: intent.side, qty: intent.qty, pricePaise: entryPaise },
+        { side: intent.side === 'BUY' ? 'SELL' : 'BUY', qty: intent.qty, pricePaise: expectedExitPaise },
       ],
       this.market,
     ).totalPaise;

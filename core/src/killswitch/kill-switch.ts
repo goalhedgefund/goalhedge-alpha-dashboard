@@ -225,6 +225,16 @@ export class KillSwitch {
     return { accepted: true };
   }
 
+  /**
+   * Retry the staged flatten while locked. Covered short books deliberately
+   * close shorts on the first pass and release protective longs only after a
+   * later pass confirms the short exposure is gone.
+   */
+  async retryFlatten(): Promise<number> {
+    if (this.mode === 'READY') return 0;
+    return flattenAllPositions(this.flattenPorts(), 'KILL', `kill:${this.tripReason ?? 'LOCKED'}:retry`);
+  }
+
   // ------------------------------------------------------------ self-test
 
   /**

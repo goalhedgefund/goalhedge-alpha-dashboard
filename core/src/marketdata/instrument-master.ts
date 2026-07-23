@@ -139,6 +139,20 @@ export function nextWeeklyExpiry(
   return getExpiryDates(rows.filter((r) => r.expiryFlag === 'W')).find((d) => d >= earliest);
 }
 
+/**
+ * Resolve the nearest eligible NIFTY option expiry from the live master.
+ * Dhan can label the active near-term index expiry as monthly (M), even when
+ * it is the contract the option strategies must trade ahead of the next W.
+ */
+export function nextOptionExpiry(
+  rows: ScripRow[],
+  asOfDate: string,
+  minDaysToExpiry = 0,
+): string | undefined {
+  const earliest = addCalendarDays(asOfDate, minDaysToExpiry);
+  return getExpiryDates(rows).find((d) => d >= earliest);
+}
+
 /** Next monthly expiry (flag=M) on or after `asOfDate` (YYYY-MM-DD). */
 export function nextMonthlyExpiry(rows: ScripRow[], asOfDate: string): string | undefined {
   return getExpiryDates(rows.filter((r) => r.expiryFlag === 'M')).find((d) => d >= asOfDate);
@@ -255,6 +269,54 @@ export function resolveNiftyWeeklyChain(
 ): WeeklyChainResult | undefined {
   const niftyOptions = filterOptions(rows, 'NIFTY');
   const expiryDate = nextWeeklyExpiry(niftyOptions, asOfDate, minDaysToExpiry);
+  if (expiryDate === undefined) return undefined;
+
+  const chain = buildOptionChain(niftyOptions, expiryDate);
+  const first = niftyOptions.find((r) => r.expiryDate === expiryDate);
+  return {
+    expiryDate,
+    chain,
+    lotSize: first ? Math.round(first.lotSize) : 65,
+    tickSizePaise: first ? first.tickSizePaise : 5,
+    rowCount: niftyOptions.filter((r) => r.expiryDate === expiryDate).length,
+  };
+}
+
+/** Resolve the nearest eligible NIFTY chain for live Dhan option quoting. */
+export function resolveNiftyOptionChain(
+  rows: ScripRow[],
+  asOfDate: string,
+  minDaysToExpiry = 0,
+): WeeklyChainResult | undefined {
+  const niftyOptions = filterOptions(rows, 'NIFTY');
+  const expiryDate = nextOptionExpiry(niftyOptions, asOfDate, minDaysToExpiry);
+  if (expiryDate === undefined) return undefined;
+
+  const chain = buildOptionChain(niftyOptions, expiryDate);
+  const first = niftyOptions.find((r) => r.expiryDate === expiryDate);
+  return {
+    expiryDate,
+    chain,
+    lotSize: first ? Math.round(first.lotSize) : 65,
+    tickSizePaise: first ? first.tickSizePaise : 5,
+    rowCount: niftyOptions.filter((r) => r.expiryDate === expiryDate).length,
+  };
+}
+
+/**
+ * Resolve a NIFTY option chain a fixed number of listed expiries after a
+ * known base expiry. Offset 0 returns the base chain; larger offsets select
+ * later listed expiries for callers that need them.
+ */
+export function resolveNiftyOptionChainByExpiryOffset(
+  rows: ScripRow[],
+  baseExpiryDate: string,
+  offset: number,
+): WeeklyChainResult | undefined {
+  const niftyOptions = filterOptions(rows, 'NIFTY');
+  const expiries = getExpiryDates(niftyOptions);
+  const baseIndex = expiries.indexOf(baseExpiryDate);
+  const expiryDate = baseIndex >= 0 ? expiries[baseIndex + Math.max(0, Math.floor(offset))] : undefined;
   if (expiryDate === undefined) return undefined;
 
   const chain = buildOptionChain(niftyOptions, expiryDate);

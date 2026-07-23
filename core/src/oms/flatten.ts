@@ -26,8 +26,8 @@ export interface FlattenPorts {
   gateContext: () => RiskGateContext;
   ids: IdFactory;
   market: MarketProfile;
-  /** Best-effort exit mark (bid side); undefined → market order. */
-  markPrice: (instrumentId: InstrumentId) => number | undefined;
+  /** Best-effort executable mark for the requested exit side. */
+  markPrice: (instrumentId: InstrumentId, exitSide?: 'BUY' | 'SELL') => number | undefined;
   clock: Clock;
   journal?: JournalSink;
   protectTicks: number;
@@ -47,7 +47,8 @@ export function buildFlattenIntent(
   purpose: 'KILL' | 'SQUARE_OFF' | 'EXIT',
   tag: string,
 ): OrderIntent {
-  const mark = p.markPrice(pos.instrumentId);
+  const side = pos.side === 'BUY' ? 'SELL' : 'BUY';
+  const mark = p.markPrice(pos.instrumentId, side);
   const tick = p.market.tickSizePaise;
   const hasMark = mark !== undefined && mark > 0;
   return {
@@ -55,11 +56,17 @@ export function buildFlattenIntent(
     sessionId: p.sessionId,
     strategyId: pos.strategyId,
     ts: p.clock.now(),
-    side: 'SELL',
+    side,
     instrumentId: pos.instrumentId,
     qty: pos.qty,
     type: hasMark ? 'LIMIT' : 'MARKET_PROTECT',
-    ...(hasMark ? { limitPricePaise: Math.max(tick, mark - p.protectTicks * tick) } : {}),
+    ...(hasMark
+      ? {
+          limitPricePaise: side === 'SELL'
+            ? Math.max(tick, mark - p.protectTicks * tick)
+            : mark + p.protectTicks * tick,
+        }
+      : {}),
     protectTicks: p.protectTicks,
     ttlMs: 2_000,
     tag,
@@ -91,17 +98,24 @@ export async function flattenAllPositions(
   purpose: 'KILL' | 'SQUARE_OFF' | 'EXIT',
   tag: string,
 ): Promise<number> {
-  // Re-callable without stacking sells: skip positions that already have a
+  // Re-callable without stacking exits: skip positions that already have a
   // working exit order (the escalator chases those). Makes retry loops safe.
   const chasing = new Set(
     p.oms
       .getOrders()
-      .filter((o) => !isTerminalOrderState(o.state) && o.side === 'SELL')
+      .filter((o) => !isTerminalOrderState(o.state) && o.purpose !== 'ENTRY')
       .map((o) => o.instrumentId),
+  );
+  // Protective longs stay in place until every short is closed. Session
+  // square-off and the kill retry path call this helper repeatedly, so the
+  // second pass releases the long hedges only after the short book is flat.
+  const hasOpenShort = p.oms.getPositions().some(
+    (pos) => pos.state !== 'CLOSED' && pos.qty > 0 && pos.side === 'SELL',
   );
   let flattened = 0;
   for (const pos of p.oms.getPositions()) {
     if (pos.state === 'CLOSED' || pos.qty <= 0) continue;
+    if (hasOpenShort && pos.side === 'BUY') continue;
     if (chasing.has(pos.instrumentId)) continue;
     const intent = buildFlattenIntent(p, pos, purpose, tag);
     p.journal?.('intent.proposed', { intent });

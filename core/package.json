@@ -14,9 +14,13 @@
     "demo": "node dist/demo/demo-gateway.js",
     "paper:live-data:dhan": "node dist/host/dhan-live-data-paper.js",
     "paper:live-data:allop": "node dist/host/allop-live-data-paper.js",
+    "paper:live-data:op-minus": "node dist/host/op-minus-live-data-paper.js",
     "s1:diagnose": "node dist/scripts/diagnose-s1.js",
     "s1:replay": "node dist/scripts/replay-s1.js",
-    "s1:sweep": "node dist/scripts/sweep-s1.js"
+    "s2:replay": "node dist/scripts/replay-s2.js",
+    "allop:replay": "node dist/scripts/replay-allop.js",
+    "s1:sweep": "node dist/scripts/sweep-s1.js",
+    "op-minus:backtest": "node dist/scripts/backtest-op-minus.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",

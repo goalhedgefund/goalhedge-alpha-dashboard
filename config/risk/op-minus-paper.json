@@ -1,0 +1,13 @@
+{
+  "profileId": "op-minus-paper",
+  "version": 1,
+  "mode": "paper",
+  "capitalPaise": 100000000,
+  "perTradeRiskPct": 5,
+  "dailyMaxLossPct": 5,
+  "giveBack": { "armAtPct": 3, "retainPct": 50 },
+  "lossStreak": { "count": 5, "cooldownMin": 15 },
+  "maxTradesPerDay": 200,
+  "maxConcurrentPositions": 6,
+  "maxLotsPerOrder": 1
+}

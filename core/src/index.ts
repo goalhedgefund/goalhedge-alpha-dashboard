@@ -52,6 +52,7 @@ export {
   nextMonthlyExpiry,
   nextWeeklyExpiry,
   resolveNiftyWeeklyChain,
+  resolveNiftyOptionChainByExpiryOffset,
   toInstrument,
 } from './marketdata/instrument-master.js';
 export type {
@@ -179,6 +180,7 @@ export { FeatureRegimeProvider } from './strategy/regime.js';
 export type { FeatureRegimeProviderOptions } from './strategy/regime.js';
 export { S1MomentumBurst } from './strategy/strategies/s1-momentum-burst.js';
 export { S2VwapFade } from './strategy/strategies/s2-vwap-fade.js';
+export { OpMinusAtmShort } from './strategy/strategies/op-minus-atm-short.js';
 
 export { Gateway } from './gateway/gateway.js';
 export type { CommandHandler, CommandResult, GatewayOptions } from './gateway/gateway.js';

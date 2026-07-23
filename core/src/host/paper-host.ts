@@ -4,6 +4,7 @@ import type { MarketProfile, RiskProfile } from '../config/schemas.js';
 import type { JournalEvent, JournalEventType, JournalPayloads } from '../domain/events.js';
 import type { IdFactory, InstrumentId, SessionId, SessionMode } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
+import { isTerminalOrderState } from '../domain/orders.js';
 import { formatHHMMIst, systemClock, type Clock } from '../domain/time.js';
 import type { IBrokerAdapter } from '../exec/adapter.js';
 import { TradesWriter } from '../exec/trades-writer.js';
@@ -288,6 +289,7 @@ export class PaperHost {
     this.oms.expireTtl(nowMs); // TTL lapse → EXPIRED + broker cancel-and-verify
     this.oms.cancelUnacked(nowMs); // unacked past timeout → cancel-and-verify
     await this.runner.onTimer(nowMs);
+    await this.kill.retryFlatten();
     await this.session.onTimer(nowMs);
     if ((this.opts.autoArm ?? true) && this.runner.state() === 'DISARMED' && this.session.canArm().ok) {
       this.runner.arm();
@@ -344,6 +346,25 @@ export class PaperHost {
   canArm(): ReturnType<SessionManager['canArm']> {
     return this.session.canArm();
   }
+  resetSessionRisk(reason: string): { accepted: boolean; reason?: string } {
+    const hasOpenPosition = this.oms.getPositions().some((position) => position.state !== 'CLOSED' && position.qty > 0);
+    const hasWorkingOrder = this.oms.getOrders().some((order) => !isTerminalOrderState(order.state));
+    if (hasOpenPosition || hasWorkingOrder) return { accepted: false, reason: 'BOOK_NOT_FLAT' };
+    if (this.sessionRisk.current().latchedStop === undefined) return { accepted: false, reason: 'NO_SESSION_LOCKOUT' };
+    this.sessionRisk.operatorReset();
+    this.sink('risk.sessionReset', { reason });
+    return { accepted: true, reason: 'SESSION_LOCKOUT_CLEARED' };
+  }
+  disableLossStreak(reason: string): { accepted: boolean; reason?: string } {
+    const hasOpenPosition = this.oms.getPositions().some((position) => position.state !== 'CLOSED' && position.qty > 0);
+    const hasWorkingOrder = this.oms.getOrders().some((order) => !isTerminalOrderState(order.state));
+    if (hasOpenPosition || hasWorkingOrder) return { accepted: false, reason: 'BOOK_NOT_FLAT' };
+    this.sessionRisk.disableLossStreak();
+    this.sessionRisk.operatorReset();
+    this.sink('risk.lossStreakDisabled', { reason });
+    this.sink('risk.sessionReset', { reason });
+    return { accepted: true, reason: 'LOSS_STREAK_DISABLED_AND_LOCKOUT_CLEARED' };
+  }
   acknowledgePreflight(operator?: string): ReturnType<SessionManager['acknowledge']> {
     return this.session.acknowledge(operator);
   }
@@ -385,10 +406,11 @@ export class PaperHost {
   private wire(): void {
     const { opts } = this;
     const gate = new RiskGate(opts.market, opts.riskProfile);
-    const markPrice = (id: InstrumentId): number | undefined => {
+    const markPrice = (id: InstrumentId, exitSide: 'BUY' | 'SELL' = 'SELL'): number | undefined => {
       const row = opts.marketData.optionRows().get(id);
       if (row === undefined) return undefined;
-      return row.bidPaise > 0 ? row.bidPaise : row.ltpPaise > 0 ? row.ltpPaise : undefined;
+      const touch = exitSide === 'BUY' ? row.askPaise : row.bidPaise;
+      return touch > 0 ? touch : row.ltpPaise > 0 ? row.ltpPaise : undefined;
     };
     const killGateCtx = (): RiskGateContext => ({
       nowMs: this.clock.now(),

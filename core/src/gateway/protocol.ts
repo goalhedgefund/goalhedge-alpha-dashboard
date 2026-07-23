@@ -45,6 +45,7 @@ export interface GatewayMmDefenceState {
 
 export interface GatewayMmState {
   quotePhase: string;
+  direction?: 'LONG' | 'SHORT';
   scalpSlotsUsed: number;
   scalpSlotsMax: number;
   trendRegime?: 'NEUTRAL' | 'UP' | 'DOWN';
@@ -57,7 +58,8 @@ export interface GatewayMmState {
   runner?: {
     instrumentId: string;
     entryPricePaise: number;
-    highWaterBidPaise: number;
+    highWaterBidPaise?: number;
+    lowWaterAskPaise?: number;
     stopPaise: number;
     openedTs: number;
     activatedTs: number;
@@ -138,7 +140,7 @@ export type ServerMsg =
   | { kind: 'hb'; ts: number; seq: number }
   | { kind: 'ack'; commandId: string; accepted: boolean; reason?: string };
 
-export type CommandType = 'ARM' | 'DISARM' | 'KILL' | 'REARM' | 'SET_PARAMS' | 'ACK_PREFLIGHT';
+export type CommandType = 'ARM' | 'DISARM' | 'KILL' | 'REARM' | 'SET_PARAMS' | 'RESET_SESSION_RISK' | 'DISABLE_LOSS_STREAK' | 'ACK_PREFLIGHT';
 
 export type ClientMsg =
   | { kind: 'command'; commandId: string; type: CommandType; payload?: Record<string, unknown> }

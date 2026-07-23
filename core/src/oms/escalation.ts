@@ -21,7 +21,7 @@ export interface ExitEscalatorOptions {
   gateContext: () => RiskGateContext;
   ids: IdFactory;
   market: MarketProfile;
-  markPrice: (instrumentId: InstrumentId) => number | undefined;
+  markPrice: (instrumentId: InstrumentId, exitSide?: 'BUY' | 'SELL') => number | undefined;
   clock?: Clock;
   journal?: JournalSink;
   /** Per-stage patience before escalating (PROTECT→REPRICE, REPRICE→MARKET). */
@@ -194,9 +194,11 @@ export class ExitEscalator {
       return { ...base, type: 'MARKET_PROTECT' };
     }
     const tick = this.opts.market.tickSizePaise;
-    const mark = this.opts.markPrice(prev.instrumentId);
+    const mark = this.opts.markPrice(prev.instrumentId, prev.side);
     const anchor = mark !== undefined && mark > 0 ? mark : prev.limitPricePaise ?? tick;
-    const worse = Math.max(tick, anchor - this.repriceTicks * tick);
+    const worse = prev.side === 'SELL'
+      ? Math.max(tick, anchor - this.repriceTicks * tick)
+      : anchor + this.repriceTicks * tick;
     return { ...base, type: 'LIMIT', limitPricePaise: worse };
   }
 }

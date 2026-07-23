@@ -11,7 +11,10 @@ export type IntentPurpose = 'ENTRY' | 'EXIT' | 'STOP' | 'SQUARE_OFF' | 'KILL';
  * implied rupee risk exceeds the per-trade budget.
  */
 export interface StopPlan {
-  /** L1: exit long option if premium <= this level. */
+  /**
+   * L1 premium stop. For BUY entries it must be below entry; for SELL
+   * entries it must be above entry.
+   */
   hardStopPremiumPaise: number;
   /** L1: optional underlying invalidation level. */
   hardStopUnderlyingPaise?: number;
@@ -46,6 +49,8 @@ export interface OrderIntent {
   purpose: IntentPurpose;
   /** Mandatory for ENTRY intents (Risk Gate enforces). */
   stopPlan?: StopPlan;
+  /** Protective long hedges are budgeted at their full premium, not a stop distance. */
+  riskMode?: 'STOP' | 'FULL_PREMIUM';
   /**
    * Internal OMS allocation hint for covered exits. The broker still receives
    * one ordinary sell order; PositionKeeper uses these fill-lot ids only to

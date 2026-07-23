@@ -1,0 +1,17 @@
+{
+  "strategyId": "op-minus-atm-short",
+  "version": "0.1.0",
+  "enabled": true,
+  "params": {
+    "scalpLotsPerRight": 2,
+    "rewardRiskRatio": 2,
+    "runnerLots": 1,
+    "quoteTtlSec": 20,
+    "maxHoldSec": 180,
+    "defensiveProtectTicks": 10,
+    "repriceTicks": 2,
+    "minDaysToExpiry": 1,
+    "quoteFrom": "09:20",
+    "entryCutoff": "15:10"
+  }
+}
