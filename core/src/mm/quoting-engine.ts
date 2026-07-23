@@ -170,6 +170,7 @@ export type MmQuotePhase =
   | 'PAUSED_WINDOW'
   | 'PAUSED_KNIFE'
   | 'PAUSED_LOCKOUT'
+  | 'PAUSED_NEUTRAL'
   | 'PAUSED_DEFENCE';
 
 export interface MmDefenceState {
@@ -364,6 +365,16 @@ export class QuotingEngine {
     }
 
     const hasBid = desired.some((d) => d.side === 'BUY');
+    if (!hasBid && noDirectionalSetup) {
+      return this.result(
+        desired,
+        'PAUSED_NEUTRAL',
+        defences,
+        input,
+        candidateLotId,
+        'directional-only: awaiting trend',
+      );
+    }
     if (!hasBid && defences.length > 0) {
       const detail = defences.map((d) => `${d.right}:${d.reason}`).join(',');
       return this.result(desired, 'PAUSED_DEFENCE', defences, input, candidateLotId, detail);

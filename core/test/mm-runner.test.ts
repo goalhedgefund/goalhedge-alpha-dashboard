@@ -19,7 +19,7 @@ import { Oms } from '../src/oms/oms.js';
 import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
 import { SessionRiskState } from '../src/risk/session-risk.js';
 import type { MarketViewProvider } from '../src/strategy/runner.js';
-import type { StrategyView } from '../src/strategy/types.js';
+import type { StrategyParams, StrategyView } from '../src/strategy/types.js';
 
 const configDir = new URL('../../config/', import.meta.url);
 const market: MarketProfile = loadConfig(
@@ -132,7 +132,7 @@ interface Rig {
   events: JournalEvent[];
 }
 
-function rig(profile: RiskProfile = testRiskProfile): Rig {
+function rig(profile: RiskProfile = testRiskProfile, params: StrategyParams = PARAMS): Rig {
   const clock = new ManualClock(T0);
   const events: JournalEvent[] = [];
   let seq = 0;
@@ -176,7 +176,7 @@ function rig(profile: RiskProfile = testRiskProfile): Rig {
   const runner = new MmRunner({
     sessionId: SESSION,
     strategyId: 'allop-atm-mm',
-    params: PARAMS,
+    params,
     market,
     gate,
     oms,
@@ -239,6 +239,37 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     const after = working(r);
     expect(after).toHaveLength(4);
     for (const o of after) expect(before).not.toContain(o.limitPricePaise);
+  });
+
+  it('keeps an eligible entry through the re-quote window, then cancels it after expiry', async () => {
+    r = rig(testRiskProfile, { ...PARAMS, minRequoteMs: 5_000 });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const entry = working(r).find((order) => order.instrumentId === CE_ID)!;
+
+    r.view.setRow(row(CE_ID, 'CE', 15_090, 15_110, T0 + 1_000));
+    r.paper.setQuote(CE_ID, { bidPaise: 15_090, askPaise: 15_110, ltpPaise: 15_100 });
+    await r.runner.onTimer(T0 + 1_000);
+    expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('ACKED');
+
+    await r.runner.onTimer(T0 + 5_000);
+    expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('CANCELLED');
+  });
+
+  it('cancels a young entry immediately when a directional regime returns to neutral', async () => {
+    r = rig(testRiskProfile, { ...PARAMS, directionalOnly: true, minRequoteMs: 5_000 });
+    r.runner.arm();
+    await r.runner.onTimer(T0); // establishes the neutral spot baseline
+
+    r.view.spot = Math.round(ATM * 1.0025);
+    await r.runner.onTimer(T0 + 60_000); // UP: CE entry becomes eligible
+    const ceEntry = working(r).find((order) => order.instrumentId === CE_ID)!;
+    expect(ceEntry).toBeDefined();
+
+    r.view.spot = ATM;
+    await r.runner.onTimer(T0 + 61_000); // NEUTRAL: must cancel despite the grace window
+    expect(r.runner.mmState().quotePhase).toBe('PAUSED_NEUTRAL');
+    expect(r.oms.getOrder(ceEntry.clientOrderId)?.state).toBe('CANCELLED');
   });
 
   it('bid fill → inventory ask at >= cost x (1 + minSpread) → profitable round trip', async () => {

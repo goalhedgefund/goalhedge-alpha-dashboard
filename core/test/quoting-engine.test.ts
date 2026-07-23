@@ -526,6 +526,8 @@ describe('v0.3 trend regime filter (never bid against the tape)', () => {
     let out = drift(e, [[0, SPOT]]);
     expect(out.trendRegime).toBe('NEUTRAL');
     expect(out.desired.some((d) => d.side === 'BUY')).toBe(false);
+    expect(out.phase).toBe('PAUSED_NEUTRAL');
+    expect(out.pauseReason).toBe('directional-only: awaiting trend');
 
     out = drift(e, [[60_000, SPOT], [120_000, Math.round(SPOT * 1.0025)]]);
     const bids = out.desired.filter((d) => d.side === 'BUY');

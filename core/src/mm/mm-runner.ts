@@ -300,10 +300,18 @@ export class MmRunner {
         if (match !== undefined) {
           matchedDesired.add(match);
         } else {
+          const entryStillEligible = desired.some(
+            (candidate) =>
+              candidate.purpose === 'ENTRY' &&
+              candidate.instrumentId === order.instrumentId &&
+              candidate.side === order.side,
+          );
           // Keep passive entry quotes on the book long enough to earn queue
-          // position; repricing every tick was creating thousands of cancels.
+          // position, but never retain an order once its directional setup
+          // has disappeared.
           if (
             order.purpose === 'ENTRY' &&
+            entryStillEligible &&
             nowMs - order.createdTs < this.engine.activeParams().minRequoteMs
           ) {
             blockOrderAllocation(
