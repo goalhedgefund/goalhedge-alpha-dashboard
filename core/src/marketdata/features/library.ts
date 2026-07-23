@@ -7,6 +7,8 @@ export interface UnderlyingFeatures {
   ret30s: number | undefined;
   vwapPaise: number | undefined;
   atr1mPaise: number | undefined;
+  /** Wilder ADX-14 on 1m bars; undefined until ~2×period+1 bars have built. */
+  adx1m?: number;
   tickVelocityPerSec: number;
   volumeBurstRatio: number | undefined;
   codexScore: CodexScore;
@@ -48,6 +50,54 @@ function atrFromBars(bars: Bar[], period = 14): number | undefined {
   return sample.reduce((s, b) => s + (b.h - b.l), 0) / period;
 }
 
+/**
+ * Wilder ADX. Needs 2×period+1 bars for the first smoothed value; returns
+ * undefined until then. Used by the OP(-) range gate (trend strength must be
+ * LOW to sell premium), so a warm-up undefined must read as "not range-bound
+ * yet", never as zero trend.
+ */
+function adxFromBars(bars: Bar[], period = 14): number | undefined {
+  if (bars.length < 2 * period + 1) return undefined;
+  const trs: number[] = [];
+  const plusDms: number[] = [];
+  const minusDms: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const cur = bars[i]!;
+    const prev = bars[i - 1]!;
+    trs.push(Math.max(cur.h - cur.l, Math.abs(cur.h - prev.c), Math.abs(cur.l - prev.c)));
+    const up = cur.h - prev.h;
+    const down = prev.l - cur.l;
+    plusDms.push(up > down && up > 0 ? up : 0);
+    minusDms.push(down > up && down > 0 ? down : 0);
+  }
+  const sum = (xs: number[], from: number, len: number): number => {
+    let s = 0;
+    for (let i = from; i < from + len; i++) s += xs[i]!;
+    return s;
+  };
+  let smTr = sum(trs, 0, period);
+  let smPlus = sum(plusDms, 0, period);
+  let smMinus = sum(minusDms, 0, period);
+  const dxs: number[] = [];
+  for (let i = period; i < trs.length; i++) {
+    smTr = smTr - smTr / period + trs[i]!;
+    smPlus = smPlus - smPlus / period + plusDms[i]!;
+    smMinus = smMinus - smMinus / period + minusDms[i]!;
+    if (smTr <= 0) {
+      dxs.push(0);
+      continue;
+    }
+    const plusDi = (100 * smPlus) / smTr;
+    const minusDi = (100 * smMinus) / smTr;
+    const diSum = plusDi + minusDi;
+    dxs.push(diSum > 0 ? (100 * Math.abs(plusDi - minusDi)) / diSum : 0);
+  }
+  if (dxs.length < period) return undefined;
+  let adx = sum(dxs, 0, period) / period;
+  for (let i = period; i < dxs.length; i++) adx = (adx * (period - 1) + dxs[i]!) / period;
+  return adx;
+}
+
 export function computeUnderlyingFeatures(
   ticks: Tick[],
   bars1m: Bar[],
@@ -61,12 +111,14 @@ export function computeUnderlyingFeatures(
   const recentQty = ticks.slice(-20).reduce((s, t) => s + t.qty, 0);
   const priorQty = ticks.slice(-40, -20).reduce((s, t) => s + t.qty, 0);
 
+  const adx1m = adxFromBars(bars1m);
   return {
     ret1s: retFrom(ticks, 1),
     ret5s: retFrom(ticks, 5),
     ret30s: retFrom(ticks, 30),
     vwapPaise: qty > 0 ? turnover / qty : undefined,
     atr1mPaise: atrFromBars(bars1m),
+    ...(adx1m !== undefined ? { adx1m } : {}),
     tickVelocityPerSec: ticks.length / durationSec,
     volumeBurstRatio: priorQty > 0 ? recentQty / priorQty : undefined,
     codexScore: scoreCodexSeries(bars1m, last?.ltpPaise, codexConfig),

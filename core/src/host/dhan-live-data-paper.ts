@@ -332,6 +332,10 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     feedStaleMs: env.feedStaleMs,
     autoArm: env.autoArm && strategyCfg.value.enabled,
     autoAckPreflight: env.autoArm && strategyCfg.value.enabled,
+    // OP(-): a FEED_STALE trip flattens the naked shorts and locks; once the
+    // feed streams again for 60s the desk may resume, at most twice a day.
+    // Every other trip reason stays operator-only (typed REARM).
+    ...(isOpMinus ? { autoRearmFeedRecovery: { stableMs: 60_000, maxPerDay: 2 } } : {}),
     recorder,
     gateway,
     quoteSink: (instrumentId, quote) => paper.setQuote(instrumentId, quote),

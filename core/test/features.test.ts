@@ -36,6 +36,26 @@ function tick(price: number, ts: number, qty = 10): Tick {
   };
 }
 
+describe('ADX trend-strength feature', () => {
+  it('stays undefined until 2×period+1 bars have built', () => {
+    const flat = bars(Array.from({ length: 20 }, () => 10_000));
+    const features = computeUnderlyingFeatures([tick(10_000, 60_000)], flat);
+    expect(features.adx1m).toBeUndefined();
+  });
+
+  it('reads near zero on a flat range and high on a persistent trend', () => {
+    const flat = bars(Array.from({ length: 40 }, () => 10_000));
+    const flatAdx = computeUnderlyingFeatures([tick(10_000, 60_000)], flat).adx1m;
+    expect(flatAdx).toBeDefined();
+    expect(flatAdx!).toBeLessThan(18);
+
+    const trending = bars(Array.from({ length: 40 }, (_, i) => 10_000 + i * 40));
+    const trendAdx = computeUnderlyingFeatures([tick(11_600, 60_000)], trending).adx1m;
+    expect(trendAdx).toBeDefined();
+    expect(trendAdx!).toBeGreaterThan(18);
+  });
+});
+
 describe('CODEX 8-indicator score feature', () => {
   it('returns WAIT with short history', () => {
     const score = scoreCodexSeries(bars([1, 2, 3]));

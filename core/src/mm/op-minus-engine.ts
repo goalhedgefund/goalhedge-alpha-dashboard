@@ -29,6 +29,29 @@ export interface OpMinusParams {
   rangeFilterEnabled: boolean;
   maxAbsRet30Pct: number;
   maxVwapDistancePct: number;
+  /**
+   * ATR-relative VWAP stretch bound: spot must sit within mult × ATR(1m,14)
+   * of session VWAP, on top of the fixed % cap. 0 disables. When enabled and
+   * ATR has not warmed up yet, the range is NOT ready (conservative).
+   */
+  maxVwapDistanceAtrMult: number;
+  /**
+   * Trend-strength gate: ADX(1m,14) must be at or below this. 0 disables.
+   * When enabled and ADX has not warmed up (~29 bars), range is NOT ready.
+   */
+  maxAdx: number;
+  /**
+   * IV-stability proxy: entries are blocked when the ATM straddle mid rose
+   * more than this fraction over straddleTrendWindowSec (e.g. 0.02 = +2%).
+   * A rising straddle with spot pinned near VWAP is a volatility bid — the
+   * exact regime a premium seller must not enter. 0 disables. When enabled
+   * and the runner has not yet accumulated a full window (boot or strike
+   * re-center), range is NOT ready.
+   */
+  maxStraddleRisePct: number;
+  straddleTrendWindowSec: number;
+  /** Completed round trips allowed per right per day; 0 disables the cap. */
+  maxCyclesPerRight: number;
   entryImprovementTicks: number;
   defensiveProtectTicks: number;
   repriceTicks: number;
@@ -65,6 +88,11 @@ export function resolveOpMinusParams(params: StrategyParams): OpMinusParams {
     rangeFilterEnabled: boolParam(params, 'rangeFilterEnabled', false),
     maxAbsRet30Pct: boundedParam(params, 'maxAbsRet30Pct', 0.001, 0.00001, 0.1),
     maxVwapDistancePct: boundedParam(params, 'maxVwapDistancePct', 0.0015, 0.00001, 0.1),
+    maxVwapDistanceAtrMult: boundedParam(params, 'maxVwapDistanceAtrMult', 0, 0, 100),
+    maxAdx: boundedParam(params, 'maxAdx', 0, 0, 100),
+    maxStraddleRisePct: boundedParam(params, 'maxStraddleRisePct', 0, 0, 1),
+    straddleTrendWindowSec: boundedParam(params, 'straddleTrendWindowSec', 180, 10, 3_600),
+    maxCyclesPerRight: Math.floor(boundedParam(params, 'maxCyclesPerRight', 0, 0, 1_000)),
     entryImprovementTicks: Math.floor(boundedParam(params, 'entryImprovementTicks', 1, 0, 20)),
     defensiveProtectTicks: Math.floor(boundedParam(params, 'defensiveProtectTicks', 10, 1, 100)),
     repriceTicks: Math.floor(boundedParam(params, 'repriceTicks', 2, 0, 100)),
@@ -107,6 +135,12 @@ export interface OpMinusInput {
   runner?: OpMinusActiveRunnerInput;
   pendingRunnerLotId?: string;
   allowRunnerCandidate?: boolean;
+  /**
+   * Fractional change of the cycle-strike ATM straddle mid over the trend
+   * window (runner-supplied; positive = premium rising). Undefined while the
+   * sample window is still filling.
+   */
+  straddleDriftPct?: number;
 }
 
 export type OpMinusReason =
@@ -369,10 +403,25 @@ export class OpMinusEngine {
     const vwap = features?.vwapPaise;
     const ret30 = features?.ret30s;
     if (spot === undefined || spot <= 0 || vwap === undefined || vwap <= 0 || ret30 === undefined) return false;
-    return (
-      Math.abs(ret30) <= this.params.maxAbsRet30Pct &&
-      Math.abs((spot - vwap) / vwap) <= this.params.maxVwapDistancePct
-    );
+    if (Math.abs(ret30) > this.params.maxAbsRet30Pct) return false;
+    const stretchPaise = Math.abs(spot - vwap);
+    if (stretchPaise / vwap > this.params.maxVwapDistancePct) return false;
+    // Optional gates below treat a missing warmed-up input as NOT range-bound:
+    // selling premium on an unmeasured regime is the mistake, not the miss.
+    if (this.params.maxVwapDistanceAtrMult > 0) {
+      const atr = features?.atr1mPaise;
+      if (atr === undefined || atr <= 0) return false;
+      if (stretchPaise > this.params.maxVwapDistanceAtrMult * atr) return false;
+    }
+    if (this.params.maxAdx > 0) {
+      const adx = features?.adx1m;
+      if (adx === undefined || adx > this.params.maxAdx) return false;
+    }
+    if (this.params.maxStraddleRisePct > 0) {
+      const drift = input.straddleDriftPct;
+      if (drift === undefined || drift > this.params.maxStraddleRisePct) return false;
+    }
+    return true;
   }
 
   private forceAllShortsClosed(input: OpMinusInput): OpMinusDesiredOrder[] {

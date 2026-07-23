@@ -6,6 +6,7 @@ import type { JournalEvent, JournalEventType, JournalPayloads } from '../src/dom
 import { IdFactory, makeInstrumentId, makeSessionId, type InstrumentId } from '../src/domain/ids.js';
 import type { OptionChainRow } from '../src/domain/marketdata.js';
 import { isTerminalOrderState } from '../src/domain/orders.js';
+import type { Trade } from '../src/domain/positions.js';
 import { ManualClock } from '../src/domain/time.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
 import { OpMinusRunner } from '../src/mm/op-minus-runner.js';
@@ -157,6 +158,35 @@ describe('OP(-) runner naked short sequencing', () => {
     await r.runner.onTimer(T0 + 1_000);
     expect(r.runner.mmState().quotePhase).toBe('PAUSED_REGIME');
     expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('CANCELLED');
+  });
+
+  it('caps completed cycles per right and keeps quoting the other side', async () => {
+    const r = rig({ maxCyclesPerRight: 1, scalpLotsPerRight: 1, runnerLots: 0 });
+    r.runner.arm();
+    const completed = (instrumentId: InstrumentId): Trade =>
+      ({
+        instrumentId,
+        netPnlPaise: 100,
+        exitReason: 'target',
+        exit: { clientOrderId: 'not-a-real-order', ts: T0 },
+      }) as unknown as Trade;
+
+    // One CE round trip is already done today → CE is capped, PE still quotes.
+    r.runner.onTrade(completed(IDS.scalpCe));
+    await r.runner.onTimer(T0);
+    const entries = r.oms.getOrders().filter((order) => order.tag.endsWith(':short_entry'));
+    expect(entries.some((order) => order.instrumentId === IDS.scalpPe)).toBe(true);
+    expect(entries.some((order) => order.instrumentId === IDS.scalpCe)).toBe(false);
+
+    // PE completes its cycle too → both capped: no entries, explicit reason,
+    // and the still-working PE quote is pulled rather than left to fill.
+    r.runner.onTrade(completed(IDS.scalpPe));
+    await r.runner.onTimer(T0 + 1_000);
+    expect(r.runner.lastNoTrade()).toBe('CYCLES_CAPPED');
+    const workingEntries = r.oms.getOrders().filter(
+      (order) => order.tag.endsWith(':short_entry') && !isTerminalOrderState(order.state),
+    );
+    expect(workingEntries).toHaveLength(0);
   });
 
   it('opens 2 CE + 2 PE shorts and assigns one runner after target', async () => {

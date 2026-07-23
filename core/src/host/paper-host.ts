@@ -16,6 +16,7 @@ import { ExitEscalator } from '../oms/escalation.js';
 import { Oms } from '../oms/oms.js';
 import { Reconciler } from '../oms/reconciler.js';
 import { KillSwitch } from '../killswitch/kill-switch.js';
+import { FeedRecoveryRearm } from '../killswitch/auto-rearm.js';
 import { RiskGate, type RiskGateContext } from '../risk/risk-gate.js';
 import { SessionRiskState } from '../risk/session-risk.js';
 import { buildDigest, writeDigest, type DigestArtifacts, type DigestReport } from '../report/digest.js';
@@ -130,6 +131,13 @@ export interface PaperHostOptions {
    * switch, session square-off, and gateway commands target it identically.
    */
   runnerFactory?: (ports: HostRunnerPorts) => HostRunner;
+  /**
+   * Opt-in: automatically re-arm a FEED_STALE kill (only that reason) once
+   * the feed has streamed continuously for stableMs, at most maxPerDay times
+   * per session. The trip already flattened all positions; re-entries still
+   * pass every gate. All other trip reasons stay operator-only.
+   */
+  autoRearmFeedRecovery?: { stableMs: number; maxPerDay: number };
 }
 
 export interface HostStartResult {
@@ -173,12 +181,21 @@ export class PaperHost {
   private db: Persistence | undefined;
   private mirrorBroken = false;
   private lastTickTs = 0;
+  private readonly autoRearm: FeedRecoveryRearm | undefined;
 
   constructor(private readonly opts: PaperHostOptions) {
     this.clock = opts.clock ?? systemClock;
     this.mode = opts.mode ?? 'paper';
     this.journalPath = join(opts.journalDir, opts.journalFilename ?? 'events.jsonl');
     this.reconcileEveryMs = opts.reconcileEveryMs ?? 2_000;
+    this.autoRearm =
+      opts.autoRearmFeedRecovery !== undefined
+        ? new FeedRecoveryRearm({
+            stableMs: opts.autoRearmFeedRecovery.stableMs,
+            maxPerDay: opts.autoRearmFeedRecovery.maxPerDay,
+            feedFreshMs: opts.feedStaleMs ?? 5_000,
+          })
+        : undefined;
   }
 
   /**
@@ -286,6 +303,10 @@ export class PaperHost {
     if (!this.started) return;
     this.kill.petWatchdog(nowMs);
     this.kill.checkFeedStale(nowMs); // trips only while positioned + silent
+    // Opt-in FEED_STALE self-recovery: rearm restores the session phase via
+    // notify→onKill, and the autoArm block below re-arms the runner this tick.
+    const rearmReason = this.autoRearm?.poll(nowMs, this.kill.state(), this.kill.lastTripReason(), this.lastTickTs);
+    if (rearmReason !== undefined) this.kill.rearm('REARM', rearmReason);
     this.oms.expireTtl(nowMs); // TTL lapse → EXPIRED + broker cancel-and-verify
     this.oms.cancelUnacked(nowMs); // unacked past timeout → cancel-and-verify
     await this.runner.onTimer(nowMs);
@@ -429,6 +450,12 @@ export class PaperHost {
       ids: opts.ids,
       journal: this.sink,
       tradesWriter: this.tradesWriter,
+      // Trades carry strike/right resolved at fill time so the UI blotter
+      // survives expiry rolls without a live chain lookup.
+      instrumentInfo: (id) => {
+        const row = opts.marketData.optionRows().get(id);
+        return row !== undefined ? { strikePaise: row.strikePaise, right: row.right } : undefined;
+      },
     });
 
     const escalator = new ExitEscalator({

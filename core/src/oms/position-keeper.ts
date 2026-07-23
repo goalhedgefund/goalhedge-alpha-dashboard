@@ -1,9 +1,13 @@
 import type { MarketProfile } from '../config/schemas.js';
 import { computeCharges, computeTradeNet } from '../charges/engine.js';
 import type { ClientOrderId, InstrumentId, SessionId, TradeId } from '../domain/ids.js';
+import type { OptionRight } from '../domain/instrument.js';
 import type { Fill, Order, Side } from '../domain/orders.js';
 import type { Position, Trade, TradeLeg } from '../domain/positions.js';
 import { IdFactory } from '../domain/ids.js';
+
+/** Resolves option contract labels at trade time (strike/right survive expiry rolls). */
+export type InstrumentInfoFn = (id: InstrumentId) => { strikePaise: number; right: OptionRight } | undefined;
 
 export interface OpenPositionLot {
   /** Fill id is unique within the session and survives partial entry fills. */
@@ -36,6 +40,7 @@ export class PositionKeeper {
     private readonly sessionId: SessionId,
     private readonly marketProfile: MarketProfile,
     ids?: IdFactory,
+    private readonly instrumentInfo?: InstrumentInfoFn,
   ) {
     this.ids = ids ?? new IdFactory(sessionId);
   }
@@ -154,6 +159,7 @@ export class PositionKeeper {
         ],
         this.marketProfile,
       );
+      const info = this.instrumentInfo?.(order.instrumentId);
       const trade: Trade = {
         tradeId: this.ids.tradeId() as TradeId,
         sessionId: this.sessionId,
@@ -167,6 +173,7 @@ export class PositionKeeper {
         netPnlPaise: computeTradeNet(gross, charges),
         exitReason: order.tag.split(':')[1]?.toUpperCase() ?? order.purpose,
         holdMs: fill.ts - lot.ts,
+        ...(info !== undefined ? { strikePaise: info.strikePaise, right: info.right } : {}),
       };
       trades.push(trade);
       realized += gross;

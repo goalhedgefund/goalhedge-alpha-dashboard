@@ -1,5 +1,6 @@
 import type { ChargeBreakdown } from './charges.js';
 import type { ClientOrderId, InstrumentId, PositionId, SessionId, TradeId } from './ids.js';
+import type { OptionRight } from './instrument.js';
 import type { Side } from './orders.js';
 import type { StopState } from './risk.js';
 
@@ -46,4 +47,11 @@ export interface Trade {
   /** e.g. 'L1_HARD_STOP', 'L2_TRAIL', 'L3_TIME', 'SQUARE_OFF', 'KILL'. */
   exitReason: string;
   holdMs: number;
+  /**
+   * Option contract labels resolved at fill time. Present when the OMS was
+   * given an instrument-info port; lets the UI blotter show strike/right
+   * without a live chain lookup (which breaks after an expiry roll).
+   */
+  strikePaise?: number;
+  right?: OptionRight;
 }

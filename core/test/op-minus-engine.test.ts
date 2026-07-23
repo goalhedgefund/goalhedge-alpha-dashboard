@@ -134,6 +134,41 @@ describe('OP(-) naked short engine', () => {
     expect(targetIds).toHaveLength(3);
   });
 
+  it('applies the ADX, ATR-stretch, and straddle-drift gates when configured', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      rangeFilterEnabled: true,
+      maxAbsRet30Pct: 0.01,
+      maxVwapDistancePct: 0.01,
+      maxVwapDistanceAtrMult: 2,
+      maxAdx: 18,
+      maxStraddleRisePct: 0.02,
+    });
+    const underlying = (adx: number | undefined, atr = 1_000) => ({
+      ret1s: 0,
+      ret5s: 0,
+      ret30s: 0,
+      vwapPaise: 2_500_000,
+      atr1mPaise: atr,
+      ...(adx !== undefined ? { adx1m: adx } : {}),
+      tickVelocityPerSec: 1,
+      volumeBurstRatio: 1,
+      codexScore: { bull: 0, bear: 0, signal: 'WAIT' as const, trend: 'flat' as const, indicators: { last: 2_500_500 } },
+    });
+    // Spot 500 paise from VWAP: inside the 1% cap, inside 2×ATR(1000).
+    const calm = (over: Partial<OpMinusInput> = {}) =>
+      baseInput({ spotPaise: 2_500_500, straddleDriftPct: 0, underlying: underlying(10), ...over });
+
+    expect(engine.evaluate(calm()).phase).toBe('SCALPING');
+    expect(engine.evaluate(calm({ underlying: underlying(25) })).phase).toBe('PAUSED_REGIME'); // trending
+    expect(engine.evaluate(calm({ underlying: underlying(undefined) })).phase).toBe('PAUSED_REGIME'); // ADX warm-up
+    expect(engine.evaluate(calm({ underlying: underlying(10, 200) })).phase).toBe('PAUSED_REGIME'); // stretch > 2×ATR
+    expect(engine.evaluate(calm({ straddleDriftPct: 0.03 })).phase).toBe('PAUSED_REGIME'); // straddle bid = IV rising
+    const noDrift = baseInput({ spotPaise: 2_500_500, underlying: underlying(10) });
+    expect(engine.evaluate(noDrift).phase).toBe('PAUSED_REGIME'); // drift window still filling
+    expect(engine.evaluate(calm({ straddleDriftPct: -0.05 })).phase).toBe('SCALPING'); // falling IV is fine
+  });
+
   it('trips the combined pair stop when both rights bleed without either leg stop firing', () => {
     // 7% adverse on each leg: below the 9% per-leg stop, above the 6% pair stop.
     const evaluation = new OpMinusEngine(market, params).evaluate(baseInput({

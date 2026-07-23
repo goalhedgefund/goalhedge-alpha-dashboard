@@ -9,7 +9,7 @@ import type { RiskVerdict } from '../domain/risk.js';
 import { systemClock, type Clock } from '../domain/time.js';
 import type { BrokerOrderEvent, IBrokerAdapter } from '../exec/adapter.js';
 import type { TradesWriter } from '../exec/trades-writer.js';
-import { PositionKeeper, type OpenPositionLot } from './position-keeper.js';
+import { PositionKeeper, type InstrumentInfoFn, type OpenPositionLot } from './position-keeper.js';
 import { TokenBucket } from './throttle.js';
 import { transitionOrder } from './state-machine.js';
 
@@ -30,6 +30,8 @@ export interface OmsOptions {
    */
   exitThrottle?: TokenBucket;
   unackedTimeoutMs?: number;
+  /** When present, completed trades carry strikePaise/right resolved at fill time. */
+  instrumentInfo?: InstrumentInfoFn;
 }
 
 export interface SubmitResult {
@@ -64,7 +66,7 @@ export class Oms {
     this.exitThrottle =
       opts.exitThrottle ?? new TokenBucket({ capacity: 20, refillPerSec: 20, clock: this.clock });
     this.unackedTimeoutMs = opts.unackedTimeoutMs ?? 1000;
-    this.positionKeeper = new PositionKeeper(opts.sessionId, opts.marketProfile, this.ids);
+    this.positionKeeper = new PositionKeeper(opts.sessionId, opts.marketProfile, this.ids, opts.instrumentInfo);
     this.adapter.onOrderEvent((ev) => this.onBrokerEvent(ev));
   }
 

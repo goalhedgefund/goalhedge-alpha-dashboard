@@ -66,6 +66,10 @@ export class OpMinusRunner {
   private quotePhase = 'IDLE';
   private readonly cooldownUntilByRight = new Map<OptionRight, number>();
   private readonly reservedLotIds = new Set<string>();
+  private readonly cycleCountByRight = new Map<OptionRight, number>();
+  /** ATM straddle mid samples for the IV-stability proxy, keyed to one strike. */
+  private straddleSamples: Array<{ ts: number; midPaise: number }> = [];
+  private straddleStrikePaise: number | undefined;
 
   constructor(private readonly opts: OpMinusRunnerOptions) {
     this.params = { ...opts.params };
@@ -164,6 +168,9 @@ export class OpMinusRunner {
         else this.pendingRunnerLotId = undefined;
       }
     }
+    if (right !== undefined) {
+      this.cycleCountByRight.set(right, (this.cycleCountByRight.get(right) ?? 0) + 1);
+    }
     if (
       right !== undefined &&
       trade.netPnlPaise < 0 &&
@@ -202,10 +209,17 @@ export class OpMinusRunner {
       const evaluation = this.engine.evaluate(this.buildInput(nowMs));
       this.quotePhase = evaluation.phase;
       this.captureRunnerCandidate(evaluation);
+      const maxCycles = this.engine.activeParams().maxCyclesPerRight;
+      let cyclesCappedEntries = false;
       let desired = evaluation.desired.filter((order) => {
         if (order.purpose !== 'ENTRY') return true;
         const right = this.opts.view.optionRows().get(order.instrumentId)?.right;
-        return right === undefined || (this.cooldownUntilByRight.get(right) ?? 0) <= nowMs;
+        if (right === undefined) return true;
+        if (maxCycles > 0 && (this.cycleCountByRight.get(right) ?? 0) >= maxCycles) {
+          cyclesCappedEntries = true;
+          return false;
+        }
+        return (this.cooldownUntilByRight.get(right) ?? 0) <= nowMs;
       });
 
       if (this.opts.journalHealthy?.() === false) {
@@ -215,6 +229,8 @@ export class OpMinusRunner {
         this.noTrade(evaluation.phase, evaluation.pauseReason);
       } else if (desired.some((order) => order.purpose === 'ENTRY')) {
         this.lastNoTradeReason = undefined;
+      } else if (cyclesCappedEntries) {
+        this.noTrade('CYCLES_CAPPED', `maxCyclesPerRight=${maxCycles}`);
       } else if (desired.length === 0) {
         this.noTrade('NO_QUOTABLE_MARKET');
       }
@@ -344,6 +360,7 @@ export class OpMinusRunner {
     }
     const scalpCe = rowFor(this.opts.scalpExpiry, 'CE');
     const scalpPe = rowFor(this.opts.scalpExpiry, 'PE');
+    const straddleDriftPct = this.sampleStraddleDrift(nowMs, cycleStrike, scalpCe, scalpPe);
     const latchedStop = this.opts.sessionRisk.current().latchedStop !== undefined;
     return {
       nowMs,
@@ -357,7 +374,50 @@ export class OpMinusRunner {
       allowRunnerCandidate: !latchedStop && this.opts.journalHealthy?.() !== false,
       ...(this.activeRunner !== undefined ? { runner: this.activeRunner } : {}),
       ...(this.pendingRunnerLotId !== undefined ? { pendingRunnerLotId: this.pendingRunnerLotId } : {}),
+      ...(straddleDriftPct !== undefined ? { straddleDriftPct } : {}),
     };
+  }
+
+  /**
+   * Sample the cycle-strike straddle mid and return its fractional drift over
+   * the engine's trend window. The ring resets on a strike re-center — a new
+   * strike is a new premium series, and the deliberate re-warm-up cools
+   * entries right after the underlying has just moved a full strike step.
+   */
+  private sampleStraddleDrift(
+    nowMs: number,
+    cycleStrike: number | undefined,
+    scalpCe?: OptionChainRow,
+    scalpPe?: OptionChainRow,
+  ): number | undefined {
+    const windowMs = this.engine.activeParams().straddleTrendWindowSec * 1_000;
+    if (cycleStrike !== this.straddleStrikePaise) {
+      this.straddleStrikePaise = cycleStrike;
+      this.straddleSamples = [];
+    }
+    const mid = (row?: OptionChainRow): number | undefined =>
+      row !== undefined && row.bidPaise > 0 && row.askPaise > 0 ? (row.bidPaise + row.askPaise) / 2 : undefined;
+    const ceMid = mid(scalpCe);
+    const peMid = mid(scalpPe);
+    if (cycleStrike !== undefined && ceMid !== undefined && peMid !== undefined) {
+      this.straddleSamples.push({ ts: nowMs, midPaise: ceMid + peMid });
+      const cutoff = nowMs - 2 * windowMs;
+      if (this.straddleSamples[0] !== undefined && this.straddleSamples[0].ts < cutoff) {
+        this.straddleSamples = this.straddleSamples.filter((sample) => sample.ts >= cutoff);
+      }
+    }
+    const latest = this.straddleSamples[this.straddleSamples.length - 1];
+    if (latest === undefined) return undefined;
+    let oldest: { ts: number; midPaise: number } | undefined;
+    for (let i = this.straddleSamples.length - 1; i >= 0; i--) {
+      const sample = this.straddleSamples[i]!;
+      if (sample.ts <= nowMs - windowMs) {
+        oldest = sample;
+        break;
+      }
+    }
+    if (oldest === undefined || oldest.midPaise <= 0) return undefined;
+    return (latest.midPaise - oldest.midPaise) / oldest.midPaise;
   }
 
   private captureRunnerCandidate(evaluation: OpMinusEvaluation): void {
