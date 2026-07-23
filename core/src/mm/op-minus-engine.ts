@@ -13,6 +13,14 @@ export interface OpMinusParams {
   rewardRiskRatio: number;
   targetPremiumPct: number;
   hardStopPremiumPct: number;
+  /**
+   * Pair-level stop: when both rights are short, buy everything back once the
+   * combined mark-to-market loss reaches this % of the combined entry
+   * premium. Must be tighter than 2× the per-leg stop to add protection over
+   * the leg stops (a both-legs-adverse vol spike is the naked straddle's
+   * worst case). Set very high (e.g. 1000) to disable.
+   */
+  combinedStopPremiumPct: number;
   runnerLots: number;
   quoteTtlSec: number;
   minRequoteMs: number;
@@ -48,6 +56,7 @@ export function resolveOpMinusParams(params: StrategyParams): OpMinusParams {
     rewardRiskRatio: boundedParam(params, 'rewardRiskRatio', 2, 0.1, 20),
     targetPremiumPct: boundedParam(params, 'targetPremiumPct', 5, 0.1, 50),
     hardStopPremiumPct: boundedParam(params, 'hardStopPremiumPct', 9, 0.1, 100),
+    combinedStopPremiumPct: boundedParam(params, 'combinedStopPremiumPct', 6, 0.1, 1_000),
     runnerLots: Math.min(1, Math.floor(boundedParam(params, 'runnerLots', 1, 0, 1))),
     quoteTtlSec: boundedParam(params, 'quoteTtlSec', 20, 1, 86_400),
     minRequoteMs: Math.floor(boundedParam(params, 'minRequoteMs', 2_000, 0, 60_000)),
@@ -104,6 +113,7 @@ export type OpMinusReason =
   | 'SHORT_ENTRY'
   | 'TARGET'
   | 'HARD_STOP'
+  | 'COMBINED_STOP'
   | 'SCALP_TIMEOUT'
   | 'RUNNER_COST_STOP'
   | 'RISK_EXIT';
@@ -183,10 +193,12 @@ export class OpMinusEngine {
   }
 
   evaluate(input: OpMinusInput): OpMinusEvaluation {
+    const combinedTripped = this.combinedStopTripped(input);
     const desired = input.shortBooks.flatMap((book) => this.exitsForShortBook(
       book,
       input,
       this.selectRunnerCandidate(input),
+      combinedTripped,
     ));
     const candidate = this.selectRunnerCandidate(input);
 
@@ -248,10 +260,12 @@ export class OpMinusEngine {
           side: 'SELL',
           qty: lot,
           type: 'LIMIT',
-          // Do not cross the whole spread on a naked short entry. Rest just
-          // inside the ask and let the market trade through the quote.
+          // Do not cross the spread on a naked short entry: rest just inside
+          // the ask and let the market trade through the quote. Floor at one
+          // tick ABOVE the bid so a 1-tick spread quotes at the ask instead
+          // of hitting the bid (passive always, never an aggressive sell).
           limitPricePaise: Math.max(
-            row.bidPaise,
+            row.bidPaise + this.market.tickSizePaise,
             row.askPaise - this.params.entryImprovementTicks * this.market.tickSizePaise,
           ),
           purpose: 'ENTRY',
@@ -271,6 +285,7 @@ export class OpMinusEngine {
     book: OpMinusShortBookInput,
     input: OpMinusInput,
     candidateLotId: string | undefined,
+    combinedTripped: boolean,
   ): OpMinusDesiredOrder[] {
     const ask = book.row?.askPaise ?? 0;
     const result: OpMinusDesiredOrder[] = [];
@@ -281,6 +296,10 @@ export class OpMinusEngine {
     for (const lot of book.lots) {
       if (lot.lotId === input.runner?.lotId) {
         if (ask > 0 && ask >= input.runner.stopPaise) result.push(this.urgentBuy(book.instrumentId, lot, ask, 'RUNNER_COST_STOP'));
+        continue;
+      }
+      if (combinedTripped) {
+        result.push(this.urgentBuy(book.instrumentId, lot, ask, 'COMBINED_STOP'));
         continue;
       }
       const stop = this.hardStopPaise(lot.entryPricePaise);
@@ -323,6 +342,26 @@ export class OpMinusEngine {
     return candidates[0]?.lot.lotId;
   }
 
+  /**
+   * Pair-level stop for the naked straddle. Trips only when BOTH rights hold
+   * scalp shorts and every scalp lot has a live ask to mark against (an
+   * unmarkable leg falls back to per-lot stops + timeout). The runner lot is
+   * excluded — it carries its own cost stop.
+   */
+  private combinedStopTripped(input: OpMinusInput): boolean {
+    const scalpLots = input.shortBooks.flatMap((book) =>
+      book.lots
+        .filter((lot) => lot.lotId !== input.runner?.lotId)
+        .map((lot) => ({ right: book.right, askPaise: book.row?.askPaise ?? 0, lot })));
+    if (scalpLots.length === 0) return false;
+    if (!scalpLots.some((entry) => entry.right === 'CE') || !scalpLots.some((entry) => entry.right === 'PE')) return false;
+    if (scalpLots.some((entry) => entry.askPaise <= 0)) return false;
+    const entryPaise = scalpLots.reduce((sum, entry) => sum + entry.lot.entryPricePaise * entry.lot.qty, 0);
+    const markPaise = scalpLots.reduce((sum, entry) => sum + entry.askPaise * entry.lot.qty, 0);
+    if (entryPaise <= 0) return false;
+    return markPaise - entryPaise >= entryPaise * (this.params.combinedStopPremiumPct / 100);
+  }
+
   private rangeReady(input: OpMinusInput): boolean {
     if (!this.params.rangeFilterEnabled) return true;
     const spot = input.spotPaise;
@@ -349,7 +388,7 @@ export class OpMinusEngine {
     instrumentId: InstrumentId,
     lot: OpMinusLotInput,
     askPaise: number,
-    reason: 'HARD_STOP' | 'SCALP_TIMEOUT' | 'RUNNER_COST_STOP' | 'RISK_EXIT',
+    reason: 'HARD_STOP' | 'COMBINED_STOP' | 'SCALP_TIMEOUT' | 'RUNNER_COST_STOP' | 'RISK_EXIT',
   ): OpMinusDesiredOrder {
     return {
       instrumentId,

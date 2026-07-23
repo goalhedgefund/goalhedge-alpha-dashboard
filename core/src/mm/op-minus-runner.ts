@@ -167,7 +167,7 @@ export class OpMinusRunner {
     if (
       right !== undefined &&
       trade.netPnlPaise < 0 &&
-      (exitTag === 'hard_stop' || exitTag === 'scalp_timeout' || exitTag === 'risk_exit')
+      (exitTag === 'hard_stop' || exitTag === 'combined_stop' || exitTag === 'scalp_timeout' || exitTag === 'risk_exit')
     ) {
       this.cooldownUntilByRight.set(
         right,
@@ -241,8 +241,18 @@ export class OpMinusRunner {
           priceMatches(order.limitPricePaise, candidate.limitPricePaise, tolerance));
         if (match !== undefined) matched.add(match);
         else {
+          const entryStillEligible = desired.some(
+            (candidate) =>
+              candidate.purpose === 'ENTRY' &&
+              candidate.instrumentId === order.instrumentId &&
+              candidate.side === order.side,
+          );
+          // Keep passive entry quotes on the book long enough to earn queue
+          // position, but never retain a short entry once its regime setup
+          // has disappeared — a fill there is short premium into momentum.
           if (
             order.purpose === 'ENTRY' &&
+            entryStillEligible &&
             nowMs - order.createdTs < this.engine.activeParams().minRequoteMs
           ) {
             blockOrder(order, blockedBroad, blockedLots);
@@ -483,7 +493,8 @@ function sameAllocation(left?: readonly string[], right?: readonly string[]): bo
 }
 
 function isUrgent(reason: OpMinusDesiredOrder['reason']): boolean {
-  return reason === 'HARD_STOP' || reason === 'SCALP_TIMEOUT' || reason === 'RUNNER_COST_STOP' || reason === 'RISK_EXIT';
+  return reason === 'HARD_STOP' || reason === 'COMBINED_STOP' || reason === 'SCALP_TIMEOUT' ||
+    reason === 'RUNNER_COST_STOP' || reason === 'RISK_EXIT';
 }
 
 function reasonMatches(order: Order, candidate: OpMinusDesiredOrder): boolean {

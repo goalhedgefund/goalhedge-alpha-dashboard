@@ -13,8 +13,9 @@ import { ExitEscalator } from '../src/oms/escalation.js';
 import { Oms } from '../src/oms/oms.js';
 import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
 import { SessionRiskState } from '../src/risk/session-risk.js';
+import type { UnderlyingFeatures } from '../src/marketdata/features/library.js';
 import type { MarketViewProvider } from '../src/strategy/runner.js';
-import type { StrategyView } from '../src/strategy/types.js';
+import type { StrategyParams, StrategyView } from '../src/strategy/types.js';
 
 const configDir = new URL('../../config/', import.meta.url);
 const market = loadConfig(MarketProfileSchema, fileURLToPath(new URL('market/allop-nse-options.json', configDir))).value;
@@ -44,10 +45,22 @@ function optionRow(id: InstrumentId, right: 'CE' | 'PE', expiry: string, bid: nu
   };
 }
 
+function calmFeatures(ret30s = 0): UnderlyingFeatures {
+  return {
+    ret1s: 0, ret5s: 0, ret30s, vwapPaise: ATM, atr1mPaise: 1_000,
+    tickVelocityPerSec: 1, volumeBurstRatio: 1,
+    codexScore: { bull: 0, bear: 0, signal: 'WAIT', trend: 'flat', indicators: { last: ATM } },
+  };
+}
+
 class FakeView implements MarketViewProvider {
   readonly rows = new Map<InstrumentId, OptionChainRow>();
+  features: UnderlyingFeatures | undefined;
   strategyView(nowMs: number): Omit<StrategyView, 'params'> {
-    return { nowMs, spotPaise: ATM, atmStrikePaise: ATM, atmOption: () => undefined };
+    return {
+      nowMs, spotPaise: ATM, atmStrikePaise: ATM, atmOption: () => undefined,
+      ...(this.features !== undefined ? { underlyingFeatures: this.features } : {}),
+    };
   }
   allowedInstruments(): ReadonlySet<InstrumentId> { return new Set(this.rows.keys()); }
   optionRows(): ReadonlyMap<InstrumentId, OptionChainRow> { return this.rows; }
@@ -55,7 +68,7 @@ class FakeView implements MarketViewProvider {
   spotPaise(): number | undefined { return ATM; }
 }
 
-function rig() {
+function rig(paramOverrides: StrategyParams = {}) {
   const clock = new ManualClock(T0);
   const events: JournalEvent[] = [];
   let seq = 0;
@@ -97,6 +110,7 @@ function rig() {
       targetPremiumPct: 5, hardStopPremiumPct: 9, minRequoteMs: 0,
       rangeFilterEnabled: false, entryImprovementTicks: 100,
       quoteFrom: '09:20', entryCutoff: '15:10',
+      ...paramOverrides,
     },
     market, scalpExpiry: SCALP_EXPIRY,
     gate, oms, escalator, sessionRisk, ids, clock, view,
@@ -112,6 +126,11 @@ describe('OP(-) runner naked short sequencing', () => {
     const r = rig();
     r.runner.arm();
     await r.runner.onTimer(T0);
+    // Entries rest one tick above the bid (never AT the bid); tick the bid up
+    // to the resting quotes so the paper broker's touch fill takes them.
+    for (const id of [IDS.scalpCe, IDS.scalpPe]) {
+      r.paper.setQuote(id, { bidPaise: 9_995, askPaise: 10_005, ltpPaise: 10_000 });
+    }
 
     const orders = r.oms.getOrders();
     expect(orders.filter((order) => order.tag.endsWith(':short_entry'))).toHaveLength(4);
@@ -121,10 +140,33 @@ describe('OP(-) runner naked short sequencing', () => {
     expect(r.oms.getPositions().some((position) => position.side === 'BUY')).toBe(false);
   });
 
+  it('cancels a young short entry immediately when the range regime breaks', async () => {
+    // entryImprovementTicks: 0 rests the short at the ask so it stays working.
+    const r = rig({ minRequoteMs: 5_000, rangeFilterEnabled: true, entryImprovementTicks: 0 });
+    r.view.features = calmFeatures(); // ret30=0, spot at VWAP → rangeReady
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const entry = r.oms.getOrders().find((order) => order.tag.endsWith(':short_entry'))!;
+    expect(entry).toBeDefined();
+    expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('ACKED');
+
+    // 30s return blows through maxAbsRet30Pct → PAUSED_REGIME. The entry is
+    // younger than minRequoteMs but must not be retained: a fill here would be
+    // short premium into the exact momentum the range gate exists to avoid.
+    r.view.features = calmFeatures(0.05);
+    await r.runner.onTimer(T0 + 1_000);
+    expect(r.runner.mmState().quotePhase).toBe('PAUSED_REGIME');
+    expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('CANCELLED');
+  });
+
   it('opens 2 CE + 2 PE shorts and assigns one runner after target', async () => {
     const r = rig();
     r.runner.arm();
-    await r.runner.onTimer(T0); // four short asks rest
+    await r.runner.onTimer(T0); // four short asks rest one tick above the bid
+    // Tick the bid up to the resting entry quotes so the touch fill takes them.
+    for (const id of [IDS.scalpCe, IDS.scalpPe]) {
+      r.paper.setQuote(id, { bidPaise: 9_995, askPaise: 10_005, ltpPaise: 10_000 });
+    }
 
     const shortEntries = r.oms.getOrders().filter((order) => order.tag.endsWith(':short_entry'));
     expect(shortEntries).toHaveLength(4);

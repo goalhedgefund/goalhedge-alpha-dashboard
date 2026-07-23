@@ -6,6 +6,7 @@
     "scalpLotsPerRight": 1,
     "targetPremiumPct": 5,
     "hardStopPremiumPct": 9,
+    "combinedStopPremiumPct": 6,
     "runnerLots": 0,
     "quoteTtlSec": 30,
     "minRequoteMs": 5000,

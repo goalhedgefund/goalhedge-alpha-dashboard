@@ -134,6 +134,66 @@ describe('OP(-) naked short engine', () => {
     expect(targetIds).toHaveLength(3);
   });
 
+  it('trips the combined pair stop when both rights bleed without either leg stop firing', () => {
+    // 7% adverse on each leg: below the 9% per-leg stop, above the 6% pair stop.
+    const evaluation = new OpMinusEngine(market, params).evaluate(baseInput({
+      shortBooks: [shortBook('CE', 10_700), shortBook('PE', 10_700)],
+    }));
+    const combined = evaluation.desired.filter((order) => order.reason === 'COMBINED_STOP');
+    expect(combined).toHaveLength(4);
+    expect(combined.every((order) => order.side === 'BUY' && order.purpose === 'EXIT')).toBe(true);
+    expect(evaluation.desired.some((order) => order.reason === 'TARGET')).toBe(false);
+  });
+
+  it('never trips the combined stop while only one right is short', () => {
+    const evaluation = new OpMinusEngine(market, params).evaluate(baseInput({
+      shortBooks: [shortBook('CE', 10_700)],
+    }));
+    expect(evaluation.desired.some((order) => order.reason === 'COMBINED_STOP')).toBe(false);
+    expect(evaluation.desired.some((order) => order.reason === 'HARD_STOP')).toBe(false);
+  });
+
+  it('rests entry sells at the ask when the spread is one tick — never at the bid', () => {
+    const oneTickCe = { ...scalpCe, bidPaise: 9_995, askPaise: 10_000 };
+    const evaluation = new OpMinusEngine(market, params).evaluate({
+      nowMs: 1_000,
+      nowHHMM: '10:00',
+      scalpCe: oneTickCe,
+      shortBooks: [],
+      latchedStop: false,
+    });
+    const entries = evaluation.desired.filter((order) => order.reason === 'SHORT_ENTRY');
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((order) => order.limitPricePaise === 10_000)).toBe(true);
+  });
+
+  it('honors the production config shape: one lot per right, no runner, 09:45–14:30 window', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      scalpLotsPerRight: 1,
+      runnerLots: 0,
+      quoteFrom: '09:45',
+      entryCutoff: '14:30',
+    });
+    const scalping = engine.evaluate(baseInput());
+    expect(scalping.phase).toBe('SCALPING');
+    const entries = scalping.desired.filter((order) => order.reason === 'SHORT_ENTRY');
+    expect(entries).toHaveLength(2);
+    expect(entries.filter((order) => order.instrumentId === scalpCe.instrumentId)).toHaveLength(1);
+    expect(entries.filter((order) => order.instrumentId === scalpPe.instrumentId)).toHaveLength(1);
+
+    const withBooks = engine.evaluate(baseInput({ shortBooks: [shortBook('CE'), shortBook('PE')] }));
+    expect(withBooks.runnerCandidateLotId).toBeUndefined();
+
+    const early = engine.evaluate(baseInput({ nowHHMM: '09:44' }));
+    expect(early.phase).toBe('PAUSED_WINDOW');
+    expect(early.desired.filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
+
+    const late = engine.evaluate(baseInput({ nowHHMM: '14:30' }));
+    expect(late.phase).toBe('EXIT_ONLY');
+    expect(late.desired.filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
+  });
+
   it('holds an active runner until its short cost stop is crossed', () => {
     const engine = new OpMinusEngine(market, params);
     const stop = engine.runnerCostStopPaise(10_000);
