@@ -1,4 +1,6 @@
 /** Backtest-only discovery for the synthetic OP(-) ladder recordings. */
+import { createReadStream } from 'node:fs';
+import { createGunzip } from 'node:zlib';
 import { loadScripMaster } from '../marketdata/instrument-master.js';
 import { makeInstrumentId, type InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
@@ -6,6 +8,11 @@ import type { OptionSpec } from '../host/feed-market-data.js';
 
 const SYNTHETIC_SPOT_ID = makeInstrumentId('NSE', 'BACKTEST_SYNTHETIC_SPOT');
 const LADDER_ID = /^(NSE:\d+):scalp:ATM(?:(\+|-)(\d+))?$/;
+export const DEFAULT_SCRIP_MASTER_PATH = 'D:\\DHAN_LOGIN\\api-scrip-master.csv';
+
+export function resolveScripMasterPath(): string {
+  return process.env.DHAN_SCRIP_MASTER_PATH?.trim() || DEFAULT_SCRIP_MASTER_PATH;
+}
 
 export interface DiscoveredRecording {
   spotInstrumentId: InstrumentId;
@@ -13,6 +20,24 @@ export interface DiscoveredRecording {
   /** Feed events, including a clearly synthetic spot only when source has none. */
   feedTicks: Tick[];
   syntheticSpot: boolean;
+}
+
+/** Load ticks from a (possibly truncated/multi-member) gzip recording. */
+export async function loadTicksFromGz(path: string): Promise<Tick[]> {
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve) => {
+    const gz = createReadStream(path).pipe(createGunzip());
+    gz.on('data', (chunk: Buffer) => chunks.push(chunk));
+    gz.on('end', resolve);
+    gz.on('error', () => resolve());
+  });
+  const ticks: Tick[] = [];
+  for (const line of Buffer.concat(chunks).toString('utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try { ticks.push(JSON.parse(trimmed) as Tick); } catch { /* partial JSON at EOF */ }
+  }
+  return ticks;
 }
 
 /**
@@ -24,7 +49,6 @@ export interface DiscoveredRecording {
 export function discoverRecording(ticks: readonly Tick[], scripMasterPath: string): DiscoveredRecording {
   const rowsById = new Map(loadScripMaster(scripMasterPath).map((row) => [makeInstrumentId('NSE', row.securityId), row]));
   const specs = new Map<InstrumentId, OptionSpec>();
-  let syntheticSpotPaise: number | undefined;
 
   for (const tick of ticks) {
     const match = LADDER_ID.exec(String(tick.instrumentId));
@@ -32,14 +56,15 @@ export function discoverRecording(ticks: readonly Tick[], scripMasterPath: strin
     const baseId = match[1] as InstrumentId;
     const row = rowsById.get(baseId);
     if (row === undefined || (row.optionType !== 'CE' && row.optionType !== 'PE')) continue;
-    const sign = match[3] === '-' ? -1 : 1;
-    const offset = match[4] === undefined ? 0 : sign * Number(match[4]);
-    if (offset !== 0 || match[2] !== 'scalp') continue;
+    // Regex groups: [1]=base security id, [2]=offset sign, [3]=offset digits.
+    const sign = match[2] === '-' ? -1 : 1;
+    const offset = match[3] === undefined ? 0 : sign * Number(match[3]);
+    if (offset !== 0) continue; // ATM rows only; ladder (ATM±N) rows excluded
+
     // NIFTY strike intervals are ₹50 (5,000 paise); this is distinct from
     // the ₹0.05 option-price tick recorded in the scrip master.
     const strikePaise = row.strikePaise + offset * 5_000;
     specs.set(tick.instrumentId, { instrumentId: tick.instrumentId, strikePaise, right: row.optionType, expiry: row.expiryDate });
-    syntheticSpotPaise ??= row.strikePaise;
   }
   if (specs.size === 0) throw new Error('No recorded option instruments could be resolved from the scrip master');
 
@@ -47,28 +72,32 @@ export function discoverRecording(ticks: readonly Tick[], scripMasterPath: strin
   const nativeSpot = ticks.find((tick) => LADDER_ID.exec(String(tick.instrumentId)) === null);
   if (nativeSpot !== undefined) return { spotInstrumentId: nativeSpot.instrumentId, optionSpecs: [...specs.values()], feedTicks: [...ticks], syntheticSpot: false };
 
-  const spotPaise = syntheticSpotPaise ?? [...specs.values()][0]!.strikePaise;
   const feedTicks: Tick[] = [];
   for (let start = 0; start < ticks.length;) {
     const ts = ticks[start]!.ts;
     let end = start;
-    let ce: Tick | undefined;
-    let pe: Tick | undefined;
+    const pairsByStrike = new Map<number, { ce?: Tick; pe?: Tick }>();
     while (end < ticks.length && ticks[end]!.ts === ts) {
       const tick = ticks[end]!;
       const spec = specs.get(tick.instrumentId);
-      if (spec?.right === 'CE') ce = tick;
-      else if (spec?.right === 'PE') pe = tick;
+      if (spec !== undefined) {
+        const pair = pairsByStrike.get(spec.strikePaise) ?? {};
+        if (spec.right === 'CE') pair.ce = tick;
+        else pair.pe = tick;
+        pairsByStrike.set(spec.strikePaise, pair);
+      }
       end++;
     }
-    if (ce !== undefined && pe !== undefined) {
+    for (const [strikePaise, { ce, pe }] of pairsByStrike) {
+      if (ce === undefined || pe === undefined) continue;
       const ceMid = ce.bidPaise > 0 && ce.askPaise > 0 ? (ce.bidPaise + ce.askPaise) / 2 : ce.ltpPaise;
       const peMid = pe.bidPaise > 0 && pe.askPaise > 0 ? (pe.bidPaise + pe.askPaise) / 2 : pe.ltpPaise;
       feedTicks.push({
         instrumentId: SYNTHETIC_SPOT_ID,
         ts,
         recvTs: ce.recvTs,
-        ltpPaise: Math.round(spotPaise + ceMid - peMid),
+        // Re-strikes are safe because this uses the pair's current strike.
+        ltpPaise: Math.round(strikePaise + ceMid - peMid),
         qty: 0,
         volume: 0,
         bidPaise: 0,
@@ -84,4 +113,21 @@ export function discoverRecording(ticks: readonly Tick[], scripMasterPath: strin
     start = end;
   }
   return { spotInstrumentId: SYNTHETIC_SPOT_ID, optionSpecs: [...specs.values()], feedTicks, syntheticSpot: true };
+}
+
+/** Resolve recordings that preserve native Dhan ids and include a spot/future. */
+export function discoverPlainRecording(ticks: readonly Tick[], scripMasterPath: string): DiscoveredRecording {
+  const rowsById = new Map(loadScripMaster(scripMasterPath).map((row) => [makeInstrumentId('NSE', row.securityId), row]));
+  const specs = new Map<InstrumentId, OptionSpec>();
+  let spotInstrumentId: InstrumentId | undefined;
+  for (const tick of ticks) {
+    const row = rowsById.get(tick.instrumentId);
+    if (row?.optionType === 'CE' || row?.optionType === 'PE') {
+      specs.set(tick.instrumentId, { instrumentId: tick.instrumentId, strikePaise: row.strikePaise, right: row.optionType, expiry: row.expiryDate });
+    } else if (spotInstrumentId === undefined) {
+      spotInstrumentId = tick.instrumentId;
+    }
+  }
+  if (spotInstrumentId === undefined || specs.size === 0) throw new Error('Could not resolve native spot/options from recording');
+  return { spotInstrumentId, optionSpecs: [...specs.values()], feedTicks: [...ticks], syntheticSpot: false };
 }

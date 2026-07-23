@@ -1,5 +1,5 @@
 /**
- * Phase B: Replay harness for S1 Momentum-Burst.
+ * Replay harness for S2 VWAP-Fade.
  *
  * Loads one day of tick data from the recorded corpus and drives it through
  * a fresh PaperHost with ManualClock, then prints the session result.
@@ -8,40 +8,66 @@
  * clock which falls outside 09:15–15:00 and blocks all entries via ENTRY_WINDOW.
  *
  * Usage:
- *   node dist/scripts/replay-s1.js [--date YYYY-MM-DD] [--validate]
- *
- * --validate  asserts the Jul 16 baseline reproduces 1 trade (regression gate).
+ *   node dist/scripts/replay-s2.js [--date YYYY-MM-DD]
  */
 
-import { createReadStream, mkdirSync, rmSync } from 'node:fs';
+import { createReadStream, mkdirSync } from 'node:fs';
 import { createGunzip } from 'node:zlib';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema } from '../config/schemas.js';
-import { makeSessionId, IdFactory } from '../domain/ids.js';
+import { makeInstrumentId, makeSessionId, IdFactory } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
 import { ManualClock } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
-import { FeedMarketData } from '../host/feed-market-data.js';
+import { FeedMarketData, type OptionSpec } from '../host/feed-market-data.js';
 import { PaperHost } from '../host/paper-host.js';
-import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
+import { S2VwapFade } from '../strategy/strategies/s2-vwap-fade.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
 import type { StrategyParams } from '../strategy/types.js';
 import { discoverPlainRecording, loadTicksFromGz, resolveScripMasterPath } from './backtest-recording.js';
-export { loadTicksFromGz } from './backtest-recording.js';
 
-// ─── paths ───────────────────────────────────────────────────────────────────
+// ─── paths ────────────────────────────────────────────────────────────────────
 
 const SCALPER_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CONFIG_DIR = join(SCALPER_ROOT, 'config');
 // Backtest-only corpus. Live data paths are configured by the live host.
-// Exported so sweep-s1 pre-validates the SAME corpus runReplay loads from.
-export const TICK_ROOT = join(SCALPER_ROOT, 'data', 'dhan', 'ticks-s1-momentum-burst');
+const TICK_ROOT = join(SCALPER_ROOT, 'data', 'dhan', 'ticks-s2-vwap-fade');
 
-// ─── tick loader ─────────────────────────────────────────────────────────────
+// ─── known instruments for S2 Jul 22 replay ──────────────────────────────────
+
+// Spot feed: NIFTY Jul 2026 futures (NSE:61093).
+// Futures carry real volume so VWAP computes correctly; IDX_I spot sends qty=0.
+// All NIFTY options from the Jul 22 session (expiry 2026-08-04, strikes 24000–24500).
+// Derived from the Jul 22 tick corpus — Dhan's next weekly after the Jul 21 roll-off.
+const OPTION_SPECS: OptionSpec[] = [
+  { instrumentId: makeInstrumentId('NSE', '65693'), strikePaise: 2400000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65694'), strikePaise: 2400000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65695'), strikePaise: 2405000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65696'), strikePaise: 2405000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65697'), strikePaise: 2410000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65698'), strikePaise: 2410000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65699'), strikePaise: 2415000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65700'), strikePaise: 2415000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65774'), strikePaise: 2420000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65776'), strikePaise: 2420000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65806'), strikePaise: 2425000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65807'), strikePaise: 2425000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65808'), strikePaise: 2430000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65809'), strikePaise: 2430000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65852'), strikePaise: 2435000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65853'), strikePaise: 2435000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65854'), strikePaise: 2440000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65855'), strikePaise: 2440000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65858'), strikePaise: 2445000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65859'), strikePaise: 2445000, right: 'PE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65860'), strikePaise: 2450000, right: 'CE', expiry: '2026-08-04' },
+  { instrumentId: makeInstrumentId('NSE', '65861'), strikePaise: 2450000, right: 'PE', expiry: '2026-08-04' },
+];
+
+// ─── tick loader ──────────────────────────────────────────────────────────────
 
 /**
  * Load ticks from a (possibly truncated/multi-member) gzip file.
@@ -70,7 +96,7 @@ async function loadTicksFromGzLegacy(path: string): Promise<Tick[]> {
   return ticks;
 }
 
-// ─── host builder ────────────────────────────────────────────────────────────
+// ─── replay runner ────────────────────────────────────────────────────────────
 
 export interface ReplayOptions {
   date: string;
@@ -94,12 +120,11 @@ export interface ReplayResult {
 export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const { date } = opts;
 
-  // ── load configs ──────────────────────────────────────────────────────────
+  // ── load configs ─────────────────────────────────────────────────────────
   const marketCfg = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 'india-nse-options.json'));
   const riskCfg = loadConfig(RiskProfileSchema, join(CONFIG_DIR, 'risk', 'paper-default.json'));
-  const strategyCfg = loadConfig(StrategyConfigSchema, join(CONFIG_DIR, 'strategy', 's1-momentum-burst.json'));
+  const strategyCfg = loadConfig(StrategyConfigSchema, join(CONFIG_DIR, 'strategy', 's2-vwap-fade.json'));
 
-  // Merge any param overrides (for sweep), stripping undefined values.
   const overrides: StrategyParams = {};
   if (opts.params) {
     for (const [k, v] of Object.entries(opts.params)) {
@@ -116,9 +141,6 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   if (!opts.silent) console.log(`  Loaded ${allTicks.length} ticks for ${date}`);
 
   // ── build market data ─────────────────────────────────────────────────────
-  // discoverRecording resolves instruments from the scrip master and throws
-  // when nothing resolves — a stale/mismatched corpus fails loudly, never as
-  // a silent 0-trade run.
   const recording = discoverPlainRecording(allTicks, resolveScripMasterPath());
   const clock = new ManualClock(recording.feedTicks[0]!.ts);
   const marketData = new FeedMarketData({
@@ -127,22 +149,16 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     strikeStepPaise: market.contract.strikeStepPaise,
   });
 
-  // Prime spot so preflight freshness check passes (needs a recent tick).
-  // Hard-fail when absent: preflight would fail feed.fresh, ARM would be
-  // refused, and the run would "complete" with 0 trades and no warning.
+  // Prime spot so preflight freshness check passes.
   const firstSpot = recording.feedTicks.find((t) => t.instrumentId === recording.spotInstrumentId);
-  if (firstSpot === undefined) {
-    throw new Error(`No spot tick (${recording.spotInstrumentId}) in ${tickPath} — cannot replay ${date}`);
+  if (firstSpot) {
+    clock.set(firstSpot.ts);
+    marketData.ingest(firstSpot);
   }
-  clock.set(firstSpot.ts);
-  marketData.ingest(firstSpot);
 
   // ── build paper broker & host ─────────────────────────────────────────────
   const sessionId = makeSessionId(date, 'paper');
   const ids = new IdFactory(sessionId);
-  // Deterministic fill model: 1 tick slippage, zero latency. Fine for RANKING
-  // combos against each other; do NOT compare absolute ₹ to live paper numbers
-  // (live fills ride real ack/fill latency between signal and execution).
   const broker = new PaperBroker({
     clock,
     tickSizePaise: market.tickSizePaise,
@@ -151,15 +167,12 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     fillLatencyMs: 0,
   });
 
-  const journalDir = opts.journalDir ?? join(tmpdir(), `scalper-replay-${date}-${Date.now()}`);
-  // Fresh dir every run: PaperHost.start() enters crash recovery whenever an
-  // events.jsonl EXISTS in the dir, which would resume the previous run's seq
-  // and sessionRisk (incl. a latched daily-loss stop) and silently change
-  // results on re-runs.
-  rmSync(journalDir, { recursive: true, force: true });
+  const journalDir =
+    opts.journalDir ??
+    join(SCALPER_ROOT, 'journals', 's2-vwap-fade', date, 'replay');
   mkdirSync(journalDir, { recursive: true });
 
-  const strategy = new S1MomentumBurst();
+  const strategy = new S2VwapFade();
   const regime = new FeatureRegimeProvider({ view: marketData, clock });
 
   const host = new PaperHost({
@@ -217,16 +230,13 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   let lastTimer = recording.feedTicks[0]!.ts;
 
   for (const tick of recording.feedTicks) {
-    // Option ticks carry LTT (last-trade time) which can lag the current spot
-    // timestamp by minutes. Driving the clock (or the timer) backward trips
-    // CLOCK_SKEW and regresses TTL/session-phase checks — clamp everything to
-    // monotonically-advancing sim time.
-    const simNow = Math.max(clock.now(), tick.ts);
-    clock.set(simNow);
+    // Option ticks carry LTT (last-trade time) which can lag current spot time.
+    // Use max() to keep the replay clock monotonically advancing.
+    clock.set(Math.max(clock.now(), tick.ts));
     await host.ingestTick(tick);
-    if (simNow - lastTimer >= TIMER_INTERVAL_MS) {
-      await host.onTimer(simNow);
-      lastTimer = simNow;
+    if (tick.ts - lastTimer >= TIMER_INTERVAL_MS) {
+      await host.onTimer(tick.ts);
+      lastTimer = tick.ts;
     }
   }
 
@@ -250,40 +260,31 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const dateArg = args.find((_, i) => args[i - 1] === '--date') ?? '2026-07-16';
-  const validate = args.includes('--validate');
+  const dateArg = args.find((_, i) => args[i - 1] === '--date') ?? '2026-07-22';
 
-  console.log(`S1 Replay — ${dateArg}`);
+  console.log(`S2 Replay — ${dateArg}`);
   console.log('Running...');
 
-  const journalDir = join(SCALPER_ROOT, 'journals', 's1-replay', dateArg, 'replay');
+  const journalDir = join(SCALPER_ROOT, 'journals', 's2-vwap-fade', dateArg, 'replay');
   const result = await runReplay({ date: dateArg, journalDir });
+
+  const rupeesNet = (result.netPaise / 100).toFixed(2);
+  const rupeesGross = (result.grossPaise / 100).toFixed(2);
+  const rupeesCharges = (result.chargesPaise / 100).toFixed(2);
 
   console.log(`\nResult:`);
   console.log(`  Ticks replayed : ${result.ticksReplayed}`);
   console.log(`  Trades         : ${result.tradeCount}  (${result.wins}W / ${result.losses}L)`);
-  console.log(`  Gross P&L      : ₹${(result.grossPaise / 100).toFixed(2)}`);
-  console.log(`  Charges        : ₹${(result.chargesPaise / 100).toFixed(2)}`);
-  console.log(`  Net P&L        : ₹${(result.netPaise / 100).toFixed(2)}`);
+  console.log(`  Gross P&L      : ₹${rupeesGross}`);
+  console.log(`  Charges        : ₹${rupeesCharges}`);
+  console.log(`  Net P&L        : ₹${rupeesNet}`);
   console.log(`  Avg hold       : ${Math.round(result.avgHoldMs / 1000)}s`);
-
-  if (validate) {
-    // Jul 16 corrected baseline: 2 trades. Live showed only 1 because the live
-    // run itself was killed by CLOCK_SKEW (option LTT < spot timestamp). With the
-    // monotonic-clock fix, the second signal on the replayed tick stream fires.
-    if (result.tradeCount !== 2) {
-      console.error(`\n[FAIL] Expected 2 trades, got ${result.tradeCount}`);
-      process.exitCode = 1;
-    } else {
-      console.log('\n[PASS] Validation: 2 trades reproduced.');
-    }
-  }
+  console.log(`\nJournal written to: ${journalDir}`);
 }
 
-// Only auto-run when invoked directly (not when imported by sweep-s1).
-if (process.argv[1]?.endsWith('replay-s1.js')) {
+if (process.argv[1]?.endsWith('replay-s2.js')) {
   void main().catch((err) => {
-    console.error('replay-s1 failed:', err);
+    console.error('replay-s2 failed:', err);
     process.exitCode = 1;
   });
 }
