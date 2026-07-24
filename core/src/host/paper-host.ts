@@ -283,6 +283,9 @@ export class PaperHost {
     this.kill.noteTick(observedTs);
     this.kill.checkClockSkew(this.clock.now());
     const kind = this.opts.marketData.ingest(tick);
+    // Stale carryover (prior-day ts): recorded + arrival-noted above so the feed
+    // reads healthy, but it must not drive the view, runner, or reconcile cadence.
+    if (kind === 'stale') return;
 
     if (kind === 'option') {
       this.opts.quoteSink?.(tick.instrumentId, { bidPaise: tick.bidPaise, askPaise: tick.askPaise, ltpPaise: tick.ltpPaise });

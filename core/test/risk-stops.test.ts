@@ -336,6 +336,45 @@ describe('StopEngine trigger matrix', () => {
     expect(sessionEngine.update(pos, { nowMs: 2_000, premiumPaise: 10_100 }, 'DAILY_LOSS')?.trigger?.reason).toBe('L4_SESSION');
   });
 
+  it('take-profit target fires and takes priority over the time stop', () => {
+    const ids = new IdFactory(SESSION);
+    const pos = position();
+    const plan: StopPlan = { ...stopPlan(), targetPaise: 11_000 };
+
+    const engine = new StopEngine({ ids, tickSizePaise: 5 });
+    engine.arm(pos, plan);
+    // premium at/above target → take-profit
+    expect(engine.update(pos, { nowMs: 2_000, premiumPaise: 11_000 })?.trigger?.reason).toBe('L2_TARGET');
+
+    // target beats an expired time stop when both would fire this tick
+    const both = new StopEngine({ ids, tickSizePaise: 5 });
+    both.arm(pos, plan);
+    expect(both.update(pos, { nowMs: 40_000, premiumPaise: 11_050 })?.trigger?.reason).toBe('L2_TARGET');
+
+    // below target, nothing spurious fires
+    const under = new StopEngine({ ids, tickSizePaise: 5 });
+    under.arm(pos, plan);
+    expect(under.update(pos, { nowMs: 2_000, premiumPaise: 10_800 })?.trigger).toBeUndefined();
+  });
+
+  it('buildLongOptionStopPlan sets targetPaise only when targetPct > 0', () => {
+    const withTarget = buildLongOptionStopPlan({
+      entryPremiumPaise: 10_000,
+      tickSizePaise: 5,
+      right: 'CE',
+      pcts: { hardStopPremiumPct: 20, targetPct: 15, timeStopSec: 150 },
+    });
+    expect(withTarget.targetPaise).toBe(11_500);
+
+    const noTarget = buildLongOptionStopPlan({
+      entryPremiumPaise: 10_000,
+      tickSizePaise: 5,
+      right: 'CE',
+      pcts: { hardStopPremiumPct: 20, targetPct: 0, timeStopSec: 150 },
+    });
+    expect(noTarget.targetPaise).toBeUndefined();
+  });
+
   it('ratchets to breakeven/trail and stop never widens', () => {
     const ids = new IdFactory(SESSION);
     const engine = new StopEngine({ ids, tickSizePaise: 5 });

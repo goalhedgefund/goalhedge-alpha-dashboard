@@ -23,9 +23,16 @@ export interface FeedMarketDataOptions {
   /** Option ticks retained per instrument for premium velocity/spread stability. */
   optionRingSize?: number;
   chainDepth?: number;
+  /**
+   * Reject ticks whose exchange `ts` is before this epoch-ms (typically 00:00
+   * IST of the session date). Guards against prior-day carryover/reconnect
+   * snapshots that otherwise seed the session VWAP with a stale price. When
+   * omitted, no ticks are gated (back-compatible for replays).
+   */
+  sessionFloorMs?: number;
 }
 
-export type TickKind = 'spot' | 'option' | 'unknown';
+export type TickKind = 'spot' | 'option' | 'unknown' | 'stale';
 
 /**
  * Feed-driven market view for the live/paper host (M10). Turns a normalized
@@ -48,6 +55,7 @@ export class FeedMarketData implements MarketViewProvider {
   private readonly optionRingSize: number;
   private readonly spotTicks: Tick[] = [];
   private readonly optionTicks = new Map<InstrumentId, Tick[]>();
+  private readonly sessionFloorMs: number | undefined;
   private atmStrike: number | undefined;
   // Session VWAP accumulators (design §2.2: VWAP of the DAY, not of the ring).
   private cumTurnover = 0;
@@ -67,6 +75,7 @@ export class FeedMarketData implements MarketViewProvider {
     });
     this.ringSize = opts.spotRingSize ?? 240;
     this.optionRingSize = opts.optionRingSize ?? 120;
+    this.sessionFloorMs = opts.sessionFloorMs;
     const instruments: Instrument[] = opts.options.map((o) => ({
       id: o.instrumentId,
       kind: 'OPTION',
@@ -101,6 +110,9 @@ export class FeedMarketData implements MarketViewProvider {
 
   /** Route a tick into the right book; returns which kind it was. */
   ingest(tick: Tick): TickKind {
+    // Drop prior-day carryover/reconnect snapshots before they touch the spot
+    // ring, session VWAP, or option chain. Their stale exchange `ts` is the tell.
+    if (this.sessionFloorMs !== undefined && tick.ts < this.sessionFloorMs) return 'stale';
     const kind = this.classify(tick);
     if (kind === 'spot') {
       this.spotTicks.push(tick);

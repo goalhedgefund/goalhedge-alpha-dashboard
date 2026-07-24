@@ -84,6 +84,8 @@ export class S2VwapFade implements IStrategy {
         breakevenAtPct: numParam(p, 'breakevenAtPct', 10),
         trailStepPct: numParam(p, 'trailStepPct', 6),
         trailLockPct: numParam(p, 'trailLockPct', 50),
+        // Take-profit is opt-in via config (targetPct); 0/absent leaves it off.
+        targetPct: numParam(p, 'targetPct', 0),
         timeStopSec: numParam(p, 'timeStopSec', 60),
       },
       invalidation: { kind: 'pct', spotPaise: spot, pct: numParam(p, 'invalidatePct', 0.1) },

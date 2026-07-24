@@ -10,6 +10,8 @@ export interface StopPlanPcts {
   trailStepPct?: number;
   /** L2 % of open profit locked per step. */
   trailLockPct?: number;
+  /** L2 take-profit: exit once premium >= entry × (1 + pct/100). Omit/0 disables. */
+  targetPct?: number;
   /** L3 time stop. */
   timeStopSec: number;
 }
@@ -46,6 +48,9 @@ export function buildLongOptionStopPlan(args: {
       ? { trailStepPaise: Math.max(tick, snap(entry * (pcts.trailStepPct / 100))) }
       : {}),
     ...(pcts.trailLockPct !== undefined ? { trailLockPct: pcts.trailLockPct } : {}),
+    ...(pcts.targetPct !== undefined && pcts.targetPct > 0
+      ? { targetPaise: snap(entry * (1 + pcts.targetPct / 100)) }
+      : {}),
   };
 
   const inv = args.invalidation;

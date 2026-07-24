@@ -6,7 +6,7 @@ import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema, type Mark
 import type { JournalPayloads } from '../domain/events.js';
 import { IdFactory, makeInstrumentId, makeSessionId, type InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
-import { systemClock } from '../domain/time.js';
+import { systemClock, istDayStartMs } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { DhanFeed } from '../feed/dhan/feed.js';
 import { Recorder } from '../feed/recorder.js';
@@ -259,6 +259,9 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     options,
     strikeStepPaise: market.contract.strikeStepPaise,
     chainDepth: env.chainDepth,
+    // Reject prior-day carryover/reconnect snapshots (stale exchange ts) so the
+    // session VWAP is not seeded with the previous close.
+    sessionFloorMs: istDayStartMs(date),
   });
   primeSpot(marketData, spotInstrumentId, initialSpotPaise);
 

@@ -18,6 +18,17 @@ export function formatHHMMIst(epochMs: number): string {
   return `${hh}:${mm}`;
 }
 
+/**
+ * Epoch-ms at 00:00 IST on the given YYYY-MM-DD (start of the exchange calendar
+ * day). Used as a session floor to reject prior-day carryover/reconnect ticks:
+ * a broker reconnect can resend the previous close's snapshot stamped with an
+ * old exchange `ts`, which otherwise pollutes the session VWAP.
+ */
+export function istDayStartMs(dateYmd: string): number {
+  const [y, m, d] = dateYmd.split('-').map(Number);
+  return Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1) - IST_OFFSET_MS;
+}
+
 export class ManualClock implements Clock {
   constructor(private t: number) {}
 

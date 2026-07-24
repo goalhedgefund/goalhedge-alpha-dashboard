@@ -6,6 +6,7 @@ import type { SessionStopKind, StopState } from '../domain/risk.js';
 export type StopTriggerReason =
   | 'L1_HARD_PREMIUM'
   | 'L1_UNDERLYING'
+  | 'L2_TARGET'
   | 'L2_TRAIL'
   | 'L3_TIME'
   | 'L4_SESSION';
@@ -80,7 +81,11 @@ export class StopEngine {
     }
 
     let reason: StopTriggerReason | undefined;
+    const target = managed.stopPlan.targetPaise;
     if (sessionStop !== undefined) reason = 'L4_SESSION';
+    // Take-profit takes priority over the time stop: a long fade that has hit
+    // its target should bank it rather than wait out the clock.
+    else if (target !== undefined && tick.premiumPaise >= target) reason = 'L2_TARGET';
     else if (tick.premiumPaise <= next.stopPremiumPaise) reason = next.layer === 'TRAIL' || next.layer === 'BREAKEVEN' ? 'L2_TRAIL' : 'L1_HARD_PREMIUM';
     else if (this.underlyingInvalidated(managed.stopPlan, tick.underlyingPaise)) reason = 'L1_UNDERLYING';
     else if (tick.nowMs >= next.timeStopDeadlineTs) reason = 'L3_TIME';
