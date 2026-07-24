@@ -10,7 +10,7 @@
     "lots": 1,
     "ttlMs": 1500,
     "tickSizePaise": 5,
-    "timeStopSec": 60,
+    "timeStopSec": 150,
     "hardStopPremiumPct": 20,
     "breakevenAtPct": 10,
     "trailStepPct": 6,
