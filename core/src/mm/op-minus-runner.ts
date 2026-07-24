@@ -61,6 +61,9 @@ export class OpMinusRunner {
   private evaluating = false;
   private forceReconcileRequested = false;
   private lastNoTradeReason: string | undefined;
+  /** De-dup key for no-trade journaling; distinct from the human reason so a
+   *  change of blocking gate re-logs while live-value wiggles stay quiet. */
+  private lastNoTradeKey: string | undefined;
   private activeRunner: OpMinusActiveRunnerInput | undefined;
   private pendingRunnerLotId: string | undefined;
   private quotePhase = 'IDLE';
@@ -81,6 +84,7 @@ export class OpMinusRunner {
     if (this.lifecycle === 'DISARMED') {
       this.lifecycle = 'ARMED';
       this.lastNoTradeReason = undefined;
+      this.lastNoTradeKey = undefined;
     }
   }
 
@@ -226,9 +230,14 @@ export class OpMinusRunner {
         desired = desired.filter((order) => order.purpose !== 'ENTRY');
         this.noTrade('JOURNAL_UNHEALTHY');
       } else if (evaluation.pauseReason !== undefined) {
-        this.noTrade(evaluation.phase, evaluation.pauseReason);
+        // De-dup on phase + specific gate code so a PAUSED_REGIME that switches
+        // blocking gate (e.g. ADX warm-up -> ADX trending -> straddle) re-logs,
+        // while staying quiet tick-to-tick within one cause.
+        const dedupKey = evaluation.pauseCode !== undefined ? `${evaluation.phase}:${evaluation.pauseCode}` : evaluation.phase;
+        this.noTrade(evaluation.phase, evaluation.pauseReason, dedupKey);
       } else if (desired.some((order) => order.purpose === 'ENTRY')) {
         this.lastNoTradeReason = undefined;
+        this.lastNoTradeKey = undefined;
       } else if (cyclesCappedEntries) {
         this.noTrade('CYCLES_CAPPED', `maxCyclesPerRight=${maxCycles}`);
       } else if (desired.length === 0) {
@@ -391,7 +400,14 @@ export class OpMinusRunner {
     scalpPe?: OptionChainRow,
   ): number | undefined {
     const windowMs = this.engine.activeParams().straddleTrendWindowSec * 1_000;
-    if (cycleStrike !== this.straddleStrikePaise) {
+    // Re-center (and reset the window) only when ATM has moved more than one
+    // full strike step from the anchored strike. Minor oscillation of ATM back
+    // and forth across a single boundary while flat must NOT wipe the window —
+    // otherwise the proxy can never accumulate its full window on a normally
+    // moving day and silently forces PAUSED_REGIME all session (28 ATM
+    // re-centers were observed in a single ~230pt-range day). A sustained move
+    // of more than one strike is a real regime shift and correctly re-warms.
+    if (straddleShouldRecenter(cycleStrike, this.straddleStrikePaise, this.opts.market.contract.strikeStepPaise)) {
       this.straddleStrikePaise = cycleStrike;
       this.straddleSamples = [];
     }
@@ -535,8 +551,10 @@ export class OpMinusRunner {
     };
   }
 
-  private noTrade(reason: string, detail?: string): void {
-    if (reason === this.lastNoTradeReason) return;
+  private noTrade(reason: string, detail?: string, dedupKey?: string): void {
+    const key = dedupKey ?? reason;
+    if (key === this.lastNoTradeKey) return;
+    this.lastNoTradeKey = key;
     this.lastNoTradeReason = reason;
     this.journal('strategy.noTrade', { strategyId: this.opts.strategyId, reason, ...(detail !== undefined ? { detail } : {}) });
   }
@@ -544,6 +562,22 @@ export class OpMinusRunner {
   private journal<K extends JournalEventType>(type: K, payload: JournalPayloads[K]): void {
     this.opts.journal?.(type, payload);
   }
+}
+
+/**
+ * Whether the straddle-drift proxy should abandon its accumulated window and
+ * re-anchor to a new strike. True only when there is no anchor yet, ATM is
+ * unavailable, or ATM has moved more than one full strike step from the anchor.
+ * One-strike hysteresis keeps the window alive through the normal oscillation
+ * of ATM across a single boundary while flat, so the proxy can actually warm up.
+ */
+export function straddleShouldRecenter(
+  cycleStrikePaise: number | undefined,
+  anchorStrikePaise: number | undefined,
+  strikeStepPaise: number,
+): boolean {
+  if (cycleStrikePaise === undefined || anchorStrikePaise === undefined) return true;
+  return Math.abs(cycleStrikePaise - anchorStrikePaise) > strikeStepPaise;
 }
 
 function sameAllocation(left?: readonly string[], right?: readonly string[]): boolean {

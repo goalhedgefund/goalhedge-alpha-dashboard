@@ -9,7 +9,7 @@ import { isTerminalOrderState } from '../src/domain/orders.js';
 import type { Trade } from '../src/domain/positions.js';
 import { ManualClock } from '../src/domain/time.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
-import { OpMinusRunner } from '../src/mm/op-minus-runner.js';
+import { OpMinusRunner, straddleShouldRecenter } from '../src/mm/op-minus-runner.js';
 import { ExitEscalator } from '../src/oms/escalation.js';
 import { Oms } from '../src/oms/oms.js';
 import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
@@ -121,6 +121,29 @@ function rig(paramOverrides: StrategyParams = {}) {
   runnerBox.runner = runner;
   return { runner, oms, paper, view, clock, events };
 }
+
+describe('straddle-drift window re-center hysteresis', () => {
+  const STEP = 5_000; // one NIFTY strike = 50 index pts = 5000 paise
+  const ANCHOR = 2_500_000;
+
+  it('re-anchors when there is no anchor yet or ATM is unavailable', () => {
+    expect(straddleShouldRecenter(ANCHOR, undefined, STEP)).toBe(true);
+    expect(straddleShouldRecenter(undefined, ANCHOR, STEP)).toBe(true);
+  });
+
+  it('keeps the window through a one-strike oscillation while flat', () => {
+    // ATM drifts up one strike and back: within tolerance both ways -> no reset,
+    // so the 180s window survives and the proxy can actually warm up.
+    expect(straddleShouldRecenter(ANCHOR + STEP, ANCHOR, STEP)).toBe(false);
+    expect(straddleShouldRecenter(ANCHOR - STEP, ANCHOR, STEP)).toBe(false);
+    expect(straddleShouldRecenter(ANCHOR, ANCHOR, STEP)).toBe(false);
+  });
+
+  it('re-anchors on a sustained move of more than one strike', () => {
+    expect(straddleShouldRecenter(ANCHOR + 2 * STEP, ANCHOR, STEP)).toBe(true);
+    expect(straddleShouldRecenter(ANCHOR - 2 * STEP, ANCHOR, STEP)).toBe(true);
+  });
+});
 
 describe('OP(-) runner naked short sequencing', () => {
   it('opens two CE and two PE short lots without protective long positions', async () => {

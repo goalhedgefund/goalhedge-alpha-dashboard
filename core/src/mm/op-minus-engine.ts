@@ -169,7 +169,23 @@ export interface OpMinusEvaluation {
   desired: OpMinusDesiredOrder[];
   phase: 'SCALPING' | 'EXIT_ONLY' | 'PAUSED_WINDOW' | 'PAUSED_LOCKOUT' | 'PAUSED_REGIME';
   pauseReason?: string;
+  /**
+   * Stable machine code for the specific range-gate check that blocked entries
+   * (only set when phase is PAUSED_REGIME). Lets the runtime de-duplicate and
+   * journal *which* gate paused the desk — trend vs warm-up vs VWAP stretch —
+   * instead of one opaque "outside range" line for the whole session.
+   */
+  pauseCode?: string;
   runnerCandidateLotId?: string;
+}
+
+/** Outcome of the range-regime gate: ready, or blocked with a specific cause. */
+export interface RangeGateResult {
+  ready: boolean;
+  /** Stable category of the blocking check (undefined when ready). */
+  code?: string;
+  /** Human-readable detail with the measured value (undefined when ready). */
+  detail?: string;
 }
 
 /** Pure decision engine for the intentionally naked OP(-) short desk. */
@@ -259,11 +275,13 @@ export class OpMinusEngine {
       };
     }
 
-    if (!this.rangeReady(input)) {
+    const range = this.rangeGate(input);
+    if (!range.ready) {
       return {
         desired,
         phase: 'PAUSED_REGIME',
-        pauseReason: 'trend or VWAP stretch outside short-premium range',
+        pauseReason: range.detail ?? 'trend or VWAP stretch outside short-premium range',
+        ...(range.code !== undefined ? { pauseCode: range.code } : {}),
         ...(candidate !== undefined ? { runnerCandidateLotId: candidate } : {}),
       };
     }
@@ -396,32 +414,63 @@ export class OpMinusEngine {
     return markPaise - entryPaise >= entryPaise * (this.params.combinedStopPremiumPct / 100);
   }
 
-  private rangeReady(input: OpMinusInput): boolean {
-    if (!this.params.rangeFilterEnabled) return true;
+  /**
+   * Range-regime gate. Returns a specific, stable code plus a measured-value
+   * detail for the first check that blocks, so the runtime can journal *why*
+   * the desk paused (genuine trend vs an unwarmed input vs VWAP stretch)
+   * instead of one opaque line. Optional gates treat a missing warmed-up input
+   * as NOT range-bound: selling premium on an unmeasured regime is the mistake,
+   * not the miss.
+   */
+  private rangeGate(input: OpMinusInput): RangeGateResult {
+    if (!this.params.rangeFilterEnabled) return { ready: true };
+    const pct = (v: number): string => `${(v * 100).toFixed(2)}%`;
     const spot = input.spotPaise;
     const features = input.underlying;
     const vwap = features?.vwapPaise;
     const ret30 = features?.ret30s;
-    if (spot === undefined || spot <= 0 || vwap === undefined || vwap <= 0 || ret30 === undefined) return false;
-    if (Math.abs(ret30) > this.params.maxAbsRet30Pct) return false;
+    if (spot === undefined || spot <= 0 || vwap === undefined || vwap <= 0 || ret30 === undefined) {
+      return { ready: false, code: 'FEATURES_WARMUP', detail: 'underlying features not ready (spot/VWAP/ret30)' };
+    }
+    if (Math.abs(ret30) > this.params.maxAbsRet30Pct) {
+      return { ready: false, code: 'RET30', detail: `30s move ${pct(Math.abs(ret30))} > ${pct(this.params.maxAbsRet30Pct)}` };
+    }
     const stretchPaise = Math.abs(spot - vwap);
-    if (stretchPaise / vwap > this.params.maxVwapDistancePct) return false;
-    // Optional gates below treat a missing warmed-up input as NOT range-bound:
-    // selling premium on an unmeasured regime is the mistake, not the miss.
+    if (stretchPaise / vwap > this.params.maxVwapDistancePct) {
+      return { ready: false, code: 'VWAP', detail: `VWAP stretch ${pct(stretchPaise / vwap)} > ${pct(this.params.maxVwapDistancePct)}` };
+    }
     if (this.params.maxVwapDistanceAtrMult > 0) {
       const atr = features?.atr1mPaise;
-      if (atr === undefined || atr <= 0) return false;
-      if (stretchPaise > this.params.maxVwapDistanceAtrMult * atr) return false;
+      if (atr === undefined || atr <= 0) {
+        return { ready: false, code: 'ATR_WARMUP', detail: 'ATR(1m,14) warming up' };
+      }
+      if (stretchPaise > this.params.maxVwapDistanceAtrMult * atr) {
+        return {
+          ready: false,
+          code: 'VWAP_ATR',
+          detail: `VWAP stretch ${(stretchPaise / 100).toFixed(0)}p > ${this.params.maxVwapDistanceAtrMult}x ATR(${(atr / 100).toFixed(0)}p)`,
+        };
+      }
     }
     if (this.params.maxAdx > 0) {
       const adx = features?.adx1m;
-      if (adx === undefined || adx > this.params.maxAdx) return false;
+      if (adx === undefined) {
+        return { ready: false, code: 'ADX_WARMUP', detail: 'ADX(1m,14) warming up (~29 bars)' };
+      }
+      if (adx > this.params.maxAdx) {
+        return { ready: false, code: 'ADX', detail: `ADX ${adx.toFixed(1)} > ${this.params.maxAdx} (trending)` };
+      }
     }
     if (this.params.maxStraddleRisePct > 0) {
       const drift = input.straddleDriftPct;
-      if (drift === undefined || drift > this.params.maxStraddleRisePct) return false;
+      if (drift === undefined) {
+        return { ready: false, code: 'STRADDLE_WARMUP', detail: `straddle window warming up (${this.params.straddleTrendWindowSec}s)` };
+      }
+      if (drift > this.params.maxStraddleRisePct) {
+        return { ready: false, code: 'STRADDLE', detail: `straddle mid +${pct(drift)} > +${pct(this.params.maxStraddleRisePct)} (IV rising)` };
+      }
     }
-    return true;
+    return { ready: true };
   }
 
   private forceAllShortsClosed(input: OpMinusInput): OpMinusDesiredOrder[] {

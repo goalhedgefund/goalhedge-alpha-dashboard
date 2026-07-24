@@ -6,6 +6,7 @@ import { IdFactory, makeInstrumentId, makeSessionId } from '../src/domain/ids.js
 import type { OptionChainRow } from '../src/domain/marketdata.js';
 import type { Fill, Order, OrderIntent } from '../src/domain/orders.js';
 import { OpMinusEngine, type OpMinusInput } from '../src/mm/op-minus-engine.js';
+import type { UnderlyingFeatures } from '../src/marketdata/features/library.js';
 import { PositionKeeper } from '../src/oms/position-keeper.js';
 import { RiskGate } from '../src/risk/risk-gate.js';
 
@@ -167,6 +168,56 @@ describe('OP(-) naked short engine', () => {
     const noDrift = baseInput({ spotPaise: 2_500_500, underlying: underlying(10) });
     expect(engine.evaluate(noDrift).phase).toBe('PAUSED_REGIME'); // drift window still filling
     expect(engine.evaluate(calm({ straddleDriftPct: -0.05 })).phase).toBe('SCALPING'); // falling IV is fine
+  });
+
+  it('reports the specific range-gate code and detail that blocked entries', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      rangeFilterEnabled: true,
+      maxAbsRet30Pct: 0.001,
+      maxVwapDistancePct: 0.0015,
+      maxVwapDistanceAtrMult: 1.5,
+      maxAdx: 18,
+      maxStraddleRisePct: 0.02,
+      straddleTrendWindowSec: 180,
+    });
+    // adx1m: 'omit' drops the field entirely (exactOptionalPropertyTypes bars an
+    // explicit undefined) to exercise the ADX warm-up branch.
+    const underlying = (over: { ret30s?: number; atr1mPaise?: number; adx1m?: number | 'omit' } = {}): UnderlyingFeatures => ({
+      ret1s: 0, ret5s: 0, ret30s: over.ret30s ?? 0, vwapPaise: 2_500_000,
+      atr1mPaise: over.atr1mPaise ?? 1_000, tickVelocityPerSec: 1, volumeBurstRatio: 1,
+      codexScore: { bull: 0, bear: 0, signal: 'WAIT', trend: 'flat', indicators: { last: 2_500_000 } },
+      ...(over.adx1m === 'omit' ? {} : { adx1m: over.adx1m ?? 10 }),
+    });
+    // Baseline calm input that clears every gate: spot at VWAP, flat, low ADX.
+    const calm = (over: Partial<OpMinusInput> = {}): OpMinusInput =>
+      baseInput({ spotPaise: 2_500_000, straddleDriftPct: 0, underlying: underlying(), ...over });
+
+    const codeOf = (input: OpMinusInput) => {
+      const e = engine.evaluate(input);
+      return { phase: e.phase, code: e.pauseCode, detail: e.pauseReason };
+    };
+
+    // No underlying features at all -> FEATURES_WARMUP.
+    expect(codeOf(baseInput({ straddleDriftPct: 0 })).code).toBe('FEATURES_WARMUP');
+    // ret30 too hot.
+    expect(codeOf(calm({ underlying: underlying({ ret30s: 0.02 }) })).code).toBe('RET30');
+    // Spot stretched from VWAP beyond the fixed % cap.
+    expect(codeOf(calm({ spotPaise: 2_510_000 })).code).toBe('VWAP');
+    // ATR not warmed up.
+    expect(codeOf(calm({ underlying: underlying({ atr1mPaise: 0 }) })).code).toBe('ATR_WARMUP');
+    // ADX warm-up (field absent) vs trending (too high) are distinct codes.
+    expect(codeOf(calm({ underlying: underlying({ adx1m: 'omit' }) })).code).toBe('ADX_WARMUP');
+    expect(codeOf(calm({ underlying: underlying({ adx1m: 30 }) })).code).toBe('ADX');
+    // Straddle window still filling (undefined) vs rising IV are distinct.
+    const noDrift = baseInput({ spotPaise: 2_500_000, underlying: underlying() });
+    expect(codeOf(noDrift).code).toBe('STRADDLE_WARMUP');
+    const straddleUp = codeOf(calm({ straddleDriftPct: 0.05 }));
+    expect(straddleUp.code).toBe('STRADDLE');
+    expect(straddleUp.detail).toContain('IV rising');
+    // All gates clear -> no pause.
+    expect(codeOf(calm()).phase).toBe('SCALPING');
+    expect(codeOf(calm()).code).toBeUndefined();
   });
 
   it('trips the combined pair stop when both rights bleed without either leg stop firing', () => {
