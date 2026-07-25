@@ -1,6 +1,6 @@
 {
   "strategyId": "allop-atm-mm",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "enabled": true,
   "params": {
     "spreadCostMultiple": 4,
@@ -25,9 +25,9 @@
     "deltaSkewLots": 3,
     "knifePct": 0.35,
     "knifeCooldownMin": 10,
-    "trendPct": 0.15,
-    "trendResumePct": 0.08,
-    "directionalOnly": true,
+    "trendPct": 0.10,
+    "trendResumePct": 0.05,
+    "directionalOnly": false,
     "lossStreakEscalation": 2,
     "escalatedCooldownSec": 900,
     "minDaysToExpiry": 1,

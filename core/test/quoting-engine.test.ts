@@ -619,16 +619,20 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.5 production directional long-option policy', () => {
-  it('is frozen at one global lot, with the runner disabled and neutral entries suppressed', () => {
-    expect(strategy.version).toBe('0.5.0');
+describe('v0.6 production long-option market-maker policy', () => {
+  it('is frozen at one global lot, runner disabled, quoting both sides in neutral with against-trend suppression', () => {
+    expect(strategy.version).toBe('0.6.0');
     expect(strategy.params).toEqual(expect.objectContaining({
       maxLotsInventory: 1,
       maxScalpLots: 1,
       maxLotsPerSide: 1,
       runnerLots: 0,
       ladderLevels: 1,
-      directionalOnly: true,
+      // v0.6: neutral (chop) is the desk's edge — quote both sides there and rely on
+      // the TREND defence to drop only the against-trend right during real trends.
+      directionalOnly: false,
+      trendPct: 0.1,
+      trendResumePct: 0.05,
       minRequoteMs: 5_000,
     }));
   });
