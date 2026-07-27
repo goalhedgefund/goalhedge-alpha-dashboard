@@ -10,6 +10,8 @@
     "lots": 1,
     "ttlMs": 1500,
     "tickSizePaise": 5,
+    "adxTrendMax": 25,
+    "bandAtrMult": 0,
     "timeStopSec": 150,
     "hardStopPremiumPct": 20,
     "breakevenAtPct": 10,

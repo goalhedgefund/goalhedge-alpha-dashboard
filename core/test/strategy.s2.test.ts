@@ -102,4 +102,42 @@ describe('S2 vwap fade', () => {
     );
     expect(d).toMatchObject({ kind: 'NONE', reason: 'NO_STRETCH' });
   });
+
+  it('ADX slow-trend gate refuses to fade a persistent grind (ret30s below fast-trend cutoff)', () => {
+    const spot = Math.round(VWAP * 1.002); // +0.2% stretch, valid fade setup
+    // ret30s = 0.002 < bigTrendPct(0.004) → passes the fast-trend guard.
+    const feats = { vwapPaise: VWAP, ret1s: -0.0003, ret5s: 0.001, ret30s: 0.002 };
+
+    // ADX above the cutoff → trending regime → blocked with detail 'adx'.
+    const blocked = new S2VwapFade().decide(
+      mkView({ params: { ...PARAMS, adxTrendMax: 25 }, spotPaise: spot, features: mkFeatures({ ...feats, adx1m: 32 }) }),
+    );
+    expect(blocked).toMatchObject({ kind: 'NONE', reason: 'TRENDING', detail: 'adx' });
+
+    // ADX below cutoff → range-bound → fade allowed.
+    const allowed = new S2VwapFade().decide(
+      mkView({ params: { ...PARAMS, adxTrendMax: 25 }, spotPaise: spot, features: mkFeatures({ ...feats, adx1m: 18 }) }),
+    );
+    expect(allowed.kind).toBe('ENTRY');
+
+    // ADX warming up (undefined) must not gate.
+    const warmup = new S2VwapFade().decide(
+      mkView({ params: { ...PARAMS, adxTrendMax: 25 }, spotPaise: spot, features: mkFeatures(feats) }),
+    );
+    expect(warmup.kind).toBe('ENTRY');
+  });
+
+  it('volatility-scaled band widens the entry threshold with realized vol', () => {
+    const spot = Math.round(VWAP * 1.002); // +0.2% stretch
+    const feats = { vwapPaise: VWAP, ret1s: -0.0003, ret5s: 0.001, ret30s: 0.002, atr1mPaise: 1_500 };
+
+    // Fixed band (bandAtrMult 0): 0.2% clears the 0.15% floor → fires.
+    expect(new S2VwapFade().decide(mkView({ params: PARAMS, spotPaise: spot, features: mkFeatures(feats) })).kind).toBe('ENTRY');
+
+    // Vol-scaled: threshold = 5 × 1500 / 2,450,000 = 0.306% > 0.2% → below band.
+    const d = new S2VwapFade().decide(
+      mkView({ params: { ...PARAMS, bandAtrMult: 5 }, spotPaise: spot, features: mkFeatures(feats) }),
+    );
+    expect(d).toMatchObject({ kind: 'NONE', reason: 'NO_STRETCH' });
+  });
 });

@@ -35,16 +35,35 @@ export class S2VwapFade implements IStrategy {
     }
 
     const stretch = (spot - f.vwapPaise) / f.vwapPaise;
-    const stretchPct = numParam(p, 'stretchPct', 0.0015);
     const bigTrendPct = numParam(p, 'bigTrendPct', 0.004);
 
+    // Fast-trend guard (legacy): don't fade a sharp 30s move.
     if (f.ret30s !== undefined && Math.abs(f.ret30s) > bigTrendPct) {
       this.confirmCount = 0;
-      return none('TRENDING');
+      return none('TRENDING', 'ret30');
+    }
+
+    // Slow-grind trend guard: ADX-14 on 1m bars catches persistent one-way
+    // drift that a 30s return misses — the classic fade-into-a-trend loss.
+    // Opt-in via adxTrendMax (0 disables); undefined ADX (warm-up) does not gate.
+    const adxTrendMax = numParam(p, 'adxTrendMax', 0);
+    if (adxTrendMax > 0 && f.adx1m !== undefined && f.adx1m > adxTrendMax) {
+      this.confirmCount = 0;
+      return none('TRENDING', 'adx');
+    }
+
+    // Entry band: a fixed stretchPct floor, optionally widened by realized vol
+    // (VWAP ± k·ATR — a volatility-scaled band). bandAtrMult=0 keeps the fixed
+    // band; when set, quiet days stay selective and volatile days demand more.
+    const stretchPct = numParam(p, 'stretchPct', 0.0015);
+    const bandAtrMult = numParam(p, 'bandAtrMult', 0);
+    let threshold = stretchPct;
+    if (bandAtrMult > 0 && f.atr1mPaise !== undefined && f.atr1mPaise > 0) {
+      threshold = Math.max(stretchPct, (bandAtrMult * f.atr1mPaise) / f.vwapPaise);
     }
 
     const dir: 'CE' | 'PE' | undefined =
-      stretch >= stretchPct ? 'PE' : stretch <= -stretchPct ? 'CE' : undefined;
+      stretch >= threshold ? 'PE' : stretch <= -threshold ? 'CE' : undefined;
     if (dir === undefined) {
       this.confirmCount = 0;
       this.lastDir = undefined;
