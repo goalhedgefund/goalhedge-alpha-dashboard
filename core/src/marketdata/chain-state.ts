@@ -68,6 +68,21 @@ export class OptionChainState {
     }
   }
 
+  /** Register a previously unknown instrument so its ticks are accepted. No-op if already known. */
+  addInstrument(instr: Instrument): void {
+    if (instr.kind !== 'OPTION') return;
+    if (instr.strikePaise === undefined || instr.right === undefined || instr.expiry === undefined) return;
+    if (this.metaByInstrument.has(instr.id)) return;
+    const meta: OptionMeta = {
+      instrumentId: instr.id,
+      strikePaise: instr.strikePaise,
+      right: instr.right,
+      expiry: instr.expiry,
+    };
+    this.metaByInstrument.set(instr.id, meta);
+    this.rows.set(instr.id, emptyRow(meta));
+  }
+
   updateSpot(spotPaise: number): ReturnType<AtmTracker['update']> {
     return this.atm.update(spotPaise);
   }

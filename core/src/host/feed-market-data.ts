@@ -48,7 +48,7 @@ export type TickKind = 'spot' | 'option' | 'unknown' | 'stale';
 export class FeedMarketData implements MarketViewProvider {
   readonly spotInstrumentId: InstrumentId;
   private readonly chain: OptionChainState;
-  private readonly optionIds: ReadonlySet<InstrumentId>;
+  private readonly optionIds: Set<InstrumentId>;
   private readonly byStrikeRight = new Map<string, InstrumentId>();
   private readonly strikes: number[];
   private readonly ringSize: number;
@@ -100,6 +100,38 @@ export class FeedMarketData implements MarketViewProvider {
       this.optionTicks.set(o.instrumentId, []);
     }
     this.strikes = [...new Set(opts.options.map((o) => o.strikePaise))].sort((a, b) => a - b);
+  }
+
+  /**
+   * Register additional option instruments so their ticks are accepted and routed
+   * into the chain. Called after preflight when the live spot reveals the initial
+   * strike estimate was off. Already-known instruments are silently skipped.
+   * Returns the set of newly added specs (caller subscribes them to the feed).
+   */
+  addOptions(options: OptionSpec[]): OptionSpec[] {
+    const added: OptionSpec[] = [];
+    for (const o of options) {
+      if (this.optionIds.has(o.instrumentId)) continue;
+      const instr: Instrument = {
+        id: o.instrumentId,
+        kind: 'OPTION',
+        symbol: String(o.instrumentId),
+        underlying: 'NIFTY',
+        exchange: 'NSE',
+        segment: 'NSE_FNO',
+        lotSize: 1,
+        tickSizePaise: 5,
+        expiry: o.expiry,
+        strikePaise: o.strikePaise,
+        right: o.right,
+      };
+      this.chain.addInstrument(instr);
+      this.optionIds.add(o.instrumentId);
+      this.byStrikeRight.set(key(o.strikePaise, o.right), o.instrumentId);
+      this.optionTicks.set(o.instrumentId, []);
+      added.push(o);
+    }
+    return added;
   }
 
   classify(tick: Tick): TickKind {

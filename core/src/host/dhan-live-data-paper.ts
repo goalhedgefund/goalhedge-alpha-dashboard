@@ -47,6 +47,8 @@ interface DhanLiveDataPaperBuild {
   selectedStrikes: number[];
   initialSpotPaise: number;
   disabledStrategyConfig: boolean;
+  /** Recentre the option subscription band on the actual live spot after preflight. */
+  recentreSubscriptions: () => void;
 }
 
 const IST_OFFSET_MS = 330 * 60_000;
@@ -430,6 +432,30 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     selectedStrikes,
     initialSpotPaise,
     disabledStrategyConfig: !strategyCfg.value.enabled,
+    recentreSubscriptions: (): void => {
+      // After the first live spot tick arrives, the ATM may differ from the
+      // static median used at build time. Resubscribe any strikes that fall
+      // in the live ATM band but weren't in the original subscription set.
+      const liveSpot = marketData.spotPaise();
+      if (liveSpot === undefined || liveSpot <= 0) return;
+      const liveStrikes = getChainStrikes(weekly.chain, liveSpot, env.chainDepth);
+      const { options: liveOptions, subscriptions: liveSubs } = buildOptionSpecs(
+        weekly,
+        liveStrikes,
+        env.optionExchangeSegment,
+      );
+      const added = marketData.addOptions(liveOptions);
+      if (added.length === 0) return;
+      const newSubs = liveSubs.filter((s) =>
+        added.some((o) => o.instrumentId === s.instrumentId),
+      );
+      feed.subscribe(newSubs);
+      console.log(
+        `[scalper] recentred option chain on live spot ${formatPaise(liveSpot)}: ` +
+        `added ${added.length} instruments (${newSubs.length} new subscriptions), ` +
+        `strikes ${liveStrikes.map(formatPaise).join(', ')}`,
+      );
+    },
   };
 }
 
@@ -477,6 +503,12 @@ async function main(): Promise<void> {
   const gotInitialSpot = await startFeedForPreflight(build, env.feedStaleMs);
   if (gotInitialSpot) {
     console.log('[scalper] received first live spot tick for preflight');
+    // Recentre the option subscription on the actual live spot. If the static
+    // estimate (scrip-master median) was off by ≥1 strike step the Dhan feed
+    // may not stream the originally-subscribed contracts — they would be too
+    // far OTM to carry activity. This adds any missing near-ATM instruments
+    // and sends the supplementary subscription before the session opens.
+    build.recentreSubscriptions();
   } else {
     console.log(`[scalper] no live spot tick within ${env.feedStaleMs}ms; preflight should block ARM until the feed recovers`);
   }
