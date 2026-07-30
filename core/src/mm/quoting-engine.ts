@@ -15,6 +15,8 @@ import { numParam, type StrategyParams } from '../strategy/types.js';
  */
 export interface MmParams {
   spreadCostMultiple: number;
+  /** Per-lot profit target, expressed as a multiple of round-trip costs. */
+  takeProfitCostMultiple: number;
   maxLotsInventory: number;
   maxScalpLots: number;
   runnerLots: number;
@@ -31,6 +33,12 @@ export interface MmParams {
   hardStopPct: number;
   /** Cancel same-right bids at this per-lot drawdown; do not average down. */
   adverseStopPct: number;
+  /** Cooldown after an entry is rejected by a gate, avoiding retry storms. */
+  entryRejectCooldownSec: number;
+  /** Short option-premium window used to avoid buying into a still-falling touch. */
+  entryMomentumLookbackSec: number;
+  /** Maximum premium drop over the entry momentum window before bids pause. */
+  maxEntryFallPct: number;
   defensiveCooldownSec: number;
   runnerActivationPct: number;
   runnerTrailPct: number;
@@ -72,6 +80,7 @@ export function resolveMmParams(params: StrategyParams): MmParams {
   const maxLotsInventory = Math.floor(boundedParam(params, 'maxLotsInventory', 5, 1, 100));
   return {
     spreadCostMultiple: boundedParam(params, 'spreadCostMultiple', 3, 0.1, 100),
+    takeProfitCostMultiple: boundedParam(params, 'takeProfitCostMultiple', 3, 0.1, 100),
     maxLotsInventory,
     maxScalpLots: Math.min(maxLotsInventory, Math.floor(boundedParam(params, 'maxScalpLots', 4, 1, 100))),
     runnerLots: Math.min(1, Math.floor(boundedParam(params, 'runnerLots', 1, 0, 1))),
@@ -84,6 +93,9 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     maxHoldSec: boundedParam(params, 'maxHoldSec', 180, 1, 86_400),
     hardStopPct: boundedParam(params, 'hardStopPct', 10, 0.1, 99),
     adverseStopPct: boundedParam(params, 'adverseStopPct', 5, 0.1, 99),
+    entryRejectCooldownSec: Math.floor(boundedParam(params, 'entryRejectCooldownSec', 10, 1, 3_600)),
+    entryMomentumLookbackSec: Math.floor(boundedParam(params, 'entryMomentumLookbackSec', 5, 1, 60)),
+    maxEntryFallPct: boundedParam(params, 'maxEntryFallPct', 0.2, 0, 20),
     defensiveCooldownSec: boundedParam(params, 'defensiveCooldownSec', 180, 0, 86_400),
     runnerActivationPct: boundedParam(params, 'runnerActivationPct', 2, 0, 100),
     runnerTrailPct: boundedParam(params, 'runnerTrailPct', 3, 0.1, 99),
@@ -139,6 +151,8 @@ export interface MmQuoteInput {
   runner?: MmActiveRunnerInput;
   pendingRunnerLotId?: string;
   allowRunnerCandidate?: boolean;
+  /** Instruments temporarily ineligible after a rejected entry submission. */
+  entryBlockedInstruments?: ReadonlySet<InstrumentId>;
 }
 
 export type MmDesiredReason =
@@ -202,12 +216,18 @@ interface SpotPoint {
   spotPaise: number;
 }
 
+interface PremiumPoint {
+  ts: number;
+  bidPaise: number;
+}
+
 export class QuotingEngine {
   private params: MmParams;
   private spotHistory: SpotPoint[] = [];
   private knifeUntilMs = 0;
   private trendRegime: MmTrendRegime = 'NEUTRAL';
   private trendDriftPct = 0;
+  private readonly premiumHistory = new Map<InstrumentId, PremiumPoint[]>();
   private readonly cooldownUntil = new Map<OptionRight, number>();
   private readonly lossStreak = new Map<OptionRight, number>();
   private lastDefences: MmDefenceState[] = [];
@@ -293,6 +313,7 @@ export class QuotingEngine {
 
   evaluate(input: MmQuoteInput): MmEvaluation {
     this.trackUnderlying(input);
+    this.trackPremiums(input);
     const p = this.params;
     const tick = this.market.tickSizePaise;
     const lotSize = this.market.contract.lotSize;
@@ -337,10 +358,23 @@ export class QuotingEngine {
       { right: 'PE', ...(input.atmPe !== undefined ? { row: input.atmPe } : {}) },
     ];
 
+    // A one-lot desk must not inherit a CE bias merely from array order. Rank
+    // the two candidates by executable-book quality; exact ties alternate by
+    // minute so a flat book gets equal access to CE and PE over time.
+    if (remainingLots === p.lotsPerOrder) {
+      rights.sort((left, right) => this.compareEntryCandidates(left, right, input));
+    }
+
     for (let level = 0; level < p.ladderLevels; level++) {
       for (const { right, row } of rights) {
         if (remainingLots < p.lotsPerOrder) break;
-        if (skip[right] || heldByRight[right] + plannedByRight[right] >= p.maxLotsPerSide || row === undefined) continue;
+        if (
+          skip[right] ||
+          heldByRight[right] + plannedByRight[right] >= p.maxLotsPerSide ||
+          row === undefined ||
+          input.entryBlockedInstruments?.has(row.instrumentId) === true ||
+          this.entryMomentumFalling(row, input.nowMs)
+        ) continue;
         if (row.bidPaise <= 0 || row.askPaise <= 0) continue;
         const mid = (row.bidPaise + row.askPaise) / 2;
         const minSpread = this.minSpreadPct(mid);
@@ -453,14 +487,10 @@ export class QuotingEngine {
     );
     const lot = normalLots[0];
     if (lot === undefined) return exits;
-    const mark = row.bidPaise > 0 && row.askPaise > 0
-      ? (row.bidPaise + row.askPaise) / 2
-      : row.ltpPaise > 0
-        ? row.ltpPaise
-        : 0;
-    const spread = this.minSpreadPct(lot.entryPricePaise);
-    const floor = lot.entryPricePaise * (1 + spread / 100);
-    const price = ceilTick(Math.max(floor, mark), tick);
+    // Freeze the target when the lot opens. Chasing a rising midpoint turns a
+    // take-profit into a moving target and converts reachable wins into timeouts.
+    const targetPct = this.params.takeProfitCostMultiple * this.roundTripCostPct(lot.entryPricePaise);
+    const price = ceilTick(lot.entryPricePaise * (1 + targetPct / 100), tick);
     if (price <= 0) return exits;
     const reservingRunner = candidateLotId !== undefined && lots.some((x) => x.lotId === candidateLotId);
     exits.push(sellLots(book.instrumentId, [lot], price, reservingRunner ? 'SCALP_EXIT' : 'QUOTE_ASK'));
@@ -617,6 +647,32 @@ export class QuotingEngine {
     }
   }
 
+  private trackPremiums(input: MmQuoteInput): void {
+    const rows = [input.atmCe, input.atmPe];
+    const cutoff = input.nowMs - 60_000;
+    for (const row of rows) {
+      if (row === undefined || row.bidPaise <= 0) continue;
+      const history = this.premiumHistory.get(row.instrumentId) ?? [];
+      const last = history.at(-1);
+      if (last?.ts !== input.nowMs || last.bidPaise !== row.bidPaise) {
+        history.push({ ts: input.nowMs, bidPaise: row.bidPaise });
+      }
+      while (history.length > 0 && history[0]!.ts < cutoff) history.shift();
+      this.premiumHistory.set(row.instrumentId, history);
+    }
+  }
+
+  private entryMomentumFalling(row: OptionChainRow, nowMs: number): boolean {
+    if (this.params.maxEntryFallPct <= 0) return false;
+    const history = this.premiumHistory.get(row.instrumentId);
+    if (history === undefined || history.length < 2) return false;
+    const cutoff = nowMs - this.params.entryMomentumLookbackSec * 1_000;
+    const anchor = history.find((point) => point.ts >= cutoff);
+    if (anchor === undefined || anchor.bidPaise <= 0) return false;
+    const fallPct = ((anchor.bidPaise - row.bidPaise) / anchor.bidPaise) * 100;
+    return fallPct >= this.params.maxEntryFallPct;
+  }
+
   /** The right whose entry bids are suppressed by the current trend regime, if any. */
   private trendSuppressedRight(): OptionRight | undefined {
     if (this.trendRegime === 'UP') return 'PE';
@@ -626,6 +682,28 @@ export class QuotingEngine {
 
   private heldLots(books: readonly MmBookInput[], right: OptionRight, lotSize: number): number {
     return books.filter((book) => book.right === right).reduce((sum, book) => sum + Math.max(0, book.qty), 0) / lotSize;
+  }
+
+  private compareEntryCandidates(
+    left: { right: OptionRight; row?: OptionChainRow },
+    right: { right: OptionRight; row?: OptionChainRow },
+    input: MmQuoteInput,
+  ): number {
+    const score = (candidate: { row?: OptionChainRow }): number => {
+      const row = candidate.row;
+      if (row === undefined || row.bidPaise <= 0 || row.askPaise <= 0) return -Infinity;
+      const mid = (row.bidPaise + row.askPaise) / 2;
+      const spreadPct = (row.askPaise - row.bidPaise) / mid;
+      const depth = row.bidQty + row.askQty;
+      const imbalance = depth > 0 ? (row.bidQty - row.askQty) / depth : 0;
+      // Prefer tighter markets, then bids supported by displayed depth.
+      return imbalance - spreadPct * 10;
+    };
+    const difference = score(right) - score(left);
+    if (Math.abs(difference) > 1e-9) return difference;
+    const ceFirst = Math.floor(input.nowMs / 60_000) % 2 === 0;
+    if (left.right === right.right) return 0;
+    return left.right === (ceFirst ? 'CE' : 'PE') ? -1 : 1;
   }
 
   private representativeSpread(input: MmQuoteInput): number | undefined {

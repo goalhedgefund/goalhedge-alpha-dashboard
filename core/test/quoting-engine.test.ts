@@ -31,6 +31,7 @@ const NOW = Date.UTC(2026, 6, 16, 5, 0, 0); // 10:30 IST
 
 const PARAMS = {
   spreadCostMultiple: 3,
+  takeProfitCostMultiple: 3,
   maxLotsInventory: 5,
   maxScalpLots: 4,
   runnerLots: 1,
@@ -42,6 +43,9 @@ const PARAMS = {
   maxHoldSec: 180,
   hardStopPct: 10,
   adverseStopPct: 5,
+  entryRejectCooldownSec: 10,
+  entryMomentumLookbackSec: 5,
+  maxEntryFallPct: 0.2,
   defensiveProtectTicks: 10,
   defensiveCooldownSec: 180,
   runnerActivationPct: 2,
@@ -127,13 +131,17 @@ describe('spread rule (R4: quoted spread = 3x statutory cost)', () => {
     expect(ask!.limitPricePaise! % TICK).toBe(0);
   });
 
-  it('ask lifts to mid when the market trades above the cost floor', () => {
+  it('keeps a profitable lot target fixed instead of chasing a rising midpoint', () => {
     const e = engine();
     const hot = row(CE_ID, 'CE', 19_990, 20_010);
     const b = book('CE', 1, 15_000, NOW - 60_000, hot);
     const out = e.evaluate(baseInput({ books: [b] }));
     const ask = out.desired.find((d) => d.reason === 'QUOTE_ASK');
-    expect(ask!.limitPricePaise!).toBeGreaterThanOrEqual(20_000);
+    const target = Math.ceil(
+      (15_000 * (1 + e.activeParams().takeProfitCostMultiple * e.roundTripCostPct(15_000) / 100)) / TICK,
+    ) * TICK;
+    expect(ask!.limitPricePaise).toBe(target);
+    expect(ask!.limitPricePaise!).toBeLessThan(20_000);
   });
 });
 
@@ -159,6 +167,22 @@ describe('bids', () => {
     const out = engine().evaluate(baseInput({ atmCe: row(CE_ID, 'CE', 0, 15_010) }));
     expect(out.desired.filter((d) => d.side === 'BUY' && d.instrumentId === CE_ID)).toHaveLength(0);
     expect(out.desired.filter((d) => d.side === 'BUY' && d.instrumentId === PE_ID).length).toBeGreaterThan(0);
+  });
+
+  it('pauses only the option side still falling over the short premium window', () => {
+    const e = engine({ maxEntryFallPct: 0.2, entryMomentumLookbackSec: 5 });
+    e.evaluate(baseInput({
+      nowMs: NOW,
+      atmCe: row(CE_ID, 'CE', 15_000, 15_020),
+      atmPe: row(PE_ID, 'PE', 15_000, 15_020),
+    }));
+    const out = e.evaluate(baseInput({
+      nowMs: NOW + 1_000,
+      atmCe: row(CE_ID, 'CE', 14_950, 14_970),
+      atmPe: row(PE_ID, 'PE', 15_000, 15_020),
+    }));
+    expect(out.desired.filter((order) => order.side === 'BUY' && order.instrumentId === CE_ID)).toHaveLength(0);
+    expect(out.desired.filter((order) => order.side === 'BUY' && order.instrumentId === PE_ID)).toHaveLength(2);
   });
 
   it('re-centres onto new ATM instruments while old-strike inventory keeps its ask', () => {
@@ -619,9 +643,9 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.6 production long-option market-maker policy', () => {
-  it('is frozen at one global lot, runner disabled, quoting both sides in neutral with against-trend suppression', () => {
-    expect(strategy.version).toBe('0.6.0');
+describe('v0.7 production long-option market-maker policy', () => {
+  it('is frozen at one global lot, runner disabled, and uses shorter loss/age limits', () => {
+    expect(strategy.version).toBe('0.7.0');
     expect(strategy.params).toEqual(expect.objectContaining({
       maxLotsInventory: 1,
       maxScalpLots: 1,
@@ -634,6 +658,12 @@ describe('v0.6 production long-option market-maker policy', () => {
       trendPct: 0.1,
       trendResumePct: 0.05,
       minRequoteMs: 5_000,
+      takeProfitCostMultiple: 2.5,
+      maxHoldSec: 60,
+      hardStopPct: 2.5,
+      entryRejectCooldownSec: 15,
+      entryMomentumLookbackSec: 5,
+      maxEntryFallPct: 0.2,
     }));
   });
 
@@ -663,6 +693,26 @@ describe('v0.6 production long-option market-maker policy', () => {
       .desired.filter((order) => order.side === 'BUY');
     expect(bids).toHaveLength(1);
     expect(bids[0]?.instrumentId).toBe(PE_ID);
+  });
+
+  it('selects the stronger PE rather than defaulting to CE in a one-lot neutral book', () => {
+    const e = engine({ maxLotsInventory: 1, maxScalpLots: 1, maxLotsPerSide: 1, ladderLevels: 1 });
+    const out = e.evaluate(baseInput({
+      atmCe: row(CE_ID, 'CE', 14_900, 15_100),
+      atmPe: { ...row(PE_ID, 'PE', 14_990, 15_010), bidQty: 2_000, askQty: 100 },
+    }));
+    const bid = out.desired.find((order) => order.side === 'BUY');
+    expect(bid?.instrumentId).toBe(PE_ID);
+  });
+
+  it('falls back to the other right when the preferred entry is cooling down after a gate rejection', () => {
+    const e = engine({ maxLotsInventory: 1, maxScalpLots: 1, maxLotsPerSide: 1, ladderLevels: 1 });
+    const out = e.evaluate(baseInput({
+      atmCe: { ...row(CE_ID, 'CE', 14_990, 15_010), bidQty: 2_000, askQty: 100 },
+      entryBlockedInstruments: new Set([CE_ID]),
+    }));
+    const bid = out.desired.find((order) => order.side === 'BUY');
+    expect(bid?.instrumentId).toBe(PE_ID);
   });
 });
 

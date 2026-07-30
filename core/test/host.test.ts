@@ -12,7 +12,7 @@ import type { Position } from '../src/domain/positions.js';
 import { ManualClock } from '../src/domain/time.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
 import { FeedMarketData } from '../src/host/feed-market-data.js';
-import { PaperHost, type PaperHostOptions } from '../src/host/paper-host.js';
+import { PaperHost, type HostRunner, type PaperHostOptions } from '../src/host/paper-host.js';
 import { Recorder } from '../src/feed/recorder.js';
 import { ReplayFeed } from '../src/feed/replay.js';
 import { S1MomentumBurst } from '../src/strategy/strategies/s1-momentum-burst.js';
@@ -113,6 +113,40 @@ async function runFullSession(dir: string): Promise<{ host: PaperHost; paper: Pa
 }
 
 describe('PaperHost — end-to-end paper session (M10 §3)', () => {
+  it('uses receive time, not a future exchange timestamp, for runner lifecycle clocks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-receive-clock-'));
+    const clock = new ManualClock(START_10AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+    marketData.ingest(spotTick(START_10AM_IST, ATM, 100));
+    const observed: number[] = [];
+    const runner: HostRunner = {
+      arm: () => undefined,
+      disarm: () => undefined,
+      setParams: () => undefined,
+      state: () => 'DISARMED',
+      lastNoTrade: () => undefined,
+      activeParamsSnapshot: () => ({}),
+      onUnderlyingTick: async (nowMs) => { observed.push(nowMs); },
+      onOptionTick: async (_instrumentId, _ltpPaise, nowMs) => { observed.push(nowMs); },
+      onTimer: async () => undefined,
+      onTrade: () => undefined,
+    };
+    const host = buildHost(dir, clock, marketData, paper, {
+      autoArm: false,
+      runnerFactory: () => runner,
+    });
+    await host.start();
+
+    const exchangeAheadMs = 8_000;
+    await host.ingestTick({
+      ...optionTick(CE_ID, START_10AM_IST + exchangeAheadMs, 14_990, 15_000, 15_000),
+      recvTs: START_10AM_IST,
+    });
+    expect(observed).toEqual([START_10AM_IST]);
+    await host.close();
+  });
+
   it('auto-arms once the session reaches OPEN even if the host started pre-market', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-autoarm-'));
     const clock = new ManualClock(START_08AM_IST);

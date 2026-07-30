@@ -74,6 +74,9 @@ export class MmRunner {
   // exit being emitted for the same lot before the first fill is processed by
   // the position-keeper (async fill-processing race).
   private readonly reservedLotIds = new Set<string>();
+  // Gate rejections are deterministic until price or risk state changes. Keep
+  // them off the desired set briefly instead of submitting on every tick.
+  private readonly entryBlockedUntil = new Map<InstrumentId, number>();
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -379,7 +382,11 @@ export class MmRunner {
     const verdict = this.opts.gate.evaluate(intent, this.gateContext(nowMs));
     this.journal('risk.verdict', { verdict });
     if (!verdict.approved) {
-      if (order.side === 'BUY') this.noTrade(`GATE_${verdict.reason ?? 'REJECTED'}`);
+      if (order.side === 'BUY') {
+        const cooldownMs = this.engine.activeParams().entryRejectCooldownSec * 1_000;
+        this.entryBlockedUntil.set(order.instrumentId, nowMs + cooldownMs);
+        this.noTrade(`GATE_${verdict.reason ?? 'REJECTED'}`);
+      }
       return;
     }
     const result = await this.opts.oms.submit(intent, verdict);
@@ -436,6 +443,11 @@ export class MmRunner {
 
     const spot = view.spotPaise();
     const latchedStop = this.opts.sessionRisk.current().latchedStop !== undefined;
+    const entryBlockedInstruments = new Set<InstrumentId>();
+    for (const [instrumentId, untilMs] of this.entryBlockedUntil) {
+      if (untilMs > nowMs) entryBlockedInstruments.add(instrumentId);
+      else this.entryBlockedUntil.delete(instrumentId);
+    }
     return {
       nowMs,
       nowHHMM: formatHHMMIst(nowMs),
@@ -445,6 +457,7 @@ export class MmRunner {
       books,
       latchedStop,
       allowRunnerCandidate: !latchedStop && this.opts.journalHealthy?.() !== false,
+      ...(entryBlockedInstruments.size > 0 ? { entryBlockedInstruments } : {}),
       ...(this.activeRunner !== undefined ? { runner: this.activeRunner } : {}),
       ...(this.pendingRunnerLotId !== undefined ? { pendingRunnerLotId: this.pendingRunnerLotId } : {}),
     };

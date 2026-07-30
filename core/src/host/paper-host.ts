@@ -292,13 +292,16 @@ export class PaperHost {
       if (this.isHeld(tick.instrumentId)) this.sink('md.tick', { tick });
     }
 
+    // Market-data timestamps remain in FeedMarketData for bars and signals.
+    // Order TTLs, holding age, cooldowns, and escalation must use arrival time:
+    // exchange timestamps can lead the local clock and shorten a live hold.
     if (kind === 'spot') {
-      await this.runner.onUnderlyingTick(tick.ts);
+      await this.runner.onUnderlyingTick(observedTs);
     } else if (kind === 'option') {
-      await this.runner.onOptionTick(tick.instrumentId, tick.ltpPaise, tick.ts);
+      await this.runner.onOptionTick(tick.instrumentId, tick.ltpPaise, observedTs);
     }
 
-    this.maybeReconcile(tick.ts);
+    this.maybeReconcile(observedTs);
   }
 
   /** Timer cadence: time-stops / escalation ladder + reconcile cadence. */

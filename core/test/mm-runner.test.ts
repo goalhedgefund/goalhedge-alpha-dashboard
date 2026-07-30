@@ -225,6 +225,32 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     expect(verdicts).toHaveLength(4);
   });
 
+  it('backs off a risk-rejected preferred entry and tries the other right', async () => {
+    r = rig(riskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      hardStopPct: 5,
+      entryRejectCooldownSec: 15,
+    });
+    r.view.setRow({ ...row(CE_ID, 'CE', 15_990, 16_010, T0), bidQty: 2_000, askQty: 100 });
+    r.view.setRow(row(PE_ID, 'PE', 9_990, 10_010, T0));
+    r.paper.setQuote(CE_ID, { bidPaise: 15_990, askPaise: 16_010, ltpPaise: 16_000 });
+    r.paper.setQuote(PE_ID, { bidPaise: 9_990, askPaise: 10_010, ltpPaise: 10_000 });
+
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    expect(r.events.filter((event) => event.type === 'risk.verdict').at(-1)).toMatchObject({
+      payload: { verdict: { approved: false, reason: 'PER_TRADE_RISK' } },
+    });
+
+    await r.runner.onTimer(T0 + 1_000);
+    const entry = working(r).find((order) => order.side === 'BUY');
+    expect(entry?.instrumentId).toBe(PE_ID);
+  });
+
   it('re-quotes when mid drifts beyond tolerance (cancel first, replace next pass)', async () => {
     r.runner.arm();
     await r.runner.onTimer(T0);
