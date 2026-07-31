@@ -39,7 +39,17 @@ export interface MmParams {
   entryMomentumLookbackSec: number;
   /** Maximum premium drop over the entry momentum window before bids pause. */
   maxEntryFallPct: number;
+  /** Maximum executable L1 spread allowed when opening a passive bid, in percent. */
+  maxEntrySpreadPct: number;
+  /** Minimum displayed L1 bid/ask imbalance required for a new entry. */
+  minEntryImbalance: number;
   defensiveCooldownSec: number;
+  /** Strategy-wide pause after any losing defensive exit. */
+  globalDefensiveCooldownSec: number;
+  /** Defensive exits inside one window that trigger the longer global pause. 0 disables. */
+  globalLossClusterCount: number;
+  globalLossClusterWindowSec: number;
+  globalLossClusterCooldownSec: number;
   runnerActivationPct: number;
   runnerTrailPct: number;
   runnerMaxHoldSec: number;
@@ -96,7 +106,13 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     entryRejectCooldownSec: Math.floor(boundedParam(params, 'entryRejectCooldownSec', 10, 1, 3_600)),
     entryMomentumLookbackSec: Math.floor(boundedParam(params, 'entryMomentumLookbackSec', 5, 1, 60)),
     maxEntryFallPct: boundedParam(params, 'maxEntryFallPct', 0.2, 0, 20),
+    maxEntrySpreadPct: boundedParam(params, 'maxEntrySpreadPct', 100, 0, 100),
+    minEntryImbalance: boundedParam(params, 'minEntryImbalance', -1, -1, 1),
     defensiveCooldownSec: boundedParam(params, 'defensiveCooldownSec', 180, 0, 86_400),
+    globalDefensiveCooldownSec: boundedParam(params, 'globalDefensiveCooldownSec', 0, 0, 86_400),
+    globalLossClusterCount: Math.floor(boundedParam(params, 'globalLossClusterCount', 0, 0, 100)),
+    globalLossClusterWindowSec: boundedParam(params, 'globalLossClusterWindowSec', 1_800, 1, 86_400),
+    globalLossClusterCooldownSec: boundedParam(params, 'globalLossClusterCooldownSec', 1_800, 0, 86_400),
     runnerActivationPct: boundedParam(params, 'runnerActivationPct', 2, 0, 100),
     runnerTrailPct: boundedParam(params, 'runnerTrailPct', 3, 0.1, 99),
     runnerMaxHoldSec: boundedParam(params, 'runnerMaxHoldSec', 900, 1, 86_400),
@@ -176,6 +192,22 @@ export interface MmDesiredOrder {
   reason: MmDesiredReason;
   stopPlan?: StopPlan;
   closeLotIds?: string[];
+  entryFeatures?: MmEntryFeatures;
+}
+
+export interface MmEntryFeatures {
+  spreadPct: number;
+  imbalance: number;
+  bidPaise: number;
+  askPaise: number;
+  bidQty: number;
+  askQty: number;
+  trendDriftPct: number;
+  premiumMove1sPct?: number;
+  premiumMove3sPct?: number;
+  premiumMove5sPct?: number;
+  premiumMove10sPct?: number;
+  premiumMove30sPct?: number;
 }
 
 export type MmQuotePhase =
@@ -185,6 +217,7 @@ export type MmQuotePhase =
   | 'PAUSED_KNIFE'
   | 'PAUSED_LOCKOUT'
   | 'PAUSED_NEUTRAL'
+  | 'PAUSED_ENTRY_QUALITY'
   | 'PAUSED_DEFENCE';
 
 export interface MmDefenceState {
@@ -230,6 +263,10 @@ export class QuotingEngine {
   private readonly premiumHistory = new Map<InstrumentId, PremiumPoint[]>();
   private readonly cooldownUntil = new Map<OptionRight, number>();
   private readonly lossStreak = new Map<OptionRight, number>();
+  private globalDefensiveExitTs: number[] = [];
+  private globalCooldownUntil = 0;
+  private globalCooldownReason: 'DEFENSIVE_EXIT' | 'LOSS_CLUSTER' | undefined;
+  private globalCooldownExitCount = 0;
   private lastDefences: MmDefenceState[] = [];
 
   constructor(
@@ -290,6 +327,21 @@ export class QuotingEngine {
     const escalated = this.params.lossStreakEscalation > 0 && streak >= this.params.lossStreakEscalation;
     const cooldownSec = escalated ? this.params.escalatedCooldownSec : this.params.defensiveCooldownSec;
     this.cooldownUntil.set(right, nowMs + cooldownSec * 1_000);
+
+    this.pruneGlobalDefensiveExits(nowMs);
+    this.globalDefensiveExitTs.push(nowMs);
+    const clustered =
+      this.params.globalLossClusterCount > 0 &&
+      this.globalDefensiveExitTs.length >= this.params.globalLossClusterCount;
+    const globalCooldownSec = clustered
+      ? this.params.globalLossClusterCooldownSec
+      : this.params.globalDefensiveCooldownSec;
+    const untilTs = nowMs + globalCooldownSec * 1_000;
+    if (untilTs >= this.globalCooldownUntil) {
+      this.globalCooldownUntil = untilTs;
+      this.globalCooldownReason = clustered ? 'LOSS_CLUSTER' : 'DEFENSIVE_EXIT';
+      this.globalCooldownExitCount = this.globalDefensiveExitTs.length;
+    }
   }
 
   /** Any positive-net exit on a right breaks that right's consecutive-loss streak. */
@@ -352,6 +404,7 @@ export class QuotingEngine {
     };
     const heldByRight: Record<OptionRight, number> = { CE: ceLots, PE: peLots };
     const plannedByRight: Record<OptionRight, number> = { CE: 0, PE: 0 };
+    const qualityRejects = new Map<OptionRight, { spreadPct: number; imbalance: number }>();
 
     const rights: Array<{ right: OptionRight; row?: OptionChainRow }> = [
       { right: 'CE', ...(input.atmCe !== undefined ? { row: input.atmCe } : {}) },
@@ -376,6 +429,11 @@ export class QuotingEngine {
           this.entryMomentumFalling(row, input.nowMs)
         ) continue;
         if (row.bidPaise <= 0 || row.askPaise <= 0) continue;
+        const quality = this.entryQuality(row);
+        if (!quality.eligible) {
+          qualityRejects.set(right, quality);
+          continue;
+        }
         const mid = (row.bidPaise + row.askPaise) / 2;
         const minSpread = this.minSpreadPct(mid);
         const l1 = mid * (1 - minSpread / 200);
@@ -392,6 +450,7 @@ export class QuotingEngine {
           purpose: 'ENTRY',
           reason: 'QUOTE_BID',
           stopPlan: { hardStopPremiumPaise: hardStop, timeStopSec: p.maxHoldSec },
+          entryFeatures: this.entryFeatures(row, input, quality),
         });
         plannedByRight[right] += p.lotsPerOrder;
         remainingLots -= p.lotsPerOrder;
@@ -412,6 +471,20 @@ export class QuotingEngine {
     if (!hasBid && defences.length > 0) {
       const detail = defences.map((d) => `${d.right}:${d.reason}`).join(',');
       return this.result(desired, 'PAUSED_DEFENCE', defences, input, candidateLotId, detail);
+    }
+    if (!hasBid && qualityRejects.size > 0) {
+      const detail = [...qualityRejects]
+        .map(([right, quality]) =>
+          `${right}: spread ${quality.spreadPct.toFixed(3)}%, imbalance ${quality.imbalance.toFixed(2)}`)
+        .join('; ');
+      return this.result(
+        desired,
+        'PAUSED_ENTRY_QUALITY',
+        defences,
+        input,
+        candidateLotId,
+        `entry quality rejected (${detail})`,
+      );
     }
     return this.result(desired, 'QUOTING', defences, input, candidateLotId);
   }
@@ -601,10 +674,28 @@ export class QuotingEngine {
     if (input.latchedStop) return { phase: 'PAUSED_LOCKOUT', reason: 'session stop latched' };
     if (input.nowHHMM < p.quoteFrom) return { phase: 'PAUSED_WINDOW', reason: `bids start ${p.quoteFrom}` };
     if (input.nowHHMM >= p.bidCutoff) return { phase: 'ASK_ONLY', reason: `bid cutoff ${p.bidCutoff}` };
+    this.pruneGlobalDefensiveExits(input.nowMs);
+    if (input.nowMs < this.globalCooldownUntil) {
+      const remainingSec = Math.ceil((this.globalCooldownUntil - input.nowMs) / 1_000);
+      const reason = this.globalCooldownReason === 'LOSS_CLUSTER'
+        ? `global loss cluster (${this.globalCooldownExitCount} defensive exits); bids resume in ${remainingSec}s`
+        : `global defensive cooldown; bids resume in ${remainingSec}s`;
+      return { phase: 'PAUSED_DEFENCE', reason };
+    }
+    if (this.globalCooldownUntil > 0) {
+      this.globalCooldownUntil = 0;
+      this.globalCooldownReason = undefined;
+      this.globalCooldownExitCount = 0;
+    }
     if (input.nowMs < this.knifeUntilMs) {
       return { phase: 'PAUSED_KNIFE', reason: `falling knife; bids resume ${new Date(this.knifeUntilMs).toISOString()}` };
     }
     return undefined;
+  }
+
+  private pruneGlobalDefensiveExits(nowMs: number): void {
+    const cutoff = nowMs - this.params.globalLossClusterWindowSec * 1_000;
+    this.globalDefensiveExitTs = this.globalDefensiveExitTs.filter((ts) => ts >= cutoff);
   }
 
   /** One rolling 5-min spot window feeds both the knife (absolute) and trend (signed) checks. */
@@ -671,6 +762,67 @@ export class QuotingEngine {
     if (anchor === undefined || anchor.bidPaise <= 0) return false;
     const fallPct = ((anchor.bidPaise - row.bidPaise) / anchor.bidPaise) * 100;
     return fallPct >= this.params.maxEntryFallPct;
+  }
+
+  private premiumMovePct(
+    row: OptionChainRow,
+    nowMs: number,
+    lookbackSec: number,
+    requireFullWindow: boolean,
+  ): number | undefined {
+    const history = this.premiumHistory.get(row.instrumentId);
+    if (history === undefined || history.length < 2) return undefined;
+    const windowMs = lookbackSec * 1_000;
+    const cutoff = nowMs - windowMs;
+    const anchor = history.find((point) => point.ts >= cutoff);
+    if (
+      anchor === undefined ||
+      anchor.bidPaise <= 0 ||
+      (requireFullWindow && nowMs - anchor.ts < windowMs * 0.8)
+    ) {
+      return undefined;
+    }
+    return ((row.bidPaise - anchor.bidPaise) / anchor.bidPaise) * 100;
+  }
+
+  private entryFeatures(
+    row: OptionChainRow,
+    input: MmQuoteInput,
+    quality: { spreadPct: number; imbalance: number },
+  ): MmEntryFeatures {
+    const features: MmEntryFeatures = {
+      spreadPct: quality.spreadPct,
+      imbalance: quality.imbalance,
+      bidPaise: row.bidPaise,
+      askPaise: row.askPaise,
+      bidQty: row.bidQty,
+      askQty: row.askQty,
+      trendDriftPct: this.trendDriftPct,
+    };
+    for (const lookbackSec of [1, 3, 5, 10, 30] as const) {
+      const move = this.premiumMovePct(row, input.nowMs, lookbackSec, true);
+      if (move !== undefined) features[`premiumMove${lookbackSec}sPct`] = move;
+    }
+    return features;
+  }
+
+  private entryQuality(row: OptionChainRow): {
+    eligible: boolean;
+    spreadPct: number;
+    imbalance: number;
+  } {
+    const mid = (row.bidPaise + row.askPaise) / 2;
+    const spreadPct = mid > 0 ? ((row.askPaise - row.bidPaise) / mid) * 100 : Infinity;
+    const depth = row.bidQty + row.askQty;
+    const imbalance = depth > 0 ? (row.bidQty - row.askQty) / depth : -1;
+    return {
+      eligible:
+        depth > 0 &&
+        spreadPct <= this.params.maxEntrySpreadPct &&
+        imbalance >= this.params.minEntryImbalance,
+      spreadPct,
+      imbalance,
+    };
   }
 
   /** The right whose entry bids are suppressed by the current trend regime, if any. */

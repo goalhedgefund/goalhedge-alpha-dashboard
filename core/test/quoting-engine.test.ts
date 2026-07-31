@@ -12,6 +12,7 @@ import {
   type MmBookInput,
   type MmQuoteInput,
 } from '../src/mm/quoting-engine.js';
+import { AllOpAtmMm } from '../src/strategy/strategies/allop-atm-mm.js';
 
 const configDir = new URL('../../config/', import.meta.url);
 const market: MarketProfile = loadConfig(
@@ -167,6 +168,32 @@ describe('bids', () => {
     const out = engine().evaluate(baseInput({ atmCe: row(CE_ID, 'CE', 0, 15_010) }));
     expect(out.desired.filter((d) => d.side === 'BUY' && d.instrumentId === CE_ID)).toHaveLength(0);
     expect(out.desired.filter((d) => d.side === 'BUY' && d.instrumentId === PE_ID).length).toBeGreaterThan(0);
+  });
+
+  it('rejects entries when the executable spread is wider than the entry-quality limit', () => {
+    const e = engine({ maxEntrySpreadPct: 0.26, minEntryImbalance: 0.25 });
+    const wideCe = { ...row(CE_ID, 'CE', 14_950, 15_050), bidQty: 4 * LOT, askQty: LOT };
+    const widePe = { ...row(PE_ID, 'PE', 14_950, 15_050), bidQty: 4 * LOT, askQty: LOT };
+    const out = e.evaluate(baseInput({ atmCe: wideCe, atmPe: widePe }));
+    expect(out.desired.filter((order) => order.side === 'BUY')).toHaveLength(0);
+    expect(out.phase).toBe('PAUSED_ENTRY_QUALITY');
+    expect(out.pauseReason).toContain('entry quality rejected');
+  });
+
+  it('falls back to the right with supportive displayed bid depth', () => {
+    const e = engine({
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      maxEntrySpreadPct: 0.26,
+      minEntryImbalance: 0.25,
+    });
+    const weakCe = { ...row(CE_ID, 'CE', 14_990, 15_010), bidQty: LOT, askQty: LOT };
+    const supportedPe = { ...row(PE_ID, 'PE', 14_990, 15_010), bidQty: 4 * LOT, askQty: LOT };
+    const bid = e.evaluate(baseInput({ atmCe: weakCe, atmPe: supportedPe }))
+      .desired.find((order) => order.side === 'BUY');
+    expect(bid?.instrumentId).toBe(PE_ID);
   });
 
   it('pauses only the option side still falling over the short premium window', () => {
@@ -643,10 +670,13 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.7 production long-option market-maker policy', () => {
-  it('is frozen at one global lot, runner disabled, and uses shorter loss/age limits', () => {
-    expect(strategy.version).toBe('0.7.0');
+describe('v0.8 production long-option market-maker policy', () => {
+  it('is frozen at one deep passive lot with favorable payoff and a session-wide cluster brake', () => {
+    expect(strategy.version).toBe('0.8.0');
+    expect(new AllOpAtmMm().version).toBe(strategy.version);
     expect(strategy.params).toEqual(expect.objectContaining({
+      spreadCostMultiple: 16,
+      takeProfitCostMultiple: 6,
       maxLotsInventory: 1,
       maxScalpLots: 1,
       maxLotsPerSide: 1,
@@ -658,12 +688,18 @@ describe('v0.7 production long-option market-maker policy', () => {
       trendPct: 0.1,
       trendResumePct: 0.05,
       minRequoteMs: 5_000,
-      takeProfitCostMultiple: 2.5,
-      maxHoldSec: 60,
-      hardStopPct: 2.5,
+      maxHoldSec: 30,
+      hardStopPct: 0.5,
       entryRejectCooldownSec: 15,
       entryMomentumLookbackSec: 5,
       maxEntryFallPct: 0.2,
+      maxEntrySpreadPct: 1.5,
+      minEntryImbalance: -1,
+      defensiveCooldownSec: 300,
+      globalDefensiveCooldownSec: 0,
+      globalLossClusterCount: 2,
+      globalLossClusterWindowSec: 1_800,
+      globalLossClusterCooldownSec: 21_600,
     }));
   });
 
@@ -762,5 +798,70 @@ describe('v0.3 escalating same-right loss-streak cooldown', () => {
     const d = out.defences.find((x) => x.right === 'CE');
     expect(d?.reason).toBe('COOLDOWN');
     expect(d?.untilTs).toBe(NOW + 200_000 + 180_000);
+  });
+});
+
+describe('v0.8 strategy-wide defensive cooldown', () => {
+  const GLOBAL_PARAMS = {
+    globalDefensiveCooldownSec: 300,
+    globalLossClusterCount: 2,
+    globalLossClusterWindowSec: 1_800,
+    globalLossClusterCooldownSec: 1_800,
+  };
+
+  it('pauses both CE and PE entries after one losing defensive exit', () => {
+    const e = engine(GLOBAL_PARAMS);
+    e.noteDefensiveExit('CE', NOW);
+    const paused = e.evaluate(baseInput({ nowMs: NOW + 1_000 }));
+    expect(paused.phase).toBe('PAUSED_DEFENCE');
+    expect(paused.pauseReason).toContain('global defensive cooldown');
+    expect(paused.desired.filter((order) => order.side === 'BUY')).toHaveLength(0);
+
+    const resumed = e.evaluate(baseInput({ nowMs: NOW + 301_000 }));
+    expect(resumed.desired.some((order) => order.side === 'BUY')).toBe(true);
+  });
+
+  it('treats alternating CE and PE losses as one cluster and escalates the pause', () => {
+    const e = engine(GLOBAL_PARAMS);
+    e.noteDefensiveExit('CE', NOW);
+    e.noteDefensiveExit('PE', NOW + 301_000);
+    const paused = e.evaluate(baseInput({ nowMs: NOW + 302_000 }));
+    expect(paused.phase).toBe('PAUSED_DEFENCE');
+    expect(paused.pauseReason).toContain('global loss cluster (2 defensive exits)');
+    expect(paused.desired.filter((order) => order.side === 'BUY')).toHaveLength(0);
+
+    const afterWindow = e.evaluate(baseInput({ nowMs: NOW + 2_000_000 }));
+    expect(afterWindow.pauseReason).toContain('global loss cluster (2 defensive exits)');
+
+    const resumed = e.evaluate(baseInput({ nowMs: NOW + 2_102_000 }));
+    expect(resumed.desired.some((order) => order.side === 'BUY')).toBe(true);
+  });
+
+  it('does not let a small positive exit erase the cross-side loss cluster', () => {
+    const e = engine(GLOBAL_PARAMS);
+    e.noteDefensiveExit('CE', NOW);
+    e.notePositiveExit('CE');
+    e.noteDefensiveExit('PE', NOW + 301_000);
+    const paused = e.evaluate(baseInput({ nowMs: NOW + 302_000 }));
+    expect(paused.pauseReason).toContain('global loss cluster (2 defensive exits)');
+  });
+
+  it('matches production: first loss leaves the other right available, second loss stops all bids', () => {
+    const e = engine({
+      globalDefensiveCooldownSec: 0,
+      globalLossClusterCount: 2,
+      globalLossClusterWindowSec: 1_800,
+      globalLossClusterCooldownSec: 21_600,
+    });
+    e.noteDefensiveExit('CE', NOW);
+    const afterFirst = e.evaluate(baseInput({ nowMs: NOW + 1_000 }));
+    expect(afterFirst.desired.some((order) => order.side === 'BUY' && order.instrumentId === PE_ID))
+      .toBe(true);
+
+    e.noteDefensiveExit('PE', NOW + 60_000);
+    const afterSecond = e.evaluate(baseInput({ nowMs: NOW + 61_000 }));
+    expect(afterSecond.phase).toBe('PAUSED_DEFENCE');
+    expect(afterSecond.pauseReason).toContain('global loss cluster (2 defensive exits)');
+    expect(afterSecond.desired.filter((order) => order.side === 'BUY')).toHaveLength(0);
   });
 });

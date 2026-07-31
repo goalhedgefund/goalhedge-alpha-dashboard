@@ -1,6 +1,6 @@
 import type { MarketProfile } from '../config/schemas.js';
 import type { JournalEventType, JournalPayloads } from '../domain/events.js';
-import type { IdFactory, InstrumentId, SessionId } from '../domain/ids.js';
+import type { ClientOrderId, IdFactory, InstrumentId, SessionId } from '../domain/ids.js';
 import type { OptionRight } from '../domain/instrument.js';
 import type { OptionChainRow } from '../domain/marketdata.js';
 import { isTerminalOrderState, type Order, type OrderIntent } from '../domain/orders.js';
@@ -20,6 +20,7 @@ import {
   type MmBookInput,
   type MmDefenceState,
   type MmDesiredOrder,
+  type MmEntryFeatures,
   type MmEvaluation,
   type MmQuoteInput,
   type MmQuotePhase,
@@ -32,6 +33,15 @@ export interface MmQuoteGates {
   minOi: number;
   minVolume: number;
   strikeBand: number;
+}
+
+export interface MmEntryDecision {
+  clientOrderId: ClientOrderId;
+  ts: number;
+  instrumentId: InstrumentId;
+  right: OptionRight;
+  limitPricePaise?: number;
+  features: MmEntryFeatures;
 }
 
 export interface MmRunnerOptions {
@@ -50,6 +60,9 @@ export interface MmRunnerOptions {
   journal?: JournalSink;
   journalHealthy?: () => boolean;
   evalIntervalMs?: number;
+  /** Optional replay/telemetry hooks; neither participates in order decisions. */
+  entryDecisionSink?: (decision: MmEntryDecision) => void;
+  tradeSink?: (trade: Trade) => void;
 }
 
 /**
@@ -191,6 +204,7 @@ export class MmRunner {
   }
 
   onTrade(trade: Trade): void {
+    this.opts.tradeSink?.(trade);
     const exitOrder = this.opts.oms.getOrder(trade.exit.clientOrderId);
     const exitTag = exitOrder?.tag.split(':')[1];
     // Release reservations for the lots closed by this trade.
@@ -396,6 +410,17 @@ export class MmRunner {
         message: `submit not accepted (${result.reason ?? 'unknown'}) for ${order.reason} ${order.side} ${String(order.instrumentId)}`,
       });
     } else {
+      const right = this.rightById.get(order.instrumentId);
+      if (order.entryFeatures !== undefined && right !== undefined) {
+        this.opts.entryDecisionSink?.({
+          clientOrderId: result.order.clientOrderId,
+          ts: nowMs,
+          instrumentId: order.instrumentId,
+          right,
+          ...(order.limitPricePaise !== undefined ? { limitPricePaise: order.limitPricePaise } : {}),
+          features: { ...order.entryFeatures },
+        });
+      }
       if (isUrgentExit(order.reason)) this.opts.escalator?.track(result.order, intent);
       // Reserve named lots so the next reconcile cycle cannot emit a second
       // exit for the same lot while the fill is in flight.
