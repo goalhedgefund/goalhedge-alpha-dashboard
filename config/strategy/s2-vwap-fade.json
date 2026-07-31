@@ -1,9 +1,9 @@
 {
   "strategyId": "s2-vwap-fade",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "enabled": true,
   "params": {
-    "stretchPct": 0.0015,
+    "stretchPct": 0.002,
     "decelRatio": 0.2,
     "bigTrendPct": 0.004,
     "confirmTicks": 2,
@@ -14,8 +14,8 @@
     "bandAtrMult": 0,
     "timeStopSec": 150,
     "hardStopPremiumPct": 20,
-    "breakevenAtPct": 10,
-    "trailStepPct": 6,
+    "breakevenAtPct": 5,
+    "trailStepPct": 4,
     "trailLockPct": 50,
     "invalidatePct": 0.1,
     "cooldownSec": 60
