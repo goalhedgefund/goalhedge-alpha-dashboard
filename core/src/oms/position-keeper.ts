@@ -160,6 +160,8 @@ export class PositionKeeper {
         this.marketProfile,
       );
       const info = this.instrumentInfo?.(order.instrumentId);
+      const tagParts = order.tag.split(':');
+      const exitReason = (tagParts[1] === 'stop' ? tagParts[2] : tagParts[1])?.toUpperCase() ?? order.purpose;
       const trade: Trade = {
         tradeId: this.ids.tradeId() as TradeId,
         sessionId: this.sessionId,
@@ -171,7 +173,7 @@ export class PositionKeeper {
         grossPnlPaise: gross,
         charges,
         netPnlPaise: computeTradeNet(gross, charges),
-        exitReason: order.tag.split(':')[1]?.toUpperCase() ?? order.purpose,
+        exitReason,
         holdMs: fill.ts - lot.ts,
         ...(info !== undefined ? { strikePaise: info.strikePaise, right: info.right } : {}),
       };

@@ -207,7 +207,7 @@ describe('PaperHost — end-to-end paper session (M10 §3)', () => {
     const trade = trades[0];
     if (trade?.type === 'trade.completed') {
       expect(trade.payload.trade.netPnlPaise).toBe(88_398); // hand-pinned M7 waterfall
-      expect(trade.payload.trade.exitReason).toBe('STOP');
+    expect(trade.payload.trade.exitReason).toBe('L2_TRAIL');
     }
 
     // Reconciler ran GREEN throughout (a trade closed → reconcile after fill).

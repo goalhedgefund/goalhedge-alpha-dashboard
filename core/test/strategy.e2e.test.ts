@@ -327,7 +327,7 @@ describe('M7 E2E: signal → gate → fill → trail → exit (scripted replay)'
       expect(t.grossPnlPaise).toBe(90_350);
       expect(t.charges.totalPaise).toBe(1_952);
       expect(t.netPnlPaise).toBe(88_398);
-      expect(t.exitReason).toBe('STOP');
+      expect(t.exitReason).toBe('L2_TRAIL');
       expect(t.qty).toBe(65);
     }
 
