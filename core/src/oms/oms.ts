@@ -22,6 +22,8 @@ export interface OmsOptions {
   clock?: Clock;
   ids?: IdFactory;
   journal?: JournalSink;
+  /** Raw broker ACK/FILL/CANCEL stream; kept separate from completed trades. */
+  orderEventsWriter?: TradesWriter;
   tradesWriter?: TradesWriter;
   throttle?: TokenBucket;
   /**
@@ -45,6 +47,7 @@ export class Oms {
   private readonly clock: Clock;
   private readonly ids: IdFactory;
   private readonly journal: JournalSink | undefined;
+  private readonly orderEventsWriter: TradesWriter | undefined;
   private readonly tradesWriter: TradesWriter | undefined;
   private readonly throttle: TokenBucket;
   private readonly exitThrottle: TokenBucket;
@@ -61,6 +64,9 @@ export class Oms {
     this.clock = opts.clock ?? systemClock;
     this.ids = opts.ids ?? new IdFactory(opts.sessionId);
     this.journal = opts.journal;
+    // Keep the legacy fallback for direct OMS callers. PaperHost supplies a
+    // dedicated writer so its trades.jsonl remains a completed-trade blotter.
+    this.orderEventsWriter = opts.orderEventsWriter ?? opts.tradesWriter;
     this.tradesWriter = opts.tradesWriter;
     this.throttle = opts.throttle ?? new TokenBucket({ capacity: 10, refillPerSec: 10, clock: this.clock });
     this.exitThrottle =
@@ -234,7 +240,7 @@ export class Oms {
   private onBrokerEvent(ev: BrokerOrderEvent): void {
     if (this.brokerEvents.has(ev.brokerEventId)) return;
     this.brokerEvents.add(ev.brokerEventId);
-    this.tradesWriter?.append({ kind: 'orderEvent', event: ev });
+    this.orderEventsWriter?.append({ kind: 'orderEvent', event: ev });
     const order = this.orders.get(ev.clientOrderId);
     if (order === undefined) return;
 

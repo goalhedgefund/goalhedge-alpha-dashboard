@@ -95,7 +95,7 @@ export interface PaperHostOptions {
   ids: IdFactory;
   clock?: Clock;
 
-  /** journals/<date>/ — journal + trades.jsonl + digest land here. */
+  /** journals/<date>/ — journal + completed trades + digest land here. */
   journalDir: string;
   journalFilename?: string;
   fsync?: FsyncPolicy;
@@ -148,7 +148,7 @@ export interface HostStartResult {
 
 /**
  * Real paper/live host (02-CODING-PLAN M10). Composes the whole runtime the
- * demo only mimicked: journal + trades.jsonl writers, OMS, Risk Gate, Stop
+ * demo only mimicked: journal + completed-trade / broker-event writers, OMS, Risk Gate, Stop
  * Engine, Strategy Runner (with latency instrumentation + exit escalator),
  * Kill Switch, Session Manager, and — the two pieces M9 left library-tested —
  * the **Reconciler** (on a cadence + after fills) and **crash recovery**
@@ -167,6 +167,7 @@ export class PaperHost {
 
   private writer!: JournalWriter;
   private tradesWriter!: TradesWriter;
+  private orderEventsWriter!: TradesWriter;
   private oms!: Oms;
   private runner!: HostRunner;
   private kill!: KillSwitch;
@@ -178,6 +179,8 @@ export class PaperHost {
   private lastReconcileMs = Number.NEGATIVE_INFINITY;
   private started = false;
   private journalBroken = false;
+  /** Retry exactly the startup race where the feed arrived after preflight. */
+  private retryFeedOnlyPreflight = false;
   private db: Persistence | undefined;
   private mirrorBroken = false;
   private lastTickTs = 0;
@@ -216,7 +219,11 @@ export class PaperHost {
       ...(recovered !== undefined ? { resume: { startSeq: recovered.lastSeq + 1 } } : {}),
     });
     await this.writer.ready();
-    this.tradesWriter = new TradesWriter({ dir: this.opts.journalDir });
+    // `trades.jsonl` is deliberately a clean completed-trade export. Raw
+    // broker lifecycle events remain useful for execution debugging, but in a
+    // separate artifact so a blotter never has to reconstruct trades.
+    this.tradesWriter = new TradesWriter({ dir: this.opts.journalDir, filename: 'trades.jsonl' });
+    this.orderEventsWriter = new TradesWriter({ dir: this.opts.journalDir, filename: 'broker-events.jsonl' });
     this.db =
       this.opts.persistence === 'off'
         ? undefined
@@ -229,7 +236,10 @@ export class PaperHost {
       for (const event of recovered.events) this.opts.gateway?.ingestJournal(event);
     }
 
-    await this.session.runPreflight();
+    const preflight = await this.session.runPreflight();
+    this.retryFeedOnlyPreflight = !preflight.ok && preflight.checks
+      .filter((check) => !check.ok)
+      .every((check) => check.name === 'feed.fresh');
 
     // Crash recovery gate: refuse to resume trading into an unsafe state.
     // A recovered open position can't be safely re-adopted in v1, and any
@@ -258,11 +268,7 @@ export class PaperHost {
       }
     }
 
-    const shouldAutoAck = this.opts.autoAckPreflight ?? true;
-    const ack = shouldAutoAck ? this.session.acknowledge('host') : { accepted: false };
-    if ((this.opts.autoArm ?? true) && ack.accepted && this.session.canArm().ok) {
-      this.runner.arm();
-    }
+    this.autoAcknowledgeAndArm();
     this.started = true;
     return { recovered: recovered !== undefined, halted: false };
   }
@@ -296,6 +302,7 @@ export class PaperHost {
     // Order TTLs, holding age, cooldowns, and escalation must use arrival time:
     // exchange timestamps can lead the local clock and shorten a live hold.
     if (kind === 'spot') {
+      await this.retryPreflightAfterFeedRecovery();
       await this.runner.onUnderlyingTick(observedTs);
     } else if (kind === 'option') {
       await this.runner.onOptionTick(tick.instrumentId, tick.ltpPaise, observedTs);
@@ -355,6 +362,7 @@ export class PaperHost {
   async close(): Promise<void> {
     await this.writer.close();
     await this.tradesWriter.close();
+    await this.orderEventsWriter.close();
     if (this.db !== undefined && this.opts.persistence === undefined) this.db.close();
     this.db = undefined;
   }
@@ -455,6 +463,7 @@ export class PaperHost {
       clock: this.clock,
       ids: opts.ids,
       journal: this.sink,
+      orderEventsWriter: this.orderEventsWriter,
       tradesWriter: this.tradesWriter,
       // Trades carry strike/right resolved at fill time so the UI blotter
       // survives expiry rolls without a live chain lookup.
@@ -611,6 +620,29 @@ export class PaperHost {
       this.reconcileNow(); // reconcile after every completed round trip
     }
   };
+
+  /** Apply the headless-paper ACK/ARM policy after a successful preflight. */
+  private autoAcknowledgeAndArm(): void {
+    const shouldAutoAck = this.opts.autoAckPreflight ?? true;
+    const ack = shouldAutoAck ? this.session.acknowledge('host') : { accepted: false };
+    if ((this.opts.autoArm ?? true) && ack.accepted && this.session.canArm().ok) {
+      this.runner.arm();
+    }
+  }
+
+  /**
+   * Startup may time out before Dhan delivers its first spot tick. Do not
+   * leave an otherwise healthy headless session in PREFLIGHT all day: retry
+   * once when the first later spot arrives, but only when feed freshness was
+   * the sole failed startup check. Config, instrument, or journal failures
+   * still require explicit intervention.
+   */
+  private async retryPreflightAfterFeedRecovery(): Promise<void> {
+    if (!this.retryFeedOnlyPreflight) return;
+    this.retryFeedOnlyPreflight = false;
+    const preflight = await this.session.runPreflight();
+    if (preflight.ok) this.autoAcknowledgeAndArm();
+  }
 
   private maybeReconcile(nowMs: number): void {
     if (nowMs - this.lastReconcileMs < this.reconcileEveryMs) return;

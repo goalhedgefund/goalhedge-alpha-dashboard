@@ -170,6 +170,27 @@ describe('PaperHost — end-to-end paper session (M10 §3)', () => {
     await host.close();
   }, 20_000);
 
+  it('retries a feed-only failed startup preflight when the first live spot arrives', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-feed-retry-'));
+    const clock = new ManualClock(START_10AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+    const host = buildHost(dir, clock, marketData, paper, { autoArm: true, autoAckPreflight: true });
+
+    await host.start();
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+    expect(host.canArm()).toMatchObject({ ok: false, reason: 'PREFLIGHT_FAILED' });
+
+    await host.ingestTick(spotTick(START_10AM_IST, ATM, 100));
+
+    expect(host.sessionPhase()).toBe('OPEN');
+    expect(host.runnerState()).toBe('ARMED');
+    const preflights = host.journalEvents().filter((event) => event.type === 'session.preflight');
+    expect(preflights).toHaveLength(2);
+    expect(preflights[1]).toMatchObject({ payload: { ok: true } });
+    await host.close();
+  }, 20_000);
+
   it('can require an explicit operator ACK before ARM', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-no-autoack-'));
     const clock = new ManualClock(START_10AM_IST);
@@ -228,10 +249,12 @@ describe('PaperHost — end-to-end paper session (M10 §3)', () => {
     expect(existsSync(artifacts.csvPath)).toBe(true);
     expect(readFileSync(artifacts.mdPath, 'utf8')).toContain('Net P&L');
 
-    // trades.jsonl carries both order events and the completed trade.
+    // Completed trades and raw broker events are separate exports. The former
+    // is a real blotter input; the latter is execution-debug evidence.
     const tradesJsonl = readFileSync(join(dir, 'trades.jsonl'), 'utf8');
     expect(tradesJsonl).toContain('"kind":"trade"');
-    expect(tradesJsonl).toContain('"kind":"orderEvent"');
+    expect(tradesJsonl).not.toContain('"kind":"orderEvent"');
+    expect(readFileSync(join(dir, 'broker-events.jsonl'), 'utf8')).toContain('"kind":"orderEvent"');
   }, 30_000);
 
   it('reconciliation RED (broker book ≠ OMS) trips the kill switch', async () => {
