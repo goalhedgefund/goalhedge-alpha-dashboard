@@ -73,6 +73,7 @@ export function discoverRecording(ticks: readonly Tick[], scripMasterPath: strin
   if (nativeSpot !== undefined) return { spotInstrumentId: nativeSpot.instrumentId, optionSpecs: [...specs.values()], feedTicks: [...ticks], syntheticSpot: false };
 
   const feedTicks: Tick[] = [];
+  let syntheticVolume = 0;
   for (let start = 0; start < ticks.length;) {
     const ts = ticks[start]!.ts;
     let end = start;
@@ -98,8 +99,11 @@ export function discoverRecording(ticks: readonly Tick[], scripMasterPath: strin
         recvTs: ce.recvTs,
         // Re-strikes are safe because this uses the pair's current strike.
         ltpPaise: Math.round(strikePaise + ceMid - peMid),
-        qty: 0,
-        volume: 0,
+        // A non-zero synthetic unit lets the normal session-VWAP and bar
+        // feature pipeline warm up. qty=0 kept every OP(-) historical replay
+        // permanently in FEATURES_WARMUP.
+        qty: 1,
+        volume: ++syntheticVolume,
         bidPaise: 0,
         askPaise: 0,
         bidQty: 0,

@@ -123,6 +123,18 @@ describe('OP(-) naked short engine', () => {
     expect(evaluation.desired.filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
   });
 
+  it('quotes only the configured expiry window while continuing to manage open shorts', () => {
+    const engine = new OpMinusEngine(market, { ...params, maxDaysToExpiry: 1 });
+    const paused = engine.evaluate(baseInput({ daysToExpiry: 2, shortBooks: [shortBook('CE')] }));
+    expect(paused.phase).toBe('PAUSED_DTE');
+    expect(paused.pauseReason).toContain('DTE 2');
+    expect(paused.desired.some((order) => order.purpose === 'ENTRY')).toBe(false);
+    expect(paused.desired.some((order) => order.purpose === 'EXIT')).toBe(true);
+
+    expect(engine.evaluate(baseInput({ daysToExpiry: 1 })).phase).toBe('SCALPING');
+    expect(engine.evaluate(baseInput({ daysToExpiry: 0 })).phase).toBe('SCALPING');
+  });
+
   it('reserves one global runner candidate and targets only its paired lot on that right', () => {
     const evaluation = new OpMinusEngine(market, params).evaluate(baseInput({
       shortBooks: [shortBook('CE'), shortBook('PE')],
@@ -220,6 +232,33 @@ describe('OP(-) naked short engine', () => {
     expect(codeOf(calm()).code).toBeUndefined();
   });
 
+  it('can disable the session-VWAP distance gates while retaining momentum and ADX protection', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      rangeFilterEnabled: true,
+      maxAbsRet30Pct: 0.0015,
+      maxVwapDistancePct: 0,
+      maxVwapDistanceAtrMult: 0,
+      maxAdx: 25,
+      maxStraddleRisePct: 0.01,
+    });
+    const underlying: UnderlyingFeatures = {
+      ret1s: 0, ret5s: 0, ret30s: 0, vwapPaise: 2_400_000, atr1mPaise: 500, adx1m: 12,
+      tickVelocityPerSec: 1, volumeBurstRatio: 1,
+      codexScore: { bull: 0, bear: 0, signal: 'WAIT', trend: 'flat', indicators: { last: 2_500_000 } },
+    };
+    expect(engine.evaluate(baseInput({
+      spotPaise: 2_500_000,
+      underlying,
+      straddleDriftPct: 0,
+    })).phase).toBe('SCALPING');
+    expect(engine.evaluate(baseInput({
+      spotPaise: 2_500_000,
+      underlying: { ...underlying, ret30s: 0.01 },
+      straddleDriftPct: 0,
+    })).phase).toBe('PAUSED_REGIME');
+  });
+
   it('trips the combined pair stop when both rights bleed without either leg stop firing', () => {
     // 7% adverse on each leg: below the 9% per-leg stop, above the 6% pair stop.
     const evaluation = new OpMinusEngine(market, params).evaluate(baseInput({
@@ -229,6 +268,72 @@ describe('OP(-) naked short engine', () => {
     expect(combined).toHaveLength(4);
     expect(combined.every((order) => order.side === 'BUY' && order.purpose === 'EXIT')).toBe(true);
     expect(evaluation.desired.some((order) => order.reason === 'TARGET')).toBe(false);
+  });
+
+  it('manages a theta scalp as one CE+PE package when paired exits are enabled', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      pairedExitEnabled: true,
+      combinedTargetPremiumPct: 1,
+      combinedStopPremiumPct: 3,
+      maxHoldSec: 600,
+      leggingTimeoutSec: 5,
+    });
+    const target = engine.evaluate(baseInput({
+      shortBooks: [shortBook('CE', 9_900), shortBook('PE', 9_900)],
+    }));
+    expect(target.desired.filter((order) => order.reason === 'COMBINED_TARGET')).toHaveLength(4);
+    expect(target.desired.some((order) => order.reason === 'TARGET')).toBe(false);
+
+    const holding = engine.evaluate(baseInput({
+      shortBooks: [shortBook('CE', 9_950), shortBook('PE', 9_950)],
+    }));
+    expect(holding.desired).toHaveLength(0);
+
+    const timedOut = engine.evaluate(baseInput({
+      nowMs: 700_000,
+      shortBooks: [shortBook('CE', 9_950), shortBook('PE', 9_950)],
+    }));
+    expect(timedOut.desired.filter((order) => order.reason === 'PAIR_TIMEOUT')).toHaveLength(4);
+  });
+
+  it('uses a later, slower package profile on DTE 1 without weakening DTE 0', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      pairedExitEnabled: true,
+      combinedTargetPremiumPct: 1,
+      dte1CombinedTargetPremiumPct: 2,
+      maxHoldSec: 600,
+      dte1MaxHoldSec: 1_200,
+      quoteFrom: '09:45',
+      dte1QuoteFrom: '12:00',
+      entryCutoff: '15:00',
+      dte1EntryCutoff: '14:50',
+    });
+    expect(engine.evaluate(baseInput({ nowHHMM: '11:00', daysToExpiry: 0 })).phase).toBe('SCALPING');
+    expect(engine.evaluate(baseInput({ nowHHMM: '11:00', daysToExpiry: 1 })).phase).toBe('PAUSED_WINDOW');
+    expect(engine.evaluate(baseInput({ nowHHMM: '14:50', daysToExpiry: 0 })).phase).toBe('SCALPING');
+    expect(engine.evaluate(baseInput({ nowHHMM: '14:50', daysToExpiry: 1 })).phase).toBe('EXIT_ONLY');
+
+    const books = [shortBook('CE', 9_900), shortBook('PE', 9_900)];
+    expect(engine.evaluate(baseInput({ nowHHMM: '13:00', daysToExpiry: 0, shortBooks: books }))
+      .desired.filter((order) => order.reason === 'COMBINED_TARGET')).toHaveLength(4);
+    expect(engine.evaluate(baseInput({ nowHHMM: '13:00', daysToExpiry: 1, shortBooks: books }))
+      .desired.filter((order) => order.reason === 'COMBINED_TARGET')).toHaveLength(0);
+  });
+
+  it('closes an unpaired fill quickly and does not add the missing short while that exit is pending', () => {
+    const engine = new OpMinusEngine(market, {
+      ...params,
+      pairedExitEnabled: true,
+      leggingTimeoutSec: 5,
+    });
+    const evaluation = engine.evaluate(baseInput({
+      nowMs: 10_000,
+      shortBooks: [shortBook('CE', 10_000)],
+    }));
+    expect(evaluation.desired.filter((order) => order.reason === 'UNPAIRED_TIMEOUT')).toHaveLength(2);
+    expect(evaluation.desired.some((order) => order.purpose === 'ENTRY')).toBe(false);
   });
 
   it('never trips the combined stop while only one right is short', () => {
@@ -253,15 +358,27 @@ describe('OP(-) naked short engine', () => {
     expect(entries.every((order) => order.limitPricePaise === 10_000)).toBe(true);
   });
 
-  it('honors the production config shape: one lot per right, no runner, 09:45–14:30 window', () => {
+  it('crosses both paired entries to the bid so the package does not leg in passively', () => {
+    const oneTickCe = { ...scalpCe, bidPaise: 9_995, askPaise: 10_000 };
+    const oneTickPe = { ...scalpPe, bidPaise: 8_995, askPaise: 9_000 };
+    const evaluation = new OpMinusEngine(market, { ...params, pairedExitEnabled: true }).evaluate(baseInput({
+      scalpCe: oneTickCe,
+      scalpPe: oneTickPe,
+    }));
+    const entries = evaluation.desired.filter((order) => order.reason === 'SHORT_ENTRY');
+    expect(entries.map((order) => order.limitPricePaise)).toEqual([9_995, 9_995, 8_995, 8_995]);
+  });
+
+  it('honors the expiry-scalper shape: one lot per right, no runner, DTE 0-1, 09:45–15:10', () => {
     const engine = new OpMinusEngine(market, {
       ...params,
       scalpLotsPerRight: 1,
       runnerLots: 0,
+      maxDaysToExpiry: 1,
       quoteFrom: '09:45',
-      entryCutoff: '14:30',
+      entryCutoff: '15:10',
     });
-    const scalping = engine.evaluate(baseInput());
+    const scalping = engine.evaluate(baseInput({ daysToExpiry: 1 }));
     expect(scalping.phase).toBe('SCALPING');
     const entries = scalping.desired.filter((order) => order.reason === 'SHORT_ENTRY');
     expect(entries).toHaveLength(2);
@@ -275,7 +392,10 @@ describe('OP(-) naked short engine', () => {
     expect(early.phase).toBe('PAUSED_WINDOW');
     expect(early.desired.filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
 
-    const late = engine.evaluate(baseInput({ nowHHMM: '14:30' }));
+    const tooEarlyInCycle = engine.evaluate(baseInput({ daysToExpiry: 2 }));
+    expect(tooEarlyInCycle.phase).toBe('PAUSED_DTE');
+
+    const late = engine.evaluate(baseInput({ nowHHMM: '15:10', daysToExpiry: 1 }));
     expect(late.phase).toBe('EXIT_ONLY');
     expect(late.desired.filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
   });

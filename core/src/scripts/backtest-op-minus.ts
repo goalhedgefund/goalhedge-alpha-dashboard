@@ -17,7 +17,6 @@
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
 import { execFileSync } from 'node:child_process';
 import { createGunzip } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -25,23 +24,27 @@ import { join } from 'node:path';
 
 import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema, type MarketProfile } from '../config/schemas.js';
-import { IdFactory, makeInstrumentId, makeSessionId, type InstrumentId } from '../domain/ids.js';
+import { IdFactory, makeSessionId, type InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
-import { ManualClock } from '../domain/time.js';
+import { istDayStartMs, ManualClock } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
-import { FeedMarketData, type OptionSpec } from '../host/feed-market-data.js';
+import { FeedMarketData } from '../host/feed-market-data.js';
 import { PaperHost, type HostRunnerPorts } from '../host/paper-host.js';
-import { loadScripMaster, resolveNiftyOptionChain, toInstrument } from '../marketdata/instrument-master.js';
+import { loadScripMaster, resolveNiftyOptionChain } from '../marketdata/instrument-master.js';
 import { OpMinusRunner } from '../mm/op-minus-runner.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
 import { OpMinusAtmShort } from '../strategy/strategies/op-minus-atm-short.js';
+import type { StrategyParams } from '../strategy/types.js';
+import { discoverPlainRecording, discoverRecording } from './backtest-recording.js';
 
 const SCALPER_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CONFIG_DIR = join(SCALPER_ROOT, 'config');
 // Backtest-only corpus. Live data paths are configured by the live host.
 const DEFAULT_DATA_ROOT = 'D:\\Claude\\workstation\\services\\scalper\\core\\data\\dhan';
 const DEFAULT_CORPUS_ROOT = join(DEFAULT_DATA_ROOT, 'ticks-op-minus-atm-short');
+const PREFERRED_CORPUS_ROOT = process.env.OP_MINUS_BACKTEST_CORPUS_ROOT?.trim();
 const FALLBACK_CORPORA = [
+  ...(PREFERRED_CORPUS_ROOT ? [PREFERRED_CORPUS_ROOT] : []),
   DEFAULT_CORPUS_ROOT,
   join(DEFAULT_DATA_ROOT, 'ticks-allop-atm-mm'),
   join(DEFAULT_DATA_ROOT, 'ticks-s2-vwap-fade'),
@@ -177,29 +180,34 @@ function materializeMissingDay(date: string, outDir: string): string | undefined
   return existsSync(outFile) ? outFile : undefined;
 }
 
-function pickSpotInstrumentId(ticks: readonly Tick[], fallbackInstrumentId: InstrumentId | undefined): InstrumentId {
-  if (fallbackInstrumentId !== undefined) return fallbackInstrumentId;
-  const counts = new Map<string, number>();
-  for (const tick of ticks) counts.set(tick.instrumentId, (counts.get(tick.instrumentId) ?? 0) + 1);
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  if (sorted[0]?.[0] === undefined) throw new Error('Could not infer a spot instrument from the tick corpus');
-  return sorted[0][0] as InstrumentId;
-}
-
-function primeSpot(marketData: FeedMarketData, spotInstrumentId: InstrumentId, spotPaise: number): void {
-  const now = Date.now();
+function primeSpot(
+  marketData: FeedMarketData,
+  spotInstrumentId: InstrumentId,
+  spotPaise: number,
+  now: number,
+): void {
   marketData.ingest({
     instrumentId: spotInstrumentId,
     ts: now,
     recvTs: now,
     ltpPaise: spotPaise,
-    qty: 0,
-    volume: 0,
+    qty: 1,
+    volume: 1,
     bidPaise: 0,
     askPaise: 0,
     bidQty: 0,
     askQty: 0,
   });
+}
+
+function strategyOverrides(): StrategyParams {
+  const raw = process.env.OP_MINUS_BACKTEST_PARAMS?.trim();
+  if (!raw) return {};
+  const parsed: unknown = JSON.parse(raw);
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error('OP_MINUS_BACKTEST_PARAMS must be a JSON object');
+  }
+  return parsed as StrategyParams;
 }
 
 function marketWithLiveChainFacts(market: MarketProfile, lotSize: number, tickSizePaise: number): MarketProfile {
@@ -234,58 +242,52 @@ async function backtestDay(
   const marketCfg = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 'allop-nse-options.json'));
   const riskCfg = loadConfig(RiskProfileSchema, join(CONFIG_DIR, 'risk', 'op-minus-paper.json'));
   const strategyCfg = loadConfig(StrategyConfigSchema, join(CONFIG_DIR, 'strategy', 'op-minus-atm-short.json'));
+  const params = { ...strategyCfg.value.params, ...strategyOverrides() };
+  const maxTradesOverride = Number(process.env.OP_MINUS_BACKTEST_MAX_TRADES ?? Number.NaN);
+  const riskProfile = Number.isFinite(maxTradesOverride)
+    ? { ...riskCfg.value, maxTradesPerDay: Math.max(1, Math.floor(maxTradesOverride)) }
+    : riskCfg.value;
   const masterPath = process.env.DHAN_SCRIP_MASTER_PATH?.trim() || 'D:\\DHAN_LOGIN\\api-scrip-master.csv';
 
   const scripRows = loadScripMaster(masterPath);
-
-  const spotInstrumentId = pickSpotInstrumentId(
-    ticks,
-    process.env.DHAN_SPOT_SECURITY_ID?.trim() ? makeInstrumentId('NSE', process.env.DHAN_SPOT_SECURITY_ID.trim()) : undefined,
+  const synthetic = ticks.some((tick) => String(tick.instrumentId).includes(':scalp:ATM'));
+  const recording = synthetic ? discoverRecording(ticks, masterPath) : discoverPlainRecording(ticks, masterPath);
+  const sessionFloorMs = istDayStartMs(date);
+  const replayTicks = recording.feedTicks.filter(
+    (tick) => tick.ts >= sessionFloorMs && tick.ts < sessionFloorMs + 86_400_000,
   );
+  if (replayTicks.length === 0) throw new Error(`No in-session ticks found for ${date}`);
+  const spotInstrumentId = recording.spotInstrumentId;
 
-  const scalpWeekly = resolveNiftyOptionChain(scripRows, date, Math.max(0, Number(strategyCfg.value.params.minDaysToExpiry ?? 1)));
+  const scalpWeekly = resolveNiftyOptionChain(scripRows, date, Math.max(0, Number(params.minDaysToExpiry ?? 1)));
   if (scalpWeekly === undefined) throw new Error(`Could not resolve scalp chain for ${date}`);
 
   const market = marketWithLiveChainFacts(marketCfg.value, scalpWeekly.lotSize, scalpWeekly.tickSizePaise);
-  const firstSpotTick = ticks.find((tick) => tick.instrumentId === spotInstrumentId);
+  const firstSpotTick = replayTicks.find((tick) => tick.instrumentId === spotInstrumentId);
   const firstSpotPaise = firstSpotTick?.ltpPaise ?? 0;
   const strikeBand = profile === 'research'
-    ? Math.max(12, Number(strategyCfg.value.params.strikeBand ?? 5))
-    : Number(strategyCfg.value.params.strikeBand ?? 5);
-  const selectedStrikes = [...scalpWeekly.chain.keys()].sort((a, b) => a - b).filter((strike) =>
-    Math.abs(strike - firstSpotPaise) <= strikeBand * market.contract.strikeStepPaise,
-  );
-  const optionSpecs: OptionSpec[] = [];
-  const strikeCount = profile === 'research'
-    ? Math.max(1, Number(strategyCfg.value.params.scalpLotsPerRight ?? 2)) + 12
-    : Math.max(1, Number(strategyCfg.value.params.scalpLotsPerRight ?? 2)) + 4;
-  for (const strike of selectedStrikes.slice(0, strikeCount)) {
-    const scalp = scalpWeekly.chain.get(strike);
-    for (const row of [scalp?.ce, scalp?.pe]) {
-      if (row === undefined) continue;
-      const instrument = toInstrument(row);
-      optionSpecs.push({
-        instrumentId: instrument.id,
-        strikePaise: row.strikePaise,
-        right: row.optionType === 'CE' || row.optionType === 'PE' ? row.optionType : 'CE',
-        expiry: row.expiryDate,
-      });
-    }
+    ? Math.max(12, Number(params.strikeBand ?? 5))
+    : Number(params.strikeBand ?? 5);
+  const optionSpecs = recording.optionSpecs.filter((spec) => spec.expiry === scalpWeekly.expiryDate);
+  if (optionSpecs.length === 0) {
+    const expiries = [...new Set(recording.optionSpecs.map((spec) => spec.expiry))].join(', ') || 'none';
+    throw new Error(`Recording expiry mismatch for ${date}: expected ${scalpWeekly.expiryDate}, found ${expiries}`);
   }
 
   const journalDir = join(runRoot, date);
   mkdirSync(journalDir, { recursive: true });
-  const clock = new ManualClock(ticks[0]!.ts);
+  const clock = new ManualClock(replayTicks[0]!.ts);
   const marketData = new FeedMarketData({
     spotInstrumentId,
     options: optionSpecs,
     strikeStepPaise: market.contract.strikeStepPaise,
+    sessionFloorMs,
   });
-  if (firstSpotPaise > 0) primeSpot(marketData, spotInstrumentId, firstSpotPaise);
+  if (firstSpotPaise > 0) primeSpot(marketData, spotInstrumentId, firstSpotPaise, replayTicks[0]!.ts);
   const broker = new PaperBroker({
     clock,
     tickSizePaise: market.tickSizePaise,
-    slippageTicks: Number(process.env.DHAN_PAPER_SLIPPAGE_TICKS ?? strategyCfg.value.params.paperSlippageTicks ?? 1),
+    slippageTicks: Number(process.env.DHAN_PAPER_SLIPPAGE_TICKS ?? params.paperSlippageTicks ?? 1),
     ackLatencyMs: 0,
     fillLatencyMs: 0,
     restingFills: true,
@@ -297,7 +299,7 @@ async function backtestDay(
     date,
     mode: 'paper',
     market,
-    riskProfile: riskCfg.value,
+    riskProfile,
     eligibility: {
       entryWindows: profile === 'research'
         ? [{ from: market.session.open, to: '15:29' }]
@@ -316,9 +318,9 @@ async function backtestDay(
       strikeStepPaise: market.contract.strikeStepPaise,
     },
     strategy,
-    params: strategyCfg.value.params,
+    params,
     regime: new FeatureRegimeProvider({ view: marketData, clock }),
-    cooldownSec: Number(strategyCfg.value.params.cooldownSec ?? 60),
+    cooldownSec: Number(params.cooldownSec ?? 60),
     broker,
     marketData,
     ids,
@@ -340,7 +342,7 @@ async function backtestDay(
       new OpMinusRunner({
         sessionId: makeSessionId(date, 'paper'),
         strategyId: strategyCfg.value.strategyId,
-        params: strategyCfg.value.params,
+        params,
         market,
         scalpExpiry: scalpWeekly.expiryDate,
         gate: ports.gate,
@@ -371,8 +373,8 @@ async function backtestDay(
   if (start.halted) throw new Error(`Backtest host halted on start for ${date}: ${start.reason ?? 'UNKNOWN'}`);
 
   const timerEveryMs = Number(process.env.DHAN_TIMER_INTERVAL_MS ?? 250);
-  let lastTimer = ticks[0]!.ts;
-  for (const tick of ticks) {
+  let lastTimer = replayTicks[0]!.ts;
+  for (const tick of replayTicks) {
     clock.set(Math.max(clock.now(), tick.ts));
     await host.ingestTick(tick);
     if (tick.ts - lastTimer >= timerEveryMs) {
@@ -393,7 +395,7 @@ async function backtestDay(
   const strategyEvents = events.filter((ev) => ev.type === 'strategy.noTrade' || ev.type === 'strategy.signal').length;
   return {
     date,
-    ticks: ticks.length,
+    ticks: replayTicks.length,
     trades: s.tradeCount,
     wins: s.wins,
     losses: s.losses,
@@ -409,14 +411,14 @@ async function backtestDay(
 }
 
 async function runBacktest(endDate: string, lookbackDays: number, profile: 'strict' | 'research', fetchMissing: boolean): Promise<BacktestResult> {
-  const runRoot = join(SCALPER_ROOT, 'journals', 'op-minus-atm-short', 'backtest', `${endDate}-${lookbackDays}d`);
+  const label = (process.env.OP_MINUS_BACKTEST_LABEL?.trim() || 'default').replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const runRoot = join(SCALPER_ROOT, 'journals', 'op-minus-atm-short', 'backtest', `${endDate}-${lookbackDays}d-${label}`);
   mkdirSync(runRoot, { recursive: true });
   const dayResults: BacktestDayResult[] = [];
   const missingDays: string[] = [];
   const fetchedDays: string[] = [];
 
   for (const date of listLookbackDays(endDate, lookbackDays)) {
-    const primary = join(DEFAULT_CORPUS_ROOT, date, 'ticks.jsonl.gz');
     let source = pickSourceDay(date);
     let ticks: Tick[] | undefined;
     if (source === undefined && fetchMissing) {
@@ -466,7 +468,7 @@ async function main(): Promise<void> {
   console.log(`OP(-) Backtest`);
   console.log(`End date: ${endDate}`);
   console.log(`Lookback: ${days} days`);
-  console.log(`Primary corpus: ${DEFAULT_CORPUS_ROOT}`);
+  console.log(`Primary corpus: ${PREFERRED_CORPUS_ROOT || DEFAULT_CORPUS_ROOT}`);
 
   const result = await runBacktest(endDate, days, profile, fetchMissing);
 

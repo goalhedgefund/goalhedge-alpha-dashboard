@@ -122,12 +122,13 @@ export class OpMinusRunner {
       .reduce((sum, order) => sum + Math.max(0, order.qty - order.filledQty), 0);
     const runner = this.activeRunner;
     const pendingRunnerInstrumentId = this.pendingRunnerInstrumentId();
+    const expiry = this.expirySnapshot();
     return {
       quotePhase: this.quotePhase,
       direction: 'SHORT',
       scalpSlotsUsed: (shortUnits + workingShortUnits) / lotSize,
       scalpSlotsMax: this.engine.activeParams().scalpLotsPerRight * 2,
-      expiryDate: this.opts.scalpExpiry,
+      ...(expiry !== undefined ? expiry : { expiryDate: this.opts.scalpExpiry }),
       runnerStatus: runner !== undefined ? 'ACTIVE' : this.pendingRunnerLotId !== undefined ? 'PENDING' : 'AVAILABLE',
       ...(pendingRunnerInstrumentId !== undefined ? { pendingRunnerInstrumentId } : {}),
       ...(runner !== undefined
@@ -144,6 +145,17 @@ export class OpMinusRunner {
         : {}),
       defences: [],
     };
+  }
+
+  private expirySnapshot(nowMs = this.opts.clock.now()): { expiryDate: string; daysToExpiry: number } | undefined {
+    const expiryDate = this.opts.scalpExpiry;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) return undefined;
+    const IST_OFFSET_MS = 5.5 * 3_600_000;
+    const todayIst = new Date(nowMs + IST_OFFSET_MS).toISOString().slice(0, 10);
+    const daysToExpiry = Math.round(
+      (Date.parse(`${expiryDate}T00:00:00Z`) - Date.parse(`${todayIst}T00:00:00Z`)) / 86_400_000,
+    );
+    return { expiryDate, daysToExpiry };
   }
 
   async onUnderlyingTick(nowMs: number): Promise<void> {
@@ -175,15 +187,26 @@ export class OpMinusRunner {
     if (right !== undefined) {
       this.cycleCountByRight.set(right, (this.cycleCountByRight.get(right) ?? 0) + 1);
     }
+    const activeParams = this.engine.activeParams();
+    const packageExit = exitTag === 'combined_target' || exitTag === 'combined_stop' || exitTag === 'hard_stop' ||
+      exitTag === 'pair_timeout' || exitTag === 'unpaired_timeout' || exitTag === 'risk_exit';
+    if (activeParams.pairedExitEnabled && packageExit && activeParams.cycleCooldownSec > 0) {
+      const untilTs = trade.exit.ts + activeParams.cycleCooldownSec * 1_000;
+      for (const cooledRight of ['CE', 'PE'] as const) {
+        this.cooldownUntilByRight.set(cooledRight, Math.max(this.cooldownUntilByRight.get(cooledRight) ?? 0, untilTs));
+      }
+    }
     if (
       right !== undefined &&
       trade.netPnlPaise < 0 &&
-      (exitTag === 'hard_stop' || exitTag === 'combined_stop' || exitTag === 'scalp_timeout' || exitTag === 'risk_exit')
+      (exitTag === 'hard_stop' || exitTag === 'combined_stop' || exitTag === 'pair_timeout' ||
+        exitTag === 'unpaired_timeout' || exitTag === 'scalp_timeout' || exitTag === 'risk_exit')
     ) {
-      this.cooldownUntilByRight.set(
-        right,
-        trade.exit.ts + this.engine.activeParams().defensiveCooldownSec * 1_000,
-      );
+      const untilTs = trade.exit.ts + activeParams.defensiveCooldownSec * 1_000;
+      const rights: OptionRight[] = activeParams.pairedExitEnabled ? ['CE', 'PE'] : [right];
+      for (const cooledRight of rights) {
+        this.cooldownUntilByRight.set(cooledRight, Math.max(this.cooldownUntilByRight.get(cooledRight) ?? 0, untilTs));
+      }
     }
     this.syncInventoryState(`exit ${exitTag ?? trade.exitReason}`);
 
@@ -214,15 +237,21 @@ export class OpMinusRunner {
       this.quotePhase = evaluation.phase;
       this.captureRunnerCandidate(evaluation);
       const maxCycles = this.engine.activeParams().maxCyclesPerRight;
+      const paired = this.engine.activeParams().pairedExitEnabled;
+      const pairCyclesCapped = paired && maxCycles > 0 && (['CE', 'PE'] as const)
+        .some((right) => (this.cycleCountByRight.get(right) ?? 0) >= maxCycles);
+      const pairCooling = paired && (['CE', 'PE'] as const)
+        .some((right) => (this.cooldownUntilByRight.get(right) ?? 0) > nowMs);
       let cyclesCappedEntries = false;
       let desired = evaluation.desired.filter((order) => {
         if (order.purpose !== 'ENTRY') return true;
         const right = this.opts.view.optionRows().get(order.instrumentId)?.right;
         if (right === undefined) return true;
-        if (maxCycles > 0 && (this.cycleCountByRight.get(right) ?? 0) >= maxCycles) {
+        if (pairCyclesCapped || (maxCycles > 0 && (this.cycleCountByRight.get(right) ?? 0) >= maxCycles)) {
           cyclesCappedEntries = true;
           return false;
         }
+        if (pairCooling) return false;
         return (this.cooldownUntilByRight.get(right) ?? 0) <= nowMs;
       });
 
@@ -360,8 +389,10 @@ export class OpMinusRunner {
     for (const position of positions) {
       const row = rows.get(position.instrumentId);
       if (row === undefined) continue;
+      // Keep lots visible while an exit is working. Reconciliation matches the
+      // desired exit to that live order; hiding a reserved lot here made the
+      // next pass cancel and recreate the same target on every tick.
       const lots = this.opts.oms.getOpenLots(position.instrumentId)
-        .filter((lot) => !this.reservedLotIds.has(lot.lotId))
         .map((lot) => ({ lotId: lot.lotId, qty: lot.qty, entryPricePaise: lot.pricePaise, openedTs: lot.ts }));
       if (position.side === 'SELL' && row.expiry === this.opts.scalpExpiry) {
         shortBooks.push({ instrumentId: position.instrumentId, right: row.right, qty: position.qty, lots, row });
@@ -371,9 +402,11 @@ export class OpMinusRunner {
     const scalpPe = rowFor(this.opts.scalpExpiry, 'PE');
     const straddleDriftPct = this.sampleStraddleDrift(nowMs, cycleStrike, scalpCe, scalpPe);
     const latchedStop = this.opts.sessionRisk.current().latchedStop !== undefined;
+    const expiry = this.expirySnapshot(nowMs);
     return {
       nowMs,
       nowHHMM: formatHHMMIst(nowMs),
+      ...(expiry !== undefined ? { daysToExpiry: expiry.daysToExpiry } : {}),
       ...(strategyView.spotPaise !== undefined ? { spotPaise: strategyView.spotPaise } : {}),
       ...(strategyView.underlyingFeatures !== undefined ? { underlying: strategyView.underlyingFeatures } : {}),
       ...(scalpCe !== undefined ? { scalpCe } : {}),
@@ -587,7 +620,8 @@ function sameAllocation(left?: readonly string[], right?: readonly string[]): bo
 }
 
 function isUrgent(reason: OpMinusDesiredOrder['reason']): boolean {
-  return reason === 'HARD_STOP' || reason === 'COMBINED_STOP' || reason === 'SCALP_TIMEOUT' ||
+  return reason === 'COMBINED_TARGET' || reason === 'HARD_STOP' || reason === 'COMBINED_STOP' ||
+    reason === 'PAIR_TIMEOUT' || reason === 'UNPAIRED_TIMEOUT' || reason === 'SCALP_TIMEOUT' ||
     reason === 'RUNNER_COST_STOP' || reason === 'RISK_EXIT';
 }
 

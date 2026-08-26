@@ -146,6 +146,11 @@ describe('straddle-drift window re-center hysteresis', () => {
 });
 
 describe('OP(-) runner naked short sequencing', () => {
+  it('reports the selected expiry and calendar DTE', () => {
+    const r = rig();
+    expect(r.runner.mmState()).toMatchObject({ expiryDate: SCALP_EXPIRY, daysToExpiry: 6 });
+  });
+
   it('opens two CE and two PE short lots without protective long positions', async () => {
     const r = rig();
     r.runner.arm();
@@ -181,6 +186,27 @@ describe('OP(-) runner naked short sequencing', () => {
     await r.runner.onTimer(T0 + 1_000);
     expect(r.runner.mmState().quotePhase).toBe('PAUSED_REGIME');
     expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('CANCELLED');
+  });
+
+  it('keeps each working target stable instead of cancelling and recreating it every tick', async () => {
+    const r = rig({ scalpLotsPerRight: 1, runnerLots: 0, pairedExitEnabled: false });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    for (const id of [IDS.scalpCe, IDS.scalpPe]) {
+      r.paper.setQuote(id, { bidPaise: 9_995, askPaise: 10_005, ltpPaise: 10_000 });
+    }
+
+    await r.runner.onTimer(T0 + 1_000);
+    const targets = r.oms.getOrders().filter((order) => order.tag.endsWith(':target'));
+    expect(targets).toHaveLength(2);
+    expect(targets.every((order) => order.state === 'ACKED')).toBe(true);
+    const targetIds = targets.map((order) => order.clientOrderId).sort();
+
+    await r.runner.onTimer(T0 + 2_000);
+    await r.runner.onOptionTick(IDS.scalpCe, 10_000, T0 + 2_500);
+    const after = r.oms.getOrders().filter((order) => order.tag.endsWith(':target'));
+    expect(after.map((order) => order.clientOrderId).sort()).toEqual(targetIds);
+    expect(after.every((order) => order.state === 'ACKED')).toBe(true);
   });
 
   it('caps completed cycles per right and keeps quoting the other side', async () => {

@@ -13,6 +13,14 @@ export interface OpMinusParams {
   rewardRiskRatio: number;
   targetPremiumPct: number;
   hardStopPremiumPct: number;
+  /** Manage the CE+PE scalp as one premium package instead of two directional legs. */
+  pairedExitEnabled: boolean;
+  /** Cross paired entries to the bid; false keeps the legacy passive quote. */
+  pairedEntryAtBid: boolean;
+  /** Profit trigger on the combined CE+PE entry premium. */
+  combinedTargetPremiumPct: number;
+  /** DTE-1 package target; defaults to the base/DTE-0 target. */
+  dte1CombinedTargetPremiumPct: number;
   /**
    * Pair-level stop: when both rights are short, buy everything back once the
    * combined mark-to-market loss reaches this % of the combined entry
@@ -25,7 +33,13 @@ export interface OpMinusParams {
   quoteTtlSec: number;
   minRequoteMs: number;
   maxHoldSec: number;
+  /** DTE-1 hold cap; defaults to the base/DTE-0 hold cap. */
+  dte1MaxHoldSec: number;
+  /** Maximum time one entry leg may remain filled without its pair. */
+  leggingTimeoutSec: number;
   defensiveCooldownSec: number;
+  /** Pause the whole pair after every completed package cycle. */
+  cycleCooldownSec: number;
   rangeFilterEnabled: boolean;
   maxAbsRet30Pct: number;
   maxVwapDistancePct: number;
@@ -55,8 +69,14 @@ export interface OpMinusParams {
   entryImprovementTicks: number;
   defensiveProtectTicks: number;
   repriceTicks: number;
+  /** Latest calendar DTE on which new entries are allowed. */
+  maxDaysToExpiry: number;
   quoteFrom: string;
+  /** DTE-1 entry start; defaults to quoteFrom. */
+  dte1QuoteFrom: string;
   entryCutoff: string;
+  /** DTE-1 entry cutoff; defaults to entryCutoff. */
+  dte1EntryCutoff: string;
 }
 
 function boundedParam(params: StrategyParams, key: string, dflt: number, min: number, max: number): number {
@@ -79,15 +99,34 @@ export function resolveOpMinusParams(params: StrategyParams): OpMinusParams {
     rewardRiskRatio: boundedParam(params, 'rewardRiskRatio', 2, 0.1, 20),
     targetPremiumPct: boundedParam(params, 'targetPremiumPct', 5, 0.1, 50),
     hardStopPremiumPct: boundedParam(params, 'hardStopPremiumPct', 9, 0.1, 100),
+    pairedExitEnabled: boolParam(params, 'pairedExitEnabled', false),
+    pairedEntryAtBid: boolParam(params, 'pairedEntryAtBid', true),
+    combinedTargetPremiumPct: boundedParam(params, 'combinedTargetPremiumPct', 1, 0.1, 50),
+    dte1CombinedTargetPremiumPct: boundedParam(
+      params,
+      'dte1CombinedTargetPremiumPct',
+      boundedParam(params, 'combinedTargetPremiumPct', 1, 0.1, 50),
+      0.1,
+      50,
+    ),
     combinedStopPremiumPct: boundedParam(params, 'combinedStopPremiumPct', 6, 0.1, 1_000),
     runnerLots: Math.min(1, Math.floor(boundedParam(params, 'runnerLots', 1, 0, 1))),
     quoteTtlSec: boundedParam(params, 'quoteTtlSec', 20, 1, 86_400),
     minRequoteMs: Math.floor(boundedParam(params, 'minRequoteMs', 2_000, 0, 60_000)),
     maxHoldSec: boundedParam(params, 'maxHoldSec', 180, 1, 86_400),
+    dte1MaxHoldSec: boundedParam(
+      params,
+      'dte1MaxHoldSec',
+      boundedParam(params, 'maxHoldSec', 180, 1, 86_400),
+      1,
+      86_400,
+    ),
+    leggingTimeoutSec: boundedParam(params, 'leggingTimeoutSec', 5, 1, 300),
     defensiveCooldownSec: boundedParam(params, 'defensiveCooldownSec', 300, 0, 86_400),
+    cycleCooldownSec: boundedParam(params, 'cycleCooldownSec', 0, 0, 86_400),
     rangeFilterEnabled: boolParam(params, 'rangeFilterEnabled', false),
     maxAbsRet30Pct: boundedParam(params, 'maxAbsRet30Pct', 0.001, 0.00001, 0.1),
-    maxVwapDistancePct: boundedParam(params, 'maxVwapDistancePct', 0.0015, 0.00001, 0.1),
+    maxVwapDistancePct: boundedParam(params, 'maxVwapDistancePct', 0.0015, 0, 0.1),
     maxVwapDistanceAtrMult: boundedParam(params, 'maxVwapDistanceAtrMult', 0, 0, 100),
     maxAdx: boundedParam(params, 'maxAdx', 0, 0, 100),
     maxStraddleRisePct: boundedParam(params, 'maxStraddleRisePct', 0, 0, 1),
@@ -96,8 +135,11 @@ export function resolveOpMinusParams(params: StrategyParams): OpMinusParams {
     entryImprovementTicks: Math.floor(boundedParam(params, 'entryImprovementTicks', 1, 0, 20)),
     defensiveProtectTicks: Math.floor(boundedParam(params, 'defensiveProtectTicks', 10, 1, 100)),
     repriceTicks: Math.floor(boundedParam(params, 'repriceTicks', 2, 0, 100)),
+    maxDaysToExpiry: Math.floor(boundedParam(params, 'maxDaysToExpiry', 365, 0, 365)),
     quoteFrom: strParam(params, 'quoteFrom', '09:20'),
+    dte1QuoteFrom: strParam(params, 'dte1QuoteFrom', strParam(params, 'quoteFrom', '09:20')),
     entryCutoff: strParam(params, 'entryCutoff', '15:10'),
+    dte1EntryCutoff: strParam(params, 'dte1EntryCutoff', strParam(params, 'entryCutoff', '15:10')),
   };
 }
 
@@ -126,6 +168,8 @@ export interface OpMinusActiveRunnerInput extends OpMinusLotInput {
 export interface OpMinusInput {
   nowMs: number;
   nowHHMM: string;
+  /** Calendar days from the IST session date to the selected scalp expiry. */
+  daysToExpiry?: number;
   scalpCe?: OptionChainRow;
   scalpPe?: OptionChainRow;
   spotPaise?: number;
@@ -146,8 +190,11 @@ export interface OpMinusInput {
 export type OpMinusReason =
   | 'SHORT_ENTRY'
   | 'TARGET'
+  | 'COMBINED_TARGET'
   | 'HARD_STOP'
   | 'COMBINED_STOP'
+  | 'PAIR_TIMEOUT'
+  | 'UNPAIRED_TIMEOUT'
   | 'SCALP_TIMEOUT'
   | 'RUNNER_COST_STOP'
   | 'RISK_EXIT';
@@ -167,7 +214,7 @@ export interface OpMinusDesiredOrder {
 
 export interface OpMinusEvaluation {
   desired: OpMinusDesiredOrder[];
-  phase: 'SCALPING' | 'EXIT_ONLY' | 'PAUSED_WINDOW' | 'PAUSED_LOCKOUT' | 'PAUSED_REGIME';
+  phase: 'SCALPING' | 'EXIT_ONLY' | 'PAUSED_WINDOW' | 'PAUSED_LOCKOUT' | 'PAUSED_DTE' | 'PAUSED_REGIME';
   pauseReason?: string;
   /**
    * Stable machine code for the specific range-gate check that blocked entries
@@ -243,12 +290,14 @@ export class OpMinusEngine {
   }
 
   evaluate(input: OpMinusInput): OpMinusEvaluation {
-    const combinedTripped = this.combinedStopTripped(input);
+    const pairedPositionReady = this.pairedPositionReady(input);
+    const pairExitReason = this.pairedExitReason(input);
     const desired = input.shortBooks.flatMap((book) => this.exitsForShortBook(
       book,
       input,
       this.selectRunnerCandidate(input),
-      combinedTripped,
+      pairExitReason,
+      pairedPositionReady,
     ));
     const candidate = this.selectRunnerCandidate(input);
 
@@ -262,16 +311,29 @@ export class OpMinusEngine {
       };
     }
 
-    if (input.nowHHMM < this.params.quoteFrom) {
-      return { desired, phase: 'PAUSED_WINDOW', pauseReason: `entries start ${this.params.quoteFrom}` };
+    const entryStart = this.entryStart(input);
+    if (input.nowHHMM < entryStart) {
+      return { desired, phase: 'PAUSED_WINDOW', pauseReason: `entries start ${entryStart}` };
     }
 
-    if (input.nowHHMM >= this.params.entryCutoff) {
+    const entryCutoff = this.entryCutoff(input);
+    if (input.nowHHMM >= entryCutoff) {
       return {
         desired,
         phase: 'EXIT_ONLY',
-        pauseReason: `entry cutoff ${this.params.entryCutoff}`,
+        pauseReason: `entry cutoff ${entryCutoff}`,
         ...(candidate !== undefined ? { runnerCandidateLotId: candidate } : {}),
+      };
+    }
+
+    if (
+      input.daysToExpiry !== undefined &&
+      (input.daysToExpiry < 0 || input.daysToExpiry > this.params.maxDaysToExpiry)
+    ) {
+      return {
+        desired,
+        phase: 'PAUSED_DTE',
+        pauseReason: `DTE ${input.daysToExpiry} outside entry range 0-${this.params.maxDaysToExpiry}`,
       };
     }
 
@@ -286,8 +348,9 @@ export class OpMinusEngine {
       };
     }
 
+    const defensiveExitPending = desired.some((order) => order.purpose === 'EXIT' && blocksNewEntries(order.reason));
     return {
-      desired: [...desired, ...this.missingShortEntries(input)],
+      desired: defensiveExitPending ? desired : [...desired, ...this.missingShortEntries(input)],
       phase: 'SCALPING',
       ...(candidate !== undefined ? { runnerCandidateLotId: candidate } : {}),
     };
@@ -307,25 +370,28 @@ export class OpMinusEngine {
         .reduce((sum, book) => sum + book.qty, 0) / lot;
       const missing = Math.max(0, this.params.scalpLotsPerRight - heldLots);
       for (let index = 0; index < Math.floor(missing); index++) {
+        const entryPricePaise = this.params.pairedExitEnabled && this.params.pairedEntryAtBid
+          // A package trade must fill both rights together. Crossing to the
+          // bid costs the spread once, but avoids carrying a directional naked
+          // leg while a passive quote waits (the observed source of repeated
+          // UNPAIRED_TIMEOUT losses).
+          ? row.bidPaise
+          : Math.max(
+              row.bidPaise + this.market.tickSizePaise,
+              row.askPaise - this.params.entryImprovementTicks * this.market.tickSizePaise,
+            );
         result.push({
           instrumentId: row.instrumentId,
           side: 'SELL',
           qty: lot,
           type: 'LIMIT',
-          // Do not cross the spread on a naked short entry: rest just inside
-          // the ask and let the market trade through the quote. Floor at one
-          // tick ABOVE the bid so a 1-tick spread quotes at the ask instead
-          // of hitting the bid (passive always, never an aggressive sell).
-          limitPricePaise: Math.max(
-            row.bidPaise + this.market.tickSizePaise,
-            row.askPaise - this.params.entryImprovementTicks * this.market.tickSizePaise,
-          ),
+          limitPricePaise: entryPricePaise,
           purpose: 'ENTRY',
           reason: 'SHORT_ENTRY',
           stopPlan: {
-            hardStopPremiumPaise: this.hardStopPaise(row.bidPaise),
-            timeStopSec: this.params.maxHoldSec,
-            targetPaise: this.targetPaise(row.bidPaise),
+            hardStopPremiumPaise: this.hardStopPaise(entryPricePaise),
+            timeStopSec: this.holdSec(input),
+            targetPaise: this.targetPaise(entryPricePaise),
           },
         });
       }
@@ -337,7 +403,8 @@ export class OpMinusEngine {
     book: OpMinusShortBookInput,
     input: OpMinusInput,
     candidateLotId: string | undefined,
-    combinedTripped: boolean,
+    pairExitReason: 'COMBINED_TARGET' | 'HARD_STOP' | 'COMBINED_STOP' | 'PAIR_TIMEOUT' | undefined,
+    pairedPositionReady: boolean,
   ): OpMinusDesiredOrder[] {
     const ask = book.row?.askPaise ?? 0;
     const result: OpMinusDesiredOrder[] = [];
@@ -350,8 +417,8 @@ export class OpMinusEngine {
         if (ask > 0 && ask >= input.runner.stopPaise) result.push(this.urgentBuy(book.instrumentId, lot, ask, 'RUNNER_COST_STOP'));
         continue;
       }
-      if (combinedTripped) {
-        result.push(this.urgentBuy(book.instrumentId, lot, ask, 'COMBINED_STOP'));
+      if (pairExitReason !== undefined) {
+        result.push(this.urgentBuy(book.instrumentId, lot, ask, pairExitReason));
         continue;
       }
       const stop = this.hardStopPaise(lot.entryPricePaise);
@@ -359,7 +426,13 @@ export class OpMinusEngine {
         result.push(this.urgentBuy(book.instrumentId, lot, ask, 'HARD_STOP'));
         continue;
       }
-      if (input.nowMs - lot.openedTs >= this.params.maxHoldSec * 1_000) {
+      if (this.params.pairedExitEnabled) {
+        if (!pairedPositionReady && input.nowMs - lot.openedTs >= this.params.leggingTimeoutSec * 1_000) {
+          result.push(this.urgentBuy(book.instrumentId, lot, ask, 'UNPAIRED_TIMEOUT'));
+        }
+        continue;
+      }
+      if (input.nowMs - lot.openedTs >= this.holdSec(input) * 1_000) {
         result.push(this.urgentBuy(book.instrumentId, lot, ask, 'SCALP_TIMEOUT'));
         continue;
       }
@@ -378,9 +451,60 @@ export class OpMinusEngine {
     return result;
   }
 
+  private pairedExitReason(
+    input: OpMinusInput,
+  ): 'COMBINED_TARGET' | 'HARD_STOP' | 'COMBINED_STOP' | 'PAIR_TIMEOUT' | undefined {
+    // The package-loss stop predates paired lifecycle management and remains
+    // active for legacy runner configurations as well.
+    if (this.combinedStopTripped(input)) return 'COMBINED_STOP';
+    if (!this.params.pairedExitEnabled) return undefined;
+    const lots = input.shortBooks.flatMap((book) =>
+      book.lots
+        .filter((lot) => lot.lotId !== input.runner?.lotId)
+        .map((lot) => ({ book, lot, askPaise: book.row?.askPaise ?? 0 })));
+    if (!this.pairedPositionReady(input)) return undefined;
+    if (lots.some((entry) => entry.askPaise <= 0)) return undefined;
+    if (lots.some((entry) => entry.askPaise >= this.hardStopPaise(entry.lot.entryPricePaise))) return 'HARD_STOP';
+
+    const entryPaise = lots.reduce((sum, entry) => sum + entry.lot.entryPricePaise * entry.lot.qty, 0);
+    const markPaise = lots.reduce((sum, entry) => sum + entry.askPaise * entry.lot.qty, 0);
+    if (entryPaise > 0 && entryPaise - markPaise >= entryPaise * (this.combinedTargetPct(input) / 100)) {
+      return 'COMBINED_TARGET';
+    }
+    const pairOpenedTs = Math.max(...lots.map((entry) => entry.lot.openedTs));
+    if (input.nowMs - pairOpenedTs >= this.holdSec(input) * 1_000) return 'PAIR_TIMEOUT';
+    return undefined;
+  }
+
+  private entryStart(input: OpMinusInput): string {
+    return input.daysToExpiry === 1 ? this.params.dte1QuoteFrom : this.params.quoteFrom;
+  }
+
+  private combinedTargetPct(input: OpMinusInput): number {
+    return input.daysToExpiry === 1
+      ? this.params.dte1CombinedTargetPremiumPct
+      : this.params.combinedTargetPremiumPct;
+  }
+
+  private holdSec(input: OpMinusInput): number {
+    return input.daysToExpiry === 1 ? this.params.dte1MaxHoldSec : this.params.maxHoldSec;
+  }
+
+  private entryCutoff(input: OpMinusInput): string {
+    return input.daysToExpiry === 1 ? this.params.dte1EntryCutoff : this.params.entryCutoff;
+  }
+
+  private pairedPositionReady(input: OpMinusInput): boolean {
+    if (!this.params.pairedExitEnabled) return false;
+    const heldLots = (right: OptionRight): number => input.shortBooks
+      .filter((book) => book.right === right)
+      .reduce((sum, book) => sum + book.qty, 0) / this.market.contract.lotSize;
+    return heldLots('CE') >= this.params.scalpLotsPerRight && heldLots('PE') >= this.params.scalpLotsPerRight;
+  }
+
   private selectRunnerCandidate(input: OpMinusInput): string | undefined {
     if (this.params.runnerLots === 0 || input.runner !== undefined || input.allowRunnerCandidate === false ||
-      input.latchedStop || input.nowHHMM < this.params.quoteFrom || input.nowHHMM >= this.params.entryCutoff) return undefined;
+      input.latchedStop || input.nowHHMM < this.entryStart(input) || input.nowHHMM >= this.entryCutoff(input)) return undefined;
     if (input.pendingRunnerLotId !== undefined && input.shortBooks.some((book) => book.lots.some((lot) => lot.lotId === input.pendingRunnerLotId))) {
       return input.pendingRunnerLotId;
     }
@@ -436,7 +560,7 @@ export class OpMinusEngine {
       return { ready: false, code: 'RET30', detail: `30s move ${pct(Math.abs(ret30))} > ${pct(this.params.maxAbsRet30Pct)}` };
     }
     const stretchPaise = Math.abs(spot - vwap);
-    if (stretchPaise / vwap > this.params.maxVwapDistancePct) {
+    if (this.params.maxVwapDistancePct > 0 && stretchPaise / vwap > this.params.maxVwapDistancePct) {
       return { ready: false, code: 'VWAP', detail: `VWAP stretch ${pct(stretchPaise / vwap)} > ${pct(this.params.maxVwapDistancePct)}` };
     }
     if (this.params.maxVwapDistanceAtrMult > 0) {
@@ -486,7 +610,8 @@ export class OpMinusEngine {
     instrumentId: InstrumentId,
     lot: OpMinusLotInput,
     askPaise: number,
-    reason: 'HARD_STOP' | 'COMBINED_STOP' | 'SCALP_TIMEOUT' | 'RUNNER_COST_STOP' | 'RISK_EXIT',
+    reason: 'COMBINED_TARGET' | 'HARD_STOP' | 'COMBINED_STOP' | 'PAIR_TIMEOUT' | 'UNPAIRED_TIMEOUT' |
+      'SCALP_TIMEOUT' | 'RUNNER_COST_STOP' | 'RISK_EXIT',
   ): OpMinusDesiredOrder {
     return {
       instrumentId,
@@ -500,6 +625,10 @@ export class OpMinusEngine {
       closeLotIds: [lot.lotId],
     };
   }
+}
+
+function blocksNewEntries(reason: OpMinusReason): boolean {
+  return reason !== 'TARGET';
 }
 
 function floorTick(pricePaise: number, tick: number): number {
