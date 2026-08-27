@@ -221,8 +221,6 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   if (strategyCfg.value.strategyId !== env.strategyId) {
     throw new Error(`Strategy config id mismatch: requested ${env.strategyId}, file declares ${strategyCfg.value.strategyId}`);
   }
-  const strategyMarket = env.strategyId === 's1-momentum-burst' ? s1MarketProfile(market) : market;
-
   const scripMasterPath = resolveRepoPath(root, env.scripMasterPath);
   const scripRows = loadScripMaster(scripMasterPath);
   // ALL_OP never quotes a contract on its own expiry day (minDaysToExpiry=1
@@ -233,6 +231,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
       : 0;
   const weekly = latestWeeklyChain(scripRows, date, env.underlyingSymbol, minDaysToExpiry);
   const market = marketWithLiveChainFacts(marketCfg.value, weekly);
+  const strategyMarket = env.strategyId === 's1-momentum-burst' ? s1MarketProfile(market) : market;
   const initialSpotPaise = pickInitialSpotPaise(weekly, env);
   const selectedStrikes = getChainStrikes(weekly.chain, initialSpotPaise, env.chainDepth);
   const { options, subscriptions: optionSubscriptions } = buildOptionSpecs(weekly, selectedStrikes, env.optionExchangeSegment);
