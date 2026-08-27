@@ -69,6 +69,16 @@ Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."
 Write-LaunchLog "Auto-arm forced to $env:DHAN_AUTO_ARM."
 
+# Refuse overlapping S1 launches before touching the day's journal. The
+# gateway's EADDRINUSE failure happens too late and can otherwise leave a
+# second process holding the same journal/trade artifacts open.
+$existingGateway = @(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+if ($existingGateway.Count -gt 0) {
+  $owners = ($existingGateway | Select-Object -ExpandProperty OwningProcess -Unique) -join ","
+  Write-LaunchLog "S1 gateway port 8787 is already listening (PID $owners); refusing overlapping launch."
+  throw "S1 gateway port 8787 is already in use by PID $owners. Stop the existing S1 runner before launching another."
+}
+
 # A paper-only runner cannot safely re-adopt a simulated position after a
 # crashed launch. Preserve the failed session for audit, then start clean.
 $today = Get-Date -Format "yyyy-MM-dd"
