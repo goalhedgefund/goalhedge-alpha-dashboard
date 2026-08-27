@@ -670,9 +670,9 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.8 production long-option market-maker policy', () => {
+describe('v0.9 production long-option market-maker policy', () => {
   it('is frozen at one deep passive lot with favorable payoff and a session-wide cluster brake', () => {
-    expect(strategy.version).toBe('0.8.0');
+    expect(strategy.version).toBe('0.9.0');
     expect(new AllOpAtmMm().version).toBe(strategy.version);
     expect(strategy.params).toEqual(expect.objectContaining({
       spreadCostMultiple: 16,
@@ -695,6 +695,10 @@ describe('v0.8 production long-option market-maker policy', () => {
       maxEntryFallPct: 0.2,
       maxEntrySpreadPct: 1.5,
       minEntryImbalance: -1,
+      entrySwitchScoreMargin: 0.1,
+      entrySwitchConfirmMs: 1_500,
+      maxEntryReplacementsPerMin: 12,
+      paperQueueAheadLots: 2,
       defensiveCooldownSec: 300,
       globalDefensiveCooldownSec: 0,
       globalLossClusterCount: 2,
@@ -749,6 +753,43 @@ describe('v0.8 production long-option market-maker policy', () => {
     }));
     const bid = out.desired.find((order) => order.side === 'BUY');
     expect(bid?.instrumentId).toBe(PE_ID);
+  });
+
+  it('requires a material, persistent challenger before switching the one-lot CE/PE lane', () => {
+    const e = engine({
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      entrySwitchScoreMargin: 0.1,
+      entrySwitchConfirmMs: 1_500,
+    });
+    const strongCe = { ...row(CE_ID, 'CE', 14_990, 15_010), bidQty: 10 * LOT, askQty: LOT };
+    const weakCe = { ...row(CE_ID, 'CE', 14_990, 15_010), bidQty: LOT, askQty: 10 * LOT };
+    const strongPe = { ...row(PE_ID, 'PE', 14_990, 15_010), bidQty: 10 * LOT, askQty: LOT };
+    const weakPe = { ...row(PE_ID, 'PE', 14_990, 15_010), bidQty: LOT, askQty: 10 * LOT };
+
+    const selected = (nowMs: number, ce: OptionChainRow, pe: OptionChainRow) => e.evaluate(
+      baseInput({ nowMs, atmCe: ce, atmPe: pe }),
+    );
+    expect(selected(NOW, strongCe, weakPe).selectedEntryRight).toBe('CE');
+
+    const transient = selected(NOW + 500, weakCe, strongPe);
+    expect(transient.selectedEntryRight).toBe('CE');
+    expect(transient.desired.find((order) => order.side === 'BUY')?.instrumentId).toBe(CE_ID);
+
+    selected(NOW + 1_000, strongCe, weakPe); // recovery resets the challenge clock
+    expect(selected(NOW + 2_000, weakCe, strongPe).selectedEntryRight).toBe('CE');
+    const confirmed = selected(NOW + 3_501, weakCe, strongPe);
+    expect(confirmed.selectedEntryRight).toBe('PE');
+    expect(confirmed.desired.find((order) => order.side === 'BUY')?.instrumentId).toBe(PE_ID);
+  });
+
+  it('reports both independently safe lanes even though one-lot ranking selects only one', () => {
+    const e = engine({ maxLotsInventory: 1, maxScalpLots: 1, maxLotsPerSide: 1, ladderLevels: 1 });
+    const out = e.evaluate(baseInput());
+    expect(out.desired.filter((order) => order.side === 'BUY')).toHaveLength(1);
+    expect(out.eligibleEntryInstruments).toEqual(expect.arrayContaining([CE_ID, PE_ID]));
   });
 });
 

@@ -100,7 +100,10 @@ export class JournalWriter {
     this.buf = [];
     this.writeChain = this.writeChain.then(async () => {
       const fh = await this.openPromise;
-      await fh.write(chunk, null, 'utf8');
+      // Use appendFile rather than a nullable-position write. This keeps the
+      // append-only invariant explicit and avoids platform-specific cursor
+      // behavior when the handle is shared with recovery/inspection tools.
+      await fh.appendFile(chunk, 'utf8');
       if (this.fsyncPolicy === 'always') await fh.sync();
     });
     this.writeChain.catch((err) => {

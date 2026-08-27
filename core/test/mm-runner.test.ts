@@ -282,6 +282,107 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('CANCELLED');
   });
 
+  it('keeps the selected one-lot quote when CE/PE ranking flickers and never opens a second lane', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      minRequoteMs: 5_000,
+      entrySwitchScoreMargin: 0,
+      entrySwitchConfirmMs: 0,
+    });
+    r.view.setRow({ ...row(CE_ID, 'CE', 14_990, 15_010, T0), bidQty: 10 * LOT, askQty: LOT });
+    r.view.setRow({ ...row(PE_ID, 'PE', 14_990, 15_010, T0), bidQty: LOT, askQty: 10 * LOT });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const original = working(r)[0]!;
+    expect(original.instrumentId).toBe(CE_ID);
+
+    r.view.setRow({ ...row(CE_ID, 'CE', 14_990, 15_010, T0 + 1_000), bidQty: LOT, askQty: 10 * LOT });
+    r.view.setRow({ ...row(PE_ID, 'PE', 14_990, 15_010, T0 + 1_000), bidQty: 10 * LOT, askQty: LOT });
+    await r.runner.onTimer(T0 + 1_000);
+
+    expect(r.oms.getOrder(original.clientOrderId)?.state).toBe('ACKED');
+    expect(working(r)).toHaveLength(1);
+    expect(working(r)[0]?.instrumentId).toBe(CE_ID);
+
+    await r.runner.onTimer(T0 + 5_000);
+    expect(r.oms.getOrder(original.clientOrderId)?.state).toBe('CANCELLED');
+    await r.runner.onTimer(T0 + 5_001);
+    expect(working(r)).toHaveLength(1);
+    expect(working(r)[0]?.instrumentId).toBe(PE_ID);
+  });
+
+  it('cancels a young quote immediately when its independent entry-quality gate fails', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      minRequoteMs: 5_000,
+      maxEntrySpreadPct: 0.5,
+    });
+    r.view.setRow({ ...row(CE_ID, 'CE', 14_990, 15_010, T0), bidQty: 10 * LOT, askQty: LOT });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const original = working(r)[0]!;
+    expect(original.instrumentId).toBe(CE_ID);
+
+    r.view.setRow(row(CE_ID, 'CE', 14_000, 16_000, T0 + 1_000));
+    await r.runner.onTimer(T0 + 1_000);
+    expect(r.oms.getOrder(original.clientOrderId)?.state).toBe('CANCELLED');
+  });
+
+  it('pauses replacements after the rolling entry-churn limit and resumes when the window clears', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      minRequoteMs: 0,
+      entrySwitchScoreMargin: 0,
+      entrySwitchConfirmMs: 0,
+      maxEntryReplacementsPerMin: 2,
+    });
+    const setDepth = (ceStrong: boolean, ts: number) => {
+      r.view.setRow({
+        ...row(CE_ID, 'CE', 14_990, 15_010, ts),
+        bidQty: ceStrong ? 10 * LOT : LOT,
+        askQty: ceStrong ? LOT : 10 * LOT,
+      });
+      r.view.setRow({
+        ...row(PE_ID, 'PE', 14_990, 15_010, ts),
+        bidQty: ceStrong ? LOT : 10 * LOT,
+        askQty: ceStrong ? 10 * LOT : LOT,
+      });
+    };
+
+    setDepth(true, T0);
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    expect(working(r)[0]?.instrumentId).toBe(CE_ID);
+
+    setDepth(false, T0 + 1_000);
+    await r.runner.onTimer(T0 + 1_000);
+    expect(working(r)[0]?.instrumentId).toBe(PE_ID);
+
+    setDepth(true, T0 + 2_000);
+    await r.runner.onTimer(T0 + 2_000);
+    expect(working(r)).toHaveLength(0);
+    expect(r.runner.lastNoTrade()).toBe('ENTRY_CHURN_GUARD');
+    expect(r.runner.mmState()).toEqual(expect.objectContaining({
+      entryReplacementsLastMin: 2,
+      entryReplacementLimit: 2,
+    }));
+
+    await r.runner.onTimer(T0 + 62_001);
+    expect(working(r)[0]?.instrumentId).toBe(CE_ID);
+  });
+
   it('cancels a young entry immediately when a directional regime returns to neutral', async () => {
     r = rig(testRiskProfile, { ...PARAMS, directionalOnly: true, minRequoteMs: 5_000 });
     r.runner.arm();

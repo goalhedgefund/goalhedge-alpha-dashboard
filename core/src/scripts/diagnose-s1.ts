@@ -25,37 +25,15 @@ interface AnyEvent {
   payload: Record<string, unknown>;
 }
 
-async function streamEvents(path: string): Promise<AnyEvent[]> {
-  const events: AnyEvent[] = [];
-  await new Promise<void>((resolve, reject) => {
-    const rl = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
-    rl.on('line', (line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      try {
-        events.push(JSON.parse(trimmed) as AnyEvent);
-      } catch { /* skip malformed */ }
-    });
-    rl.on('close', resolve);
-    rl.on('error', reject);
-  });
-  return events;
-}
-
 function fmt(paise: number): string {
   return `₹${(paise / PAISE).toFixed(2)}`;
 }
 
 async function analyseDay(date: string): Promise<void> {
   const path = join(JOURNAL_ROOT, date, SESSION, 'events.jsonl');
-  let events: AnyEvent[];
-  try {
-    events = await streamEvents(path);
-  } catch {
-    console.log(`  [skip] events.jsonl not found for ${date}`);
-    return;
-  }
 
+  // Aggregate inline while streaming — never buffer the full event array
+  // (journals grow to tens of MB over a multi-week run).
   const noTrade: Record<string, number> = {};
   const stopTriggers: Array<{ reason: string; layer: string; premiumPaise: number }> = [];
   const entryIntents: Array<{
@@ -68,8 +46,11 @@ async function analyseDay(date: string): Promise<void> {
     impliedAtrPaise?: number;
   }> = [];
   const trades: Array<{ instrumentId: string; grossPaise: number; side: string }> = [];
+  let totalEvents = 0;
 
-  for (const ev of events) {
+  const handleEvent = (ev: AnyEvent): void => {
+    totalEvents++;
+
     if (ev.type === 'strategy.noTrade') {
       const reason = String((ev.payload as { reason?: string }).reason ?? 'UNKNOWN');
       noTrade[reason] = (noTrade[reason] ?? 0) + 1;
@@ -86,16 +67,12 @@ async function analyseDay(date: string): Promise<void> {
 
     if (ev.type === 'intent.proposed') {
       const intent = (ev.payload as { intent?: Record<string, unknown> }).intent;
-      if (!intent || intent.purpose !== 'ENTRY') continue;
+      if (!intent || intent.purpose !== 'ENTRY') return;
       const stopPlan = intent.stopPlan as Record<string, unknown> | undefined;
       const entryPremiumPaise = Number(intent.limitPricePaise ?? 0);
       const hardStopUnderlyingPaise = Number(stopPlan?.hardStopUnderlyingPaise ?? 0) || undefined;
       const hardStopUnderlyingDir = String(stopPlan?.hardStopUnderlyingDir ?? '') || undefined;
 
-      // Back-calculate implied ATR: at atrMult=1, distance = atr*1
-      // CE: hardStopUnderlying = spot - atr → atr unknown without spot
-      // But we know entry premium → rough proxy: underlying ≈ 24100-24200 for Jul 16
-      // Better: just report the levels and let operator interpret
       const eiEntry: typeof entryIntents[number] = {
         instrumentId: String(intent.instrumentId ?? ''),
         entryPremiumPaise,
@@ -119,9 +96,25 @@ async function analyseDay(date: string): Promise<void> {
         });
       }
     }
-  }
+  };
 
-  const totalEvents = events.length;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
+      rl.on('line', (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          handleEvent(JSON.parse(trimmed) as AnyEvent);
+        } catch { /* skip malformed */ }
+      });
+      rl.on('close', resolve);
+      rl.on('error', reject);
+    });
+  } catch {
+    console.log(`  [skip] events.jsonl not found for ${date}`);
+    return;
+  }
   const noTradeTotal = Object.values(noTrade).reduce((s, v) => s + v, 0);
 
   console.log(`\n${'='.repeat(60)}`);

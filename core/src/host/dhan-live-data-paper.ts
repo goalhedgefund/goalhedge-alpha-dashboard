@@ -34,6 +34,7 @@ import { loadDhanLiveDataPaperEnv, type DhanLiveDataPaperEnv } from './dhan-live
 import { PaperHost, type HostRunnerPorts } from './paper-host.js';
 import { MmRunner } from '../mm/mm-runner.js';
 import { OpMinusRunner } from '../mm/op-minus-runner.js';
+import { S1_ENTRY_START, s1MarketProfile } from '../strategy/s1-schedule.js';
 
 interface DhanLiveDataPaperBuild {
   host: PaperHost;
@@ -220,6 +221,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   if (strategyCfg.value.strategyId !== env.strategyId) {
     throw new Error(`Strategy config id mismatch: requested ${env.strategyId}, file declares ${strategyCfg.value.strategyId}`);
   }
+  const strategyMarket = env.strategyId === 's1-momentum-burst' ? s1MarketProfile(market) : market;
 
   const scripMasterPath = resolveRepoPath(root, env.scripMasterPath);
   const scripRows = loadScripMaster(scripMasterPath);
@@ -274,12 +276,14 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
 
   const paper = new PaperBroker({
     clock: systemClock,
-    tickSizePaise: market.tickSizePaise,
+    tickSizePaise: strategyMarket.tickSizePaise,
     slippageTicks: env.paperSlippageTicks,
     ackLatencyMs: env.paperAckLatencyMs,
     fillLatencyMs: env.paperFillLatencyMs,
     // MM quotes rest passively below mid and must fill when the touch arrives.
     restingFills: isMm,
+    passiveTradeFills: isAllOp,
+    passiveQueueAheadLots: Number(strategyCfg.value.params.paperQueueAheadLots ?? 2),
   });
   const recorder = new Recorder({ dir: tickDir, compression: 'gzip' });
   const ids = new IdFactory(sessionId);
@@ -300,10 +304,10 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     sessionId,
     date,
     mode: 'paper',
-    market,
+    market: strategyMarket,
     riskProfile: riskCfg.value,
     eligibility: {
-      entryWindows: [{ from: market.session.open, to: market.entryCutoff }],
+      entryWindows: [{ from: env.strategyId === 's1-momentum-burst' ? S1_ENTRY_START : strategyMarket.session.open, to: strategyMarket.entryCutoff }],
       blackoutDates: new Set(),
       maxSpreadPct: env.maxSpreadPct,
       minOi: env.minOi,

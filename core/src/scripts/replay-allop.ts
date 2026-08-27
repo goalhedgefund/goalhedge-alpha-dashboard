@@ -82,6 +82,8 @@ export async function runAllOpReplay(
     ackLatencyMs: 0,
     fillLatencyMs: 0,
     restingFills: true,
+    passiveTradeFills: true,
+    passiveQueueAheadLots: Number(params.paperQueueAheadLots ?? 2),
   });
   // Every replay is isolated. Reusing a dated journal would recover the prior
   // run and contaminate comparisons between strategy versions.

@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema } from '../config/schemas.js';
-import { makeSessionId, IdFactory } from '../domain/ids.js';
+import { makeSessionId, IdFactory, type InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
 import { ManualClock } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
@@ -29,8 +29,14 @@ import { FeedMarketData } from '../host/feed-market-data.js';
 import { PaperHost } from '../host/paper-host.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
+import { S1_ENTRY_START, s1MarketProfile } from '../strategy/s1-schedule.js';
 import type { StrategyParams } from '../strategy/types.js';
-import { discoverPlainRecording, loadTicksFromGz, resolveScripMasterPath } from './backtest-recording.js';
+import {
+  discoverPlainRecording,
+  loadTicksFromGz,
+  resolveScripMasterPath,
+  type DiscoveredRecording,
+} from './backtest-recording.js';
 export { loadTicksFromGz } from './backtest-recording.js';
 
 // ─── paths ───────────────────────────────────────────────────────────────────
@@ -91,6 +97,25 @@ export interface ReplayResult {
   ticksReplayed: number;
 }
 
+/**
+ * A scrip-master/corpus mismatch must never degrade into a plausible-looking
+ * zero-trade replay. Dynamic discovery handles expiry rolls; this guard still
+ * catches recordings whose instruments are mostly no longer resolvable.
+ */
+export function assertReplayCoverage(ticks: readonly Tick[], recording: DiscoveredRecording, date: string): void {
+  const known = new Set<InstrumentId>([
+    recording.spotInstrumentId,
+    ...recording.optionSpecs.map((spec) => spec.instrumentId),
+  ]);
+  const unknownCount = ticks.filter((tick) => !known.has(tick.instrumentId)).length;
+  const unknownPct = unknownCount / ticks.length;
+  if (unknownPct > 0.05) {
+    throw new Error(
+      `${(unknownPct * 100).toFixed(0)}% ticks unknown — scrip master or option specs are stale for ${date}`,
+    );
+  }
+}
+
 export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const { date } = opts;
 
@@ -107,7 +132,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     }
   }
   const params: StrategyParams = { ...strategyCfg.value.params, ...overrides };
-  const market = marketCfg.value;
+  const market = s1MarketProfile(marketCfg.value);
 
   // ── load ticks ────────────────────────────────────────────────────────────
   const tickPath = join(TICK_ROOT, date, 'ticks.jsonl.gz');
@@ -120,6 +145,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   // when nothing resolves — a stale/mismatched corpus fails loudly, never as
   // a silent 0-trade run.
   const recording = discoverPlainRecording(allTicks, resolveScripMasterPath());
+  assertReplayCoverage(allTicks, recording, date);
   const clock = new ManualClock(recording.feedTicks[0]!.ts);
   const marketData = new FeedMarketData({
     spotInstrumentId: recording.spotInstrumentId,
@@ -169,7 +195,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     market,
     riskProfile: riskCfg.value,
     eligibility: {
-      entryWindows: [{ from: market.session.open, to: market.entryCutoff }],
+      entryWindows: [{ from: S1_ENTRY_START, to: market.entryCutoff }],
       blackoutDates: new Set(),
       maxSpreadPct: 0.015,
       minOi: 100,

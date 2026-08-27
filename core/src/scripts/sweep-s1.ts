@@ -13,12 +13,12 @@
  *    Do not promote any combo to production without 2-week forward paper validation.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { loadTicksFromGz, runReplay } from './replay-s1.js';
+import { loadTicksFromGz, runReplay, TICK_ROOT } from './replay-s1.js';
 
 const SCALPER_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SWEEP_ROOT = join(SCALPER_ROOT, 'journals', 's1-sweep');
@@ -27,7 +27,9 @@ const SWEEP_ROOT = join(SCALPER_ROOT, 'journals', 's1-sweep');
 
 const CLEAN_DAYS = ['2026-07-16'];
 
-const ATR_MULT_VALUES = [1, 1.5, 2, 3, 0];        // 0 = disabled (no underlying stop)
+// 0 = disabled: stop-plan.ts guards `distance > 0`, so mult 0 genuinely omits
+// the underlying invalidation (verified — NOT a zero-distance instant stop).
+const ATR_MULT_VALUES = [1, 1.5, 2, 3, 0];
 const TIME_STOP_VALUES = [90, 150, 240];
 const IMPULSE_PCT_VALUES = [0.00025, 0.00035, 0.0005];
 const CONFIRM_TICK_VALUES = [2, 3, 4];
@@ -70,10 +72,10 @@ function comboKey(c: SweepCombo): string {
   return `atr${c.atrMult}_t${c.timeStopSec}_imp${c.impulsePct.toFixed(5)}_ctk${c.confirmTicks}`;
 }
 
-function allCombos(): SweepCombo[] {
+function allCombos(timeStopValues: number[]): SweepCombo[] {
   const combos: SweepCombo[] = [];
   for (const atrMult of ATR_MULT_VALUES) {
-    for (const timeStopSec of TIME_STOP_VALUES) {
+    for (const timeStopSec of timeStopValues) {
       for (const impulsePct of IMPULSE_PCT_VALUES) {
         for (const confirmTicks of CONFIRM_TICK_VALUES) {
           combos.push({ atrMult, timeStopSec, impulsePct, confirmTicks });
@@ -95,28 +97,33 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const daysArg = args.filter((_, i) => args[i - 1] === '--days');
   const days = daysArg.length > 0 ? daysArg : CLEAN_DAYS;
+  const timeStopArg = args.filter((_, i) => args[i - 1] === '--time-stop').map(Number);
+  const timeStopValues = timeStopArg.length > 0 ? timeStopArg : TIME_STOP_VALUES;
 
-  const combos = allCombos();
+  const combos = allCombos(timeStopValues);
   const totalRuns = combos.length * days.length;
 
   console.log('S1 Parameter Sweep');
-  console.log(`Combos: ${combos.length}  |  Days: ${days.join(', ')}  |  Total runs: ${totalRuns}`);
+  console.log(`Combos: ${combos.length}  |  Days: ${days.join(', ')}  |  timeStopSec: ${timeStopValues.join(', ')}  |  Total runs: ${totalRuns}`);
   console.log('='.repeat(70));
 
-  // Pre-validate tick files exist and are readable.
-  const TICK_ROOT = join(SCALPER_ROOT, 'data', 'dhan', 'ticks-s1-momentum-burst');
+  // Pre-validate tick files against the SAME corpus runReplay loads from
+  // (TICK_ROOT is imported from replay-s1 so the two can never diverge).
+  // Collect into a new array — never splice the array being iterated: that
+  // shifts the iterator, skips the next day, and mutates CLEAN_DAYS.
+  const usableDays: string[] = [];
   for (const date of days) {
     const tickPath = join(TICK_ROOT, date, 'ticks.jsonl.gz');
     const ticks = await loadTicksFromGz(tickPath);
     if (ticks.length === 0) {
       console.error(`No ticks available for ${date} — skipping this day.`);
-      days.splice(days.indexOf(date), 1);
     } else {
       console.log(`Pre-loaded: ${date} → ${ticks.length} ticks ✓`);
+      usableDays.push(date);
     }
   }
 
-  if (days.length === 0) {
+  if (usableDays.length === 0) {
     console.error('No usable days. Exiting.');
     process.exitCode = 1;
     return;
@@ -132,7 +139,7 @@ async function main(): Promise<void> {
     const key = comboKey(combo);
     const dayResults: DayResult[] = [];
 
-    for (const date of days) {
+    for (const date of usableDays) {
       const journalDir = join(tmpdir(), `scalper-sweep-${key}-${date}`);
 
       try {
@@ -160,6 +167,11 @@ async function main(): Promise<void> {
       } catch (err) {
         console.error(`  [ERROR] combo=${key} date=${date}: ${String(err)}`);
         dayResults.push({ date, tradeCount: 0, wins: 0, losses: 0, netPaise: 0, grossPaise: 0, chargesPaise: 0, avgHoldMs: 0 });
+      } finally {
+        // The digest is aggregated from the returned summary, not the disk
+        // journal — delete the per-combo dir or 135 full-day journals pile up
+        // in %TEMP% on every sweep.
+        rmSync(journalDir, { recursive: true, force: true });
       }
     }
 
@@ -230,7 +242,7 @@ async function main(): Promise<void> {
 
   console.log(`\n${'─'.repeat(70)}`);
   console.log('⚠  HONESTY CAVEATS:');
-  console.log(`   · Only ${days.length} day(s) of clean tick data — all results are IN-SAMPLE.`);
+  console.log(`   · Only ${usableDays.length} day(s) of clean tick data — all results are IN-SAMPLE.`);
   console.log('   · With ≤1 trade per combo, ranking is statistically meaningless.');
   console.log('   · Treat the top combo as a HYPOTHESIS only.');
   console.log('   · Mandatory next step: run top-3 combos in live paper for ≥2 weeks');

@@ -90,6 +90,7 @@ export class MmRunner {
   // Gate rejections are deterministic until price or risk state changes. Keep
   // them off the desired set briefly instead of submitting on every tick.
   private readonly entryBlockedUntil = new Map<InstrumentId, number>();
+  private entryReplacementTs: number[] = [];
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -144,6 +145,9 @@ export class MmRunner {
       : lots.find((lot) => lot.lotId === this.pendingRunnerLotId);
     const runner = this.activeRunner;
     const trend = this.engine.trendState();
+    const selectedEntryRight = this.engine.entrySelection();
+    const nowMs = this.opts.clock.now();
+    this.pruneEntryReplacements(nowMs);
     const expiryInfo = this.expirySnapshot();
     return {
       quotePhase: this.quotePhase,
@@ -151,6 +155,9 @@ export class MmRunner {
       scalpSlotsMax: params.maxScalpLots,
       trendRegime: trend.regime,
       trendDriftPct: trend.driftPct,
+      ...(selectedEntryRight !== undefined ? { selectedEntryRight } : {}),
+      entryReplacementsLastMin: this.entryReplacementTs.length,
+      entryReplacementLimit: params.maxEntryReplacementsPerMin,
       lossStreaks: { CE: this.engine.lossStreakCount('CE'), PE: this.engine.lossStreakCount('PE') },
       ...(expiryInfo !== undefined ? expiryInfo : {}),
       runnerStatus: runner !== undefined ? 'ACTIVE' : pendingLot !== undefined ? 'PENDING' : 'AVAILABLE',
@@ -280,6 +287,8 @@ export class MmRunner {
       const live = this.liveOrders();
       const tolerance = this.engine.activeParams().repriceTicks * this.opts.market.tickSizePaise;
       const matchedDesired = new Set<MmDesiredOrder>();
+      const eligibleEntryInstruments = new Set(evaluation.eligibleEntryInstruments);
+      let retainedUnmatchedEntryUnits = 0;
       const blockedBroadLanes = new Set<string>();
       const blockedLotLanes = new Set<string>();
       const blockedAllocatedSellInstruments = new Set<string>();
@@ -317,20 +326,24 @@ export class MmRunner {
         if (match !== undefined) {
           matchedDesired.add(match);
         } else {
-          const entryStillEligible = desired.some(
-            (candidate) =>
-              candidate.purpose === 'ENTRY' &&
-              candidate.instrumentId === order.instrumentId &&
-              candidate.side === order.side,
-          );
-          // Keep passive entry quotes on the book long enough to earn queue
-          // position, but never retain an order once its directional setup
-          // has disappeared.
+          const safeToRest = eligibleEntryInstruments.has(order.instrumentId);
+          // Ranking is intentionally not part of this decision. A safe quote
+          // keeps its queue position for the full residence window even when
+          // the other right temporarily wins the asynchronous L1 comparison.
           if (
             order.purpose === 'ENTRY' &&
-            entryStillEligible &&
-            nowMs - order.createdTs < this.engine.activeParams().minRequoteMs
+            safeToRest &&
+            nowMs - entryResidenceStart(order) < this.engine.activeParams().minRequoteMs
           ) {
+            const laneCandidate = desired.find(
+              (candidate) =>
+                !matchedDesired.has(candidate) &&
+                candidate.purpose === 'ENTRY' &&
+                candidate.instrumentId === order.instrumentId &&
+                candidate.side === order.side,
+            );
+            if (laneCandidate !== undefined) matchedDesired.add(laneCandidate);
+            else retainedUnmatchedEntryUnits += remainingQty;
             blockOrderAllocation(
               order,
               blockedBroadLanes,
@@ -345,7 +358,9 @@ export class MmRunner {
             blockedLotLanes,
             blockedAllocatedSellInstruments,
           );
-          await this.opts.oms.cancel(order.clientOrderId).catch((err: unknown) => {
+          await this.opts.oms.cancel(order.clientOrderId).then(() => {
+            if (order.purpose === 'ENTRY') this.noteEntryReplacement(nowMs);
+          }).catch((err: unknown) => {
             this.journal('diag.error', { where: 'mm.cancel', message: String(err) });
           });
         }
@@ -353,6 +368,10 @@ export class MmRunner {
 
       for (const order of desired) {
         if (matchedDesired.has(order)) continue;
+        if (order.purpose === 'ENTRY' && retainedUnmatchedEntryUnits > 0) {
+          retainedUnmatchedEntryUnits = Math.max(0, retainedUnmatchedEntryUnits - order.qty);
+          continue;
+        }
         if (allocationBlocked(
           order,
           blockedBroadLanes,
@@ -361,6 +380,14 @@ export class MmRunner {
         )) continue;
         if (this.opts.sessionRisk.current().latchedStop !== undefined && order.reason !== 'RISK_EXIT') {
           this.forceReconcileRequested = true;
+          continue;
+        }
+        if (order.purpose === 'ENTRY' && this.entryChurnGuardActive(nowMs)) {
+          const limit = this.engine.activeParams().maxEntryReplacementsPerMin;
+          this.noTrade(
+            'ENTRY_CHURN_GUARD',
+            `${this.entryReplacementTs.length}/${limit} entry replacements in 60s`,
+          );
           continue;
         }
         await this.place(order, nowMs);
@@ -619,6 +646,22 @@ export class MmRunner {
     };
   }
 
+  private noteEntryReplacement(nowMs: number): void {
+    this.entryReplacementTs.push(nowMs);
+    this.pruneEntryReplacements(nowMs);
+  }
+
+  private entryChurnGuardActive(nowMs: number): boolean {
+    this.pruneEntryReplacements(nowMs);
+    const limit = this.engine.activeParams().maxEntryReplacementsPerMin;
+    return limit > 0 && this.entryReplacementTs.length >= limit;
+  }
+
+  private pruneEntryReplacements(nowMs: number): void {
+    const cutoff = nowMs - 60_000;
+    this.entryReplacementTs = this.entryReplacementTs.filter((ts) => ts > cutoff);
+  }
+
   private noTrade(reason: string, detail?: string): void {
     if (reason === this.lastNoTradeReason) return;
     this.lastNoTradeReason = reason;
@@ -638,6 +681,10 @@ function sameAllocation(left?: readonly string[], right?: readonly string[]): bo
   const a = [...(left ?? [])].sort();
   const b = [...(right ?? [])].sort();
   return a.length === b.length && a.every((lotId, index) => lotId === b[index]);
+}
+
+function entryResidenceStart(order: Order): number {
+  return order.state === 'ACKED' ? order.updatedTs : order.createdTs;
 }
 
 function isUrgentExit(reason: MmDesiredOrder['reason']): boolean {

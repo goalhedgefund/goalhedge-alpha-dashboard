@@ -43,6 +43,12 @@ export interface MmParams {
   maxEntrySpreadPct: number;
   /** Minimum displayed L1 bid/ask imbalance required for a new entry. */
   minEntryImbalance: number;
+  /** Challenger score advantage required before changing the one-lot CE/PE lane. */
+  entrySwitchScoreMargin: number;
+  /** Time a materially better challenger must remain ahead before the lane changes. */
+  entrySwitchConfirmMs: number;
+  /** Maximum entry cancel/replacements in a rolling minute. 0 disables the guard. */
+  maxEntryReplacementsPerMin: number;
   defensiveCooldownSec: number;
   /** Strategy-wide pause after any losing defensive exit. */
   globalDefensiveCooldownSec: number;
@@ -108,6 +114,9 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     maxEntryFallPct: boundedParam(params, 'maxEntryFallPct', 0.2, 0, 20),
     maxEntrySpreadPct: boundedParam(params, 'maxEntrySpreadPct', 100, 0, 100),
     minEntryImbalance: boundedParam(params, 'minEntryImbalance', -1, -1, 1),
+    entrySwitchScoreMargin: boundedParam(params, 'entrySwitchScoreMargin', 0.1, 0, 2),
+    entrySwitchConfirmMs: Math.floor(boundedParam(params, 'entrySwitchConfirmMs', 1_500, 0, 60_000)),
+    maxEntryReplacementsPerMin: Math.floor(boundedParam(params, 'maxEntryReplacementsPerMin', 12, 0, 120)),
     defensiveCooldownSec: boundedParam(params, 'defensiveCooldownSec', 180, 0, 86_400),
     globalDefensiveCooldownSec: boundedParam(params, 'globalDefensiveCooldownSec', 0, 0, 86_400),
     globalLossClusterCount: Math.floor(boundedParam(params, 'globalLossClusterCount', 0, 0, 100)),
@@ -240,6 +249,9 @@ export interface MmEvaluation {
   trendRegime: MmTrendRegime;
   trendDriftPct: number;
   lossStreaks: Record<OptionRight, number>;
+  /** Independently safe entry lanes, including candidates not selected by one-lot ranking. */
+  eligibleEntryInstruments: InstrumentId[];
+  selectedEntryRight?: OptionRight;
 }
 
 const KNIFE_WINDOW_MS = 5 * 60_000;
@@ -252,6 +264,11 @@ interface SpotPoint {
 interface PremiumPoint {
   ts: number;
   bidPaise: number;
+}
+
+interface EntryChallenger {
+  right: OptionRight;
+  sinceMs: number;
 }
 
 export class QuotingEngine {
@@ -268,6 +285,8 @@ export class QuotingEngine {
   private globalCooldownReason: 'DEFENSIVE_EXIT' | 'LOSS_CLUSTER' | undefined;
   private globalCooldownExitCount = 0;
   private lastDefences: MmDefenceState[] = [];
+  private selectedEntryRight: OptionRight | undefined;
+  private entryChallenger: EntryChallenger | undefined;
 
   constructor(
     private readonly market: MarketProfile,
@@ -278,6 +297,8 @@ export class QuotingEngine {
 
   setParams(params: StrategyParams): void {
     this.params = resolveMmParams(params);
+    this.selectedEntryRight = undefined;
+    this.entryChallenger = undefined;
   }
 
   activeParams(): MmParams {
@@ -357,6 +378,10 @@ export class QuotingEngine {
     return { regime: this.trendRegime, driftPct: this.trendDriftPct };
   }
 
+  entrySelection(): OptionRight | undefined {
+    return this.selectedEntryRight;
+  }
+
   defenceSnapshot(nowMs: number): MmDefenceState[] {
     return this.lastDefences.filter(
       (d) => d.reason === 'ADVERSE_BOOK' || d.reason === 'TREND' || (d.untilTs ?? 0) > nowMs,
@@ -405,17 +430,38 @@ export class QuotingEngine {
     const heldByRight: Record<OptionRight, number> = { CE: ceLots, PE: peLots };
     const plannedByRight: Record<OptionRight, number> = { CE: 0, PE: 0 };
     const qualityRejects = new Map<OptionRight, { spreadPct: number; imbalance: number }>();
+    const eligibleEntryInstruments = new Set<InstrumentId>();
 
     const rights: Array<{ right: OptionRight; row?: OptionChainRow }> = [
       { right: 'CE', ...(input.atmCe !== undefined ? { row: input.atmCe } : {}) },
       { right: 'PE', ...(input.atmPe !== undefined ? { row: input.atmPe } : {}) },
     ];
 
-    // A one-lot desk must not inherit a CE bias merely from array order. Rank
-    // the two candidates by executable-book quality; exact ties alternate by
-    // minute so a flat book gets equal access to CE and PE over time.
+    for (const { right, row } of rights) {
+      if (
+        skip[right] ||
+        heldByRight[right] >= p.maxLotsPerSide ||
+        row === undefined ||
+        input.entryBlockedInstruments?.has(row.instrumentId) === true ||
+        this.entryMomentumFalling(row, input.nowMs) ||
+        row.bidPaise <= 0 ||
+        row.askPaise <= 0
+      ) {
+        continue;
+      }
+      const quality = this.entryQuality(row);
+      if (!quality.eligible) {
+        qualityRejects.set(right, quality);
+        continue;
+      }
+      eligibleEntryInstruments.add(row.instrumentId);
+    }
+
+    // A one-lot desk keeps its selected right until a materially better lane
+    // remains ahead for long enough. Raw L1 depth flickers on asynchronous CE
+    // and PE packets; switching on every score change destroys queue position.
     if (remainingLots === p.lotsPerOrder) {
-      rights.sort((left, right) => this.compareEntryCandidates(left, right, input));
+      this.rankEntryCandidates(rights, eligibleEntryInstruments, input);
     }
 
     for (let level = 0; level < p.ladderLevels; level++) {
@@ -466,11 +512,20 @@ export class QuotingEngine {
         input,
         candidateLotId,
         'directional-only: awaiting trend',
+        eligibleEntryInstruments,
       );
     }
     if (!hasBid && defences.length > 0) {
       const detail = defences.map((d) => `${d.right}:${d.reason}`).join(',');
-      return this.result(desired, 'PAUSED_DEFENCE', defences, input, candidateLotId, detail);
+      return this.result(
+        desired,
+        'PAUSED_DEFENCE',
+        defences,
+        input,
+        candidateLotId,
+        detail,
+        eligibleEntryInstruments,
+      );
     }
     if (!hasBid && qualityRejects.size > 0) {
       const detail = [...qualityRejects]
@@ -484,9 +539,18 @@ export class QuotingEngine {
         input,
         candidateLotId,
         `entry quality rejected (${detail})`,
+        eligibleEntryInstruments,
       );
     }
-    return this.result(desired, 'QUOTING', defences, input, candidateLotId);
+    return this.result(
+      desired,
+      'QUOTING',
+      defences,
+      input,
+      candidateLotId,
+      undefined,
+      eligibleEntryInstruments,
+    );
   }
 
   private result(
@@ -496,6 +560,7 @@ export class QuotingEngine {
     input: MmQuoteInput,
     candidateLotId?: string,
     pauseReason?: string,
+    eligibleEntryInstruments: ReadonlySet<InstrumentId> = new Set(),
   ): MmEvaluation {
     const spread = this.representativeSpread(input);
     return {
@@ -505,6 +570,8 @@ export class QuotingEngine {
       trendRegime: this.trendRegime,
       trendDriftPct: this.trendDriftPct,
       lossStreaks: { CE: this.lossStreakCount('CE'), PE: this.lossStreakCount('PE') },
+      eligibleEntryInstruments: [...eligibleEntryInstruments],
+      ...(this.selectedEntryRight !== undefined ? { selectedEntryRight: this.selectedEntryRight } : {}),
       ...(pauseReason !== undefined ? { pauseReason } : {}),
       ...(spread !== undefined ? { minSpreadPct: spread } : {}),
       ...(candidateLotId !== undefined ? { runnerCandidateLotId: candidateLotId } : {}),
@@ -856,6 +923,61 @@ export class QuotingEngine {
     const ceFirst = Math.floor(input.nowMs / 60_000) % 2 === 0;
     if (left.right === right.right) return 0;
     return left.right === (ceFirst ? 'CE' : 'PE') ? -1 : 1;
+  }
+
+  private rankEntryCandidates(
+    candidates: Array<{ right: OptionRight; row?: OptionChainRow }>,
+    eligibleInstruments: ReadonlySet<InstrumentId>,
+    input: MmQuoteInput,
+  ): void {
+    const eligible = candidates.filter(
+      (candidate) => candidate.row !== undefined && eligibleInstruments.has(candidate.row.instrumentId),
+    );
+    if (eligible.length === 0) {
+      this.entryChallenger = undefined;
+      return;
+    }
+
+    const ranked = [...eligible].sort((left, right) => this.compareEntryCandidates(left, right, input));
+    const rawBest = ranked[0]!;
+    const incumbent = eligible.find((candidate) => candidate.right === this.selectedEntryRight);
+    if (incumbent === undefined) {
+      this.selectedEntryRight = rawBest.right;
+      this.entryChallenger = undefined;
+    } else if (rawBest.right === incumbent.right) {
+      this.entryChallenger = undefined;
+    } else {
+      const advantage = this.entryCandidateScore(rawBest) - this.entryCandidateScore(incumbent);
+      if (advantage < this.params.entrySwitchScoreMargin) {
+        this.entryChallenger = undefined;
+      } else if (this.entryChallenger?.right !== rawBest.right) {
+        this.entryChallenger = { right: rawBest.right, sinceMs: input.nowMs };
+        if (this.params.entrySwitchConfirmMs === 0) {
+          this.selectedEntryRight = rawBest.right;
+          this.entryChallenger = undefined;
+        }
+      } else if (input.nowMs - this.entryChallenger.sinceMs >= this.params.entrySwitchConfirmMs) {
+        this.selectedEntryRight = rawBest.right;
+        this.entryChallenger = undefined;
+      }
+    }
+
+    const preferred = this.selectedEntryRight;
+    candidates.sort((left, right) => {
+      if (left.right === preferred && right.right !== preferred) return -1;
+      if (right.right === preferred && left.right !== preferred) return 1;
+      return this.compareEntryCandidates(left, right, input);
+    });
+  }
+
+  private entryCandidateScore(candidate: { row?: OptionChainRow }): number {
+    const row = candidate.row;
+    if (row === undefined || row.bidPaise <= 0 || row.askPaise <= 0) return -Infinity;
+    const mid = (row.bidPaise + row.askPaise) / 2;
+    const spreadPct = (row.askPaise - row.bidPaise) / mid;
+    const depth = row.bidQty + row.askQty;
+    const imbalance = depth > 0 ? (row.bidQty - row.askQty) / depth : 0;
+    return imbalance - spreadPct * 10;
   }
 
   private representativeSpread(input: MmQuoteInput): number | undefined {

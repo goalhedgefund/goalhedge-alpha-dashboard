@@ -179,6 +179,7 @@ export type {
 export { FeatureRegimeProvider } from './strategy/regime.js';
 export type { FeatureRegimeProviderOptions } from './strategy/regime.js';
 export { S1MomentumBurst } from './strategy/strategies/s1-momentum-burst.js';
+export { S1_ENTRY_CUTOFF, S1_ENTRY_START, S1_HARD_SQUARE_OFF, s1MarketProfile } from './strategy/s1-schedule.js';
 export { S2VwapFade } from './strategy/strategies/s2-vwap-fade.js';
 export { OpMinusAtmShort } from './strategy/strategies/op-minus-atm-short.js';
 

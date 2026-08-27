@@ -19,6 +19,7 @@ import {
   nextWeeklyExpiry,
   resolveNiftyCurrentFuture,
   resolveNiftyWeeklyChain,
+  resolveNiftyOptionChainByExpiryOffset,
   toInstrument,
 } from '../src/marketdata/instrument-master.js';
 
@@ -144,6 +145,14 @@ describe('minDaysToExpiry roll (ALL_OP never quotes a contract on its own expiry
     expect(rolled?.expiryDate).toBe('2026-08-04');
     const sameDay = resolveNiftyWeeklyChain(rows, '2026-07-07');
     expect(sameDay?.expiryDate).toBe('2026-07-07');
+  });
+});
+
+describe('listed-expiry hedge offset', () => {
+  it('resolves by listing index and fails closed when the requested expiry is unavailable', () => {
+    const rows = loadScripMaster(CSV_PATH);
+    expect(resolveNiftyOptionChainByExpiryOffset(rows, '2026-07-07', 2)?.expiryDate).toBe('2026-08-04');
+    expect(resolveNiftyOptionChainByExpiryOffset(rows, '2026-07-07', 3)).toBeUndefined();
   });
 });
 

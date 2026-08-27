@@ -124,7 +124,16 @@ export interface PaperHostOptions {
    * feed (e.g. PaperBroker.setQuote). Without it, a pure tick replay can't fill
    * because the broker never learns the touch. Absent in live mode.
    */
-  quoteSink?: (instrumentId: InstrumentId, quote: { bidPaise: number; askPaise: number; ltpPaise: number }) => void;
+  quoteSink?: (instrumentId: InstrumentId, quote: {
+    bidPaise: number;
+    askPaise: number;
+    ltpPaise: number;
+    qty: number;
+    volume: number;
+    bidQty: number;
+    askQty: number;
+    ts: number;
+  }) => void;
   /**
    * Build a custom runner (e.g. the ALL_OP MmRunner) instead of the default
    * StrategyRunner. The factory receives the wired runtime ports; kill
@@ -294,7 +303,16 @@ export class PaperHost {
     if (kind === 'stale') return;
 
     if (kind === 'option') {
-      this.opts.quoteSink?.(tick.instrumentId, { bidPaise: tick.bidPaise, askPaise: tick.askPaise, ltpPaise: tick.ltpPaise });
+      this.opts.quoteSink?.(tick.instrumentId, {
+        bidPaise: tick.bidPaise,
+        askPaise: tick.askPaise,
+        ltpPaise: tick.ltpPaise,
+        qty: tick.qty,
+        volume: tick.volume,
+        bidQty: tick.bidQty,
+        askQty: tick.askQty,
+        ts: tick.ts,
+      });
       if (this.isHeld(tick.instrumentId)) this.sink('md.tick', { tick });
     }
 

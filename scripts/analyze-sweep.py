@@ -11,6 +11,12 @@ import json
 import os
 import argparse
 
+# Windows consoles default to cp1252; the table uses box-drawing chars and the
+# rupee sign, which crash the default encoder. Force UTF-8 so callers don't
+# need `python -X utf8`.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 
 def fmt_inr(paise: float) -> str:
     """Format paise as Indian Rupees with sign."""

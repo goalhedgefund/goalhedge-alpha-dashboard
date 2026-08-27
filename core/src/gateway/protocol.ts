@@ -50,6 +50,9 @@ export interface GatewayMmState {
   scalpSlotsMax: number;
   trendRegime?: 'NEUTRAL' | 'UP' | 'DOWN';
   trendDriftPct?: number;
+  selectedEntryRight?: 'CE' | 'PE';
+  entryReplacementsLastMin?: number;
+  entryReplacementLimit?: number;
   lossStreaks?: { CE: number; PE: number };
   expiryDate?: string;
   daysToExpiry?: number;
