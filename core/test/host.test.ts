@@ -191,6 +191,90 @@ describe('PaperHost — end-to-end paper session (M10 §3)', () => {
     await host.close();
   }, 20_000);
 
+  // Regression (2026-08-28). The live Dhan host reads preflight freshness from a
+  // host-external timestamp that only the pre-start probe handler advanced. The
+  // first spot tick to reach ingestTick therefore saw a stale probe, and because
+  // the retry was one-shot that single attempt was spent — stranding S2, ALL_OP
+  // and OP(-) in PREFLIGHT for the entire session. The retry must survive a
+  // failed attempt and try again.
+  it('keeps retrying a feed-only preflight when the freshness probe lags the first tick', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-feed-retry-lag-'));
+    const clock = new ManualClock(START_10AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+
+    // Mirrors the production override: freshness is reported from outside the
+    // host and lags the tick that first reaches ingestTick.
+    let probeTs = 0;
+    const host = buildHost(dir, clock, marketData, paper, {
+      autoArm: true,
+      autoAckPreflight: true,
+      preflightLastTickTs: () => probeTs,
+    });
+
+    await host.start();
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+
+    // First spot tick: probe still stale, so this retry fails.
+    await host.ingestTick(spotTick(START_10AM_IST, ATM, 100));
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+
+    // Feed genuinely live, and past the retry throttle.
+    const later = START_10AM_IST + 60_000;
+    probeTs = later;
+    clock.set(later);
+    await host.ingestTick(spotTick(later, ATM, 101));
+
+    expect(host.sessionPhase()).toBe('OPEN');
+    expect(host.runnerState()).toBe('ARMED');
+    const preflights = host.journalEvents().filter((event) => event.type === 'session.preflight');
+    expect(preflights).toHaveLength(3);
+    expect(preflights[2]).toMatchObject({ payload: { ok: true } });
+    await host.close();
+  }, 20_000);
+
+  it('stops retrying preflight once a check other than feed freshness fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-feed-retry-latch-'));
+    const clock = new ManualClock(START_10AM_IST);
+    const marketData = makeMarketData();
+    const paper = new PaperBroker({ clock });
+
+    let probeTs = 0;
+    let chainOk = true;
+    const host = buildHost(dir, clock, marketData, paper, {
+      autoArm: true,
+      autoAckPreflight: true,
+      preflightLastTickTs: () => probeTs,
+      resolveChain: () =>
+        chainOk
+          ? {
+              expiryDate: '2026-07-09',
+              chain: new Map(),
+              lotSize: 65,
+              tickSizePaise: 5,
+              rowCount: 42,
+            }
+          : undefined,
+    });
+
+    await host.start();
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+
+    // Feed recovers, but the instrument master is now broken: the retry must
+    // latch off rather than rerun preflight for the rest of the day.
+    probeTs = START_10AM_IST + 60_000;
+    chainOk = false;
+    clock.set(START_10AM_IST + 60_000);
+    await host.ingestTick(spotTick(START_10AM_IST + 60_000, ATM, 101));
+    clock.set(START_10AM_IST + 180_000);
+    await host.ingestTick(spotTick(START_10AM_IST + 180_000, ATM, 102));
+
+    expect(host.sessionPhase()).toBe('PREFLIGHT');
+    const preflights = host.journalEvents().filter((event) => event.type === 'session.preflight');
+    expect(preflights).toHaveLength(2);
+    await host.close();
+  }, 20_000);
+
   it('can require an explicit operator ACK before ARM', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-no-autoack-'));
     const clock = new ManualClock(START_10AM_IST);

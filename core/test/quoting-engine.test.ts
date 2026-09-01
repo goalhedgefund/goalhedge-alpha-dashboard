@@ -670,9 +670,9 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.9 production long-option market-maker policy', () => {
-  it('is frozen at one deep passive lot with favorable payoff and a session-wide cluster brake', () => {
-    expect(strategy.version).toBe('0.9.0');
+describe('v0.10 production long-option market-maker policy', () => {
+  it('is frozen at one shadow-armed lot with favorable payoff and a session-wide cluster brake', () => {
+    expect(strategy.version).toBe('0.10.0');
     expect(new AllOpAtmMm().version).toBe(strategy.version);
     expect(strategy.params).toEqual(expect.objectContaining({
       spreadCostMultiple: 16,
@@ -698,6 +698,16 @@ describe('v0.9 production long-option market-maker policy', () => {
       entrySwitchScoreMargin: 0.1,
       entrySwitchConfirmMs: 1_500,
       maxEntryReplacementsPerMin: 12,
+      shadowEntryEnabled: true,
+      shadowQuoteTtlMs: 30_000,
+      shadowTriggerTicks: 2,
+      shadowProtectionTicks: 2,
+      shadowConfirmMs: 500,
+      shadowConfirmBounceTicks: 1,
+      shadowConfirmTimeoutMs: 5_000,
+      shadowLiveOrderTtlMs: 3_000,
+      shadowRetryCooldownMs: 45_000,
+      maxEntrySubmissionsPerDay: 60,
       paperQueueAheadLots: 2,
       defensiveCooldownSec: 300,
       globalDefensiveCooldownSec: 0,

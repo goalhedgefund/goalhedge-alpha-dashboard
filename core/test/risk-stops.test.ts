@@ -7,6 +7,7 @@ import { IdFactory, makeInstrumentId, makeSessionId } from '../src/domain/ids.js
 import type { OrderIntent, StopPlan } from '../src/domain/orders.js';
 import type { Position } from '../src/domain/positions.js';
 import type { OptionChainRow } from '../src/domain/marketdata.js';
+import { ManualClock } from '../src/domain/time.js';
 import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
 import { SessionRiskState } from '../src/risk/session-risk.js';
 import { StopEngine } from '../src/stops/stop-engine.js';
@@ -204,6 +205,61 @@ describe('SessionRiskState latches', () => {
     streak.operatorReset();
     expect(streak.current().lossStreak).toBe(0);
     expect(streak.current().latchedStop).toBeUndefined();
+  });
+
+  // S1 lost both 26 and 27 Aug 2026 inside the first hour: three losses latched
+  // LOSS_STREAK and the desk sat out the rest of each session, even though
+  // paper-default.json asks for a 30-minute cooldown. `cooldownMin` was parsed
+  // by the schema and read by nothing.
+  it('lifts a LOSS_STREAK latch once lossStreak.cooldownMin has elapsed', () => {
+    const t0 = Date.UTC(2026, 7, 27, 4, 16, 0); // 09:46 IST
+    const clock = new ManualClock(t0);
+    const state = new SessionRiskState(risk, clock);
+
+    state.recordTrade(-1);
+    state.recordTrade(-1);
+    state.recordTrade(-1);
+    expect(state.current().latchedStop).toBe('LOSS_STREAK');
+    expect(state.current().lossStreak).toBe(risk.lossStreak.count);
+
+    // One minute short of the cooldown: still sitting out.
+    clock.set(t0 + risk.lossStreak.cooldownMin * 60_000 - 60_000);
+    expect(state.current().latchedStop).toBe('LOSS_STREAK');
+    expect(state.takeLossStreakResume()).toBe(false);
+
+    // Cooldown served: the desk resumes with a clean streak counter, so one
+    // further loss does not immediately re-latch.
+    clock.set(t0 + risk.lossStreak.cooldownMin * 60_000);
+    expect(state.current().latchedStop).toBeUndefined();
+    expect(state.current().lossStreak).toBe(0);
+    state.recordTrade(-1);
+    expect(state.current().latchedStop).toBeUndefined();
+  });
+
+  it('reports a lifted LOSS_STREAK cooldown exactly once', () => {
+    const t0 = Date.UTC(2026, 7, 27, 4, 16, 0);
+    const clock = new ManualClock(t0);
+    const state = new SessionRiskState(risk, clock);
+    state.recordTrade(-1);
+    state.recordTrade(-1);
+    state.recordTrade(-1);
+
+    clock.set(t0 + risk.lossStreak.cooldownMin * 60_000);
+    expect(state.takeLossStreakResume()).toBe(true);
+    expect(state.takeLossStreakResume()).toBe(false);
+  });
+
+  it('keeps every non-LOSS_STREAK latch terminal for the session', () => {
+    const t0 = Date.UTC(2026, 7, 27, 4, 16, 0);
+    const clock = new ManualClock(t0);
+    const daily = new SessionRiskState(risk, clock);
+    daily.recordTrade(-Math.round(risk.capitalPaise * 0.011));
+    expect(daily.current().latchedStop).toBe('DAILY_LOSS');
+
+    // Hours past any cooldown — a daily-loss stop is not a cooling-off period.
+    clock.set(t0 + 6 * 60 * 60_000);
+    expect(daily.current().latchedStop).toBe('DAILY_LOSS');
+    expect(daily.takeLossStreakResume()).toBe(false);
   });
 
   it('give-back and max-trades latch until operator reset', () => {

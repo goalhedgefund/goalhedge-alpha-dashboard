@@ -156,6 +156,14 @@ export interface HostStartResult {
 }
 
 /**
+ * Minimum gap between feed-recovery preflight retries. Every `runPreflight`
+ * rejournals one `config.loaded` per loaded config, so retrying on every spot
+ * tick would flood the journal. 30s recovers within a tick or two of the feed
+ * coming up while keeping the retry trail readable.
+ */
+const FEED_PREFLIGHT_RETRY_MS = 30_000;
+
+/**
  * Real paper/live host (02-CODING-PLAN M10). Composes the whole runtime the
  * demo only mimicked: journal + completed-trade / broker-event writers, OMS, Risk Gate, Stop
  * Engine, Strategy Runner (with latency instrumentation + exit escalator),
@@ -188,8 +196,10 @@ export class PaperHost {
   private lastReconcileMs = Number.NEGATIVE_INFINITY;
   private started = false;
   private journalBroken = false;
-  /** Retry exactly the startup race where the feed arrived after preflight. */
+  /** Retry the startup race where the feed arrived after preflight. */
   private retryFeedOnlyPreflight = false;
+  /** Throttle for the feed-recovery preflight retry; each run rejournals configs. */
+  private nextFeedPreflightRetryMs = Number.NEGATIVE_INFINITY;
   private db: Persistence | undefined;
   private mirrorBroken = false;
   private lastTickTs = 0;
@@ -218,7 +228,7 @@ export class PaperHost {
    */
   async start(): Promise<HostStartResult> {
     const recovered = await this.recoverIfPresent();
-    this.sessionRisk = recovered?.sessionRisk ?? new SessionRiskState(this.opts.riskProfile);
+    this.sessionRisk = recovered?.sessionRisk ?? new SessionRiskState(this.opts.riskProfile, this.clock);
 
     this.writer = new JournalWriter({
       dir: this.opts.journalDir,
@@ -320,7 +330,7 @@ export class PaperHost {
     // Order TTLs, holding age, cooldowns, and escalation must use arrival time:
     // exchange timestamps can lead the local clock and shorten a live hold.
     if (kind === 'spot') {
-      await this.retryPreflightAfterFeedRecovery();
+      await this.retryPreflightAfterFeedRecovery(observedTs);
       await this.runner.onUnderlyingTick(observedTs);
     } else if (kind === 'option') {
       await this.runner.onOptionTick(tick.instrumentId, tick.ltpPaise, observedTs);
@@ -340,6 +350,13 @@ export class PaperHost {
     if (rearmReason !== undefined) this.kill.rearm('REARM', rearmReason);
     this.oms.expireTtl(nowMs); // TTL lapse → EXPIRED + broker cancel-and-verify
     this.oms.cancelUnacked(nowMs); // unacked past timeout → cancel-and-verify
+    // A LOSS_STREAK cooldown that has run its course lifts itself; journal the
+    // resume so the stop and the restart are both on the record.
+    if (this.sessionRisk.takeLossStreakResume()) {
+      this.sink('risk.sessionReset', {
+        reason: `LOSS_STREAK_COOLDOWN_ELAPSED:${this.opts.riskProfile.lossStreak.cooldownMin}min`,
+      });
+    }
     await this.runner.onTimer(nowMs);
     await this.kill.retryFlatten();
     await this.session.onTimer(nowMs);
@@ -649,17 +666,33 @@ export class PaperHost {
   }
 
   /**
-   * Startup may time out before Dhan delivers its first spot tick. Do not
-   * leave an otherwise healthy headless session in PREFLIGHT all day: retry
-   * once when the first later spot arrives, but only when feed freshness was
-   * the sole failed startup check. Config, instrument, or journal failures
-   * still require explicit intervention.
+   * Startup may time out before the broker delivers its first spot tick. Do not
+   * leave an otherwise healthy headless session in PREFLIGHT all day: keep
+   * retrying as spot ticks arrive, but only while feed freshness is the sole
+   * failed check. Config, instrument, or journal failures latch the retry off
+   * and still require explicit intervention.
+   *
+   * Deliberately not one-shot. The first spot tick to reach the host can still
+   * observe a stale freshness probe — the probe source is host-external and may
+   * lag ingestion by a tick — and a single attempt spent there would strand the
+   * session for the rest of the day. Retries are throttled because every
+   * `runPreflight` rejournals one `config.loaded` per config.
    */
-  private async retryPreflightAfterFeedRecovery(): Promise<void> {
+  private async retryPreflightAfterFeedRecovery(nowMs: number): Promise<void> {
     if (!this.retryFeedOnlyPreflight) return;
-    this.retryFeedOnlyPreflight = false;
+    if (nowMs < this.nextFeedPreflightRetryMs) return;
+    this.nextFeedPreflightRetryMs = nowMs + FEED_PREFLIGHT_RETRY_MS;
+
     const preflight = await this.session.runPreflight();
-    if (preflight.ok) this.autoAcknowledgeAndArm();
+    if (preflight.ok) {
+      this.retryFeedOnlyPreflight = false;
+      this.autoAcknowledgeAndArm();
+      return;
+    }
+    // Keep retrying only while feed freshness remains the sole failure.
+    this.retryFeedOnlyPreflight = preflight.checks
+      .filter((check) => !check.ok)
+      .every((check) => check.name === 'feed.fresh');
   }
 
   private maybeReconcile(nowMs: number): void {

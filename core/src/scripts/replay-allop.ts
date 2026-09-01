@@ -33,6 +33,7 @@ export interface AllOpReplayResult {
   trades: number;
   wins: number;
   losses: number;
+  entrySubmissions: number;
   grossPaise: number;
   chargesPaise: number;
   netPaise: number;
@@ -167,6 +168,7 @@ export async function runAllOpReplay(
     trades: summary.tradeCount,
     wins: summary.wins,
     losses: summary.losses,
+    entrySubmissions: entryDecisions.size,
     grossPaise: summary.grossPaise,
     chargesPaise: summary.chargesPaise,
     netPaise: summary.netPaise,
@@ -211,6 +213,7 @@ async function main(): Promise<void> {
   console.log(`ALL-OP Replay - ${date}`);
   console.log(`  Ticks replayed : ${result.ticks}`);
   console.log(`  Trades         : ${result.trades} (${result.wins}W / ${result.losses}L)`);
+  console.log(`  Broker entries : ${result.entrySubmissions}`);
   console.log(`  Gross P&L      : Rs${(result.grossPaise / 100).toFixed(2)}`);
   console.log(`  Charges        : Rs${(result.chargesPaise / 100).toFixed(2)}`);
   console.log(`  Net P&L        : Rs${(result.netPaise / 100).toFixed(2)}`);

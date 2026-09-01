@@ -65,6 +65,29 @@ export interface MmRunnerOptions {
   tradeSink?: (trade: Trade) => void;
 }
 
+type ShadowEntryPhase = 'WATCHING' | 'CONFIRMING' | 'LIVE' | 'COOLDOWN' | 'CAP_REACHED';
+
+interface ShadowEntryState {
+  phase: ShadowEntryPhase;
+  instrumentId?: InstrumentId;
+  order?: MmDesiredOrder;
+  shadowStartedTs?: number;
+  clientOrderId?: ClientOrderId;
+  liveUntilTs?: number;
+  cooldownUntilTs?: number;
+  distanceTicks?: number;
+  triggerTs?: number;
+  triggerLowAskPaise?: number;
+  lastObservedVolume?: number;
+  queueAheadQty?: number;
+}
+
+interface ShadowPolicyResult {
+  desired: MmDesiredOrder[];
+  waitReason?: string;
+  waitDetail?: string;
+}
+
 /**
  * Impure shell around QuotingEngine. It owns runner assignment and reconciles
  * one desired order set through RiskGate -> OMS on each tick/timer pass.
@@ -91,6 +114,8 @@ export class MmRunner {
   // them off the desired set briefly instead of submitting on every tick.
   private readonly entryBlockedUntil = new Map<InstrumentId, number>();
   private entryReplacementTs: number[] = [];
+  private shadowEntry: ShadowEntryState | undefined;
+  private entrySubmissionsToday = 0;
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -107,12 +132,14 @@ export class MmRunner {
 
   disarm(): void {
     this.lifecycle = 'DISARMED';
+    this.shadowEntry = undefined;
     void this.cancelAllWorking('disarm');
   }
 
   setParams(params: StrategyParams): void {
     this.params = { ...params };
     this.engine.setParams(this.params);
+    this.shadowEntry = undefined;
     this.refreshRunner(this.opts.clock.now());
   }
 
@@ -158,6 +185,22 @@ export class MmRunner {
       ...(selectedEntryRight !== undefined ? { selectedEntryRight } : {}),
       entryReplacementsLastMin: this.entryReplacementTs.length,
       entryReplacementLimit: params.maxEntryReplacementsPerMin,
+      shadowEntryEnabled: params.shadowEntryEnabled,
+      shadowEntryPhase: params.shadowEntryEnabled ? this.shadowEntry?.phase ?? 'WATCHING' : 'DISABLED',
+      entrySubmissionsToday: this.entrySubmissionsToday,
+      entrySubmissionLimit: params.maxEntrySubmissionsPerDay,
+      ...(this.shadowEntry?.instrumentId !== undefined
+        ? { shadowEntryInstrumentId: String(this.shadowEntry.instrumentId) }
+        : {}),
+      ...(this.shadowEntry?.order?.limitPricePaise !== undefined
+        ? { shadowEntryLimitPaise: this.shadowEntry.order.limitPricePaise }
+        : {}),
+      ...(this.shadowEntry?.distanceTicks !== undefined
+        ? { shadowEntryDistanceTicks: this.shadowEntry.distanceTicks }
+        : {}),
+      ...(this.shadowEntry?.cooldownUntilTs !== undefined
+        ? { shadowEntryCooldownUntilTs: this.shadowEntry.cooldownUntilTs }
+        : {}),
       lossStreaks: { CE: this.engine.lossStreakCount('CE'), PE: this.engine.lossStreakCount('PE') },
       ...(expiryInfo !== undefined ? expiryInfo : {}),
       runnerStatus: runner !== undefined ? 'ACTIVE' : pendingLot !== undefined ? 'PENDING' : 'AVAILABLE',
@@ -272,16 +315,27 @@ export class MmRunner {
       this.defences = evaluation.defences;
       this.captureRunnerCandidate(evaluation);
       let desired = evaluation.desired;
+      let shadowPolicy: ShadowPolicyResult | undefined;
 
       if (this.opts.journalHealthy?.() === false) {
         desired = desired.filter((order) => order.side === 'SELL');
+        if (this.shadowEntry?.phase !== 'LIVE') this.shadowEntry = undefined;
         this.noTrade('JOURNAL_UNHEALTHY');
       } else if (evaluation.pauseReason !== undefined) {
+        // A pause suppresses release but does not create broker traffic. Keep
+        // a watching shadow anchored across brief asynchronous defence
+        // flicker; its own TTL refreshes it when quoting safely resumes.
         this.noTrade(evaluation.phase, evaluation.pauseReason);
-      } else if (desired.some((order) => order.side === 'BUY')) {
-        this.lastNoTradeReason = undefined;
-      } else if (desired.length === 0) {
-        this.noTrade('NO_QUOTABLE_MARKET');
+      } else {
+        shadowPolicy = this.applyShadowEntryPolicy(desired, evaluation, nowMs);
+        desired = shadowPolicy.desired;
+        if (desired.some((order) => order.side === 'BUY')) {
+          this.lastNoTradeReason = undefined;
+        } else if (shadowPolicy.waitReason !== undefined) {
+          this.noTrade(shadowPolicy.waitReason, shadowPolicy.waitDetail);
+        } else if (desired.length === 0) {
+          this.noTrade('NO_QUOTABLE_MARKET');
+        }
       }
 
       const live = this.liveOrders();
@@ -359,7 +413,12 @@ export class MmRunner {
             blockedAllocatedSellInstruments,
           );
           await this.opts.oms.cancel(order.clientOrderId).then(() => {
-            if (order.purpose === 'ENTRY') this.noteEntryReplacement(nowMs);
+            if (order.purpose === 'ENTRY') {
+              this.noteEntryReplacement(nowMs);
+              if (this.shadowEntry?.clientOrderId === order.clientOrderId) {
+                this.beginShadowCooldown(order.instrumentId, nowMs);
+              }
+            }
           }).catch((err: unknown) => {
             this.journal('diag.error', { where: 'mm.cancel', message: String(err) });
           });
@@ -390,7 +449,11 @@ export class MmRunner {
           );
           continue;
         }
-        await this.place(order, nowMs);
+        const clientOrderId = await this.place(order, nowMs);
+        if (order.purpose === 'ENTRY' && this.engine.activeParams().shadowEntryEnabled) {
+          if (clientOrderId !== undefined) this.noteShadowSubmission(order, clientOrderId, nowMs);
+          else this.beginShadowCooldown(order.instrumentId, nowMs);
+        }
       }
     } finally {
       this.evaluating = false;
@@ -401,7 +464,8 @@ export class MmRunner {
     }
   }
 
-  private async place(order: MmDesiredOrder, nowMs: number): Promise<void> {
+  private async place(order: MmDesiredOrder, nowMs: number): Promise<ClientOrderId | undefined> {
+    const activeParams = this.engine.activeParams();
     const intent: OrderIntent = {
       intentId: this.opts.ids.intentId(),
       sessionId: this.opts.sessionId,
@@ -413,7 +477,11 @@ export class MmRunner {
       type: order.type,
       ...(order.limitPricePaise !== undefined ? { limitPricePaise: order.limitPricePaise } : {}),
       ...(order.protectTicks !== undefined ? { protectTicks: order.protectTicks } : {}),
-      ttlMs: isUrgentExit(order.reason) ? 2_000 : this.engine.activeParams().quoteTtlSec * 1_000,
+      ttlMs: isUrgentExit(order.reason)
+        ? 2_000
+        : order.purpose === 'ENTRY' && activeParams.shadowEntryEnabled
+          ? activeParams.shadowLiveOrderTtlMs
+          : activeParams.quoteTtlSec * 1_000,
       tag: `${this.opts.strategyId}:${order.reason.toLowerCase()}`,
       purpose: order.purpose,
       ...(order.stopPlan !== undefined ? { stopPlan: order.stopPlan } : {}),
@@ -428,7 +496,7 @@ export class MmRunner {
         this.entryBlockedUntil.set(order.instrumentId, nowMs + cooldownMs);
         this.noTrade(`GATE_${verdict.reason ?? 'REJECTED'}`);
       }
-      return;
+      return undefined;
     }
     const result = await this.opts.oms.submit(intent, verdict);
     if (!result.accepted) {
@@ -436,6 +504,7 @@ export class MmRunner {
         where: 'mm.place',
         message: `submit not accepted (${result.reason ?? 'unknown'}) for ${order.reason} ${order.side} ${String(order.instrumentId)}`,
       });
+      return undefined;
     } else {
       const right = this.rightById.get(order.instrumentId);
       if (order.entryFeatures !== undefined && right !== undefined) {
@@ -452,7 +521,284 @@ export class MmRunner {
       // Reserve named lots so the next reconcile cycle cannot emit a second
       // exit for the same lot while the fill is in flight.
       for (const lotId of order.closeLotIds ?? []) this.reservedLotIds.add(lotId);
+      return result.order.clientOrderId;
     }
+  }
+
+  /**
+   * Convert continuously-recomputed entry wishes into one sticky internal
+   * shadow. Only a near-touch shadow is released to the OMS; exits never pass
+   * through this policy.
+   */
+  private applyShadowEntryPolicy(
+    desired: readonly MmDesiredOrder[],
+    evaluation: MmEvaluation,
+    nowMs: number,
+  ): ShadowPolicyResult {
+    const params = this.engine.activeParams();
+    if (!params.shadowEntryEnabled) return { desired: [...desired] };
+
+    this.syncShadowEntryState(nowMs);
+    const exits = desired.filter((order) => order.purpose !== 'ENTRY');
+    const entries = desired.filter((order) => order.purpose === 'ENTRY');
+    const eligible = new Set(evaluation.eligibleEntryInstruments);
+
+    if (this.shadowEntry?.phase === 'CAP_REACHED') {
+      return {
+        desired: exits,
+        waitReason: 'ENTRY_DAILY_CAP',
+        waitDetail: `${this.entrySubmissionsToday}/${params.maxEntrySubmissionsPerDay} broker entry submissions`,
+      };
+    }
+
+    if (this.shadowEntry?.phase === 'COOLDOWN') {
+      return {
+        desired: exits,
+        waitReason: 'SHADOW_ENTRY_COOLDOWN',
+        waitDetail: `retry after ${this.shadowEntry.cooldownUntilTs ?? nowMs}`,
+      };
+    }
+
+    if (this.shadowEntry?.phase === 'LIVE') {
+      const liveOrder = this.shadowEntry.clientOrderId === undefined
+        ? undefined
+        : this.opts.oms.getOrder(this.shadowEntry.clientOrderId);
+      const safe = this.shadowEntry.instrumentId !== undefined && eligible.has(this.shadowEntry.instrumentId);
+      if (
+        safe &&
+        liveOrder !== undefined &&
+        !isTerminalOrderState(liveOrder.state) &&
+        nowMs < (this.shadowEntry.liveUntilTs ?? 0) &&
+        this.shadowEntry.order !== undefined
+      ) {
+        const remainingQty = Math.max(0, liveOrder.qty - liveOrder.filledQty);
+        return remainingQty > 0
+          ? { desired: [...exits, { ...this.shadowEntry.order, qty: remainingQty }] }
+          : { desired: exits };
+      }
+      return {
+        desired: exits,
+        waitReason: safe ? 'SHADOW_ORDER_EXPIRED' : 'SHADOW_ENTRY_UNSAFE',
+      };
+    }
+
+    const tick = this.opts.market.tickSizePaise;
+    const freshCandidate = entries[0];
+    let releaseCandidate: MmDesiredOrder | undefined;
+    let releaseState: ShadowEntryState | undefined;
+
+    if (this.shadowEntry?.phase === 'CONFIRMING') {
+      const confirming = this.shadowEntry;
+      const shadow = confirming.order;
+      const row = confirming.instrumentId === undefined
+        ? undefined
+        : this.opts.view.optionRows().get(confirming.instrumentId);
+      const candidateChanged = freshCandidate !== undefined && freshCandidate.instrumentId !== confirming.instrumentId;
+      if (candidateChanged) {
+        this.shadowEntry = this.newWatchingShadow(freshCandidate, nowMs);
+      } else if (shadow?.limitPricePaise !== undefined && row !== undefined && row.askPaise > 0) {
+        confirming.triggerLowAskPaise = Math.min(confirming.triggerLowAskPaise ?? row.askPaise, row.askPaise);
+        confirming.distanceTicks = Math.ceil((row.askPaise - shadow.limitPricePaise) / tick);
+        const elapsed = nowMs - (confirming.triggerTs ?? nowMs);
+        if (elapsed >= params.shadowConfirmTimeoutMs) {
+          this.shadowEntry = freshCandidate === undefined
+            ? undefined
+            : this.newWatchingShadow(freshCandidate, nowMs);
+          return { desired: exits, waitReason: 'SHADOW_ENTRY_WAIT', waitDetail: 'confirmation timed out' };
+        }
+        const protectedLimit = shadow.limitPricePaise + params.shadowProtectionTicks * tick;
+        const recovered =
+          row.bidPaise >= (confirming.triggerLowAskPaise ?? row.askPaise) + params.shadowConfirmBounceTicks * tick &&
+          row.askPaise <= protectedLimit;
+        if (freshCandidate !== undefined && elapsed >= params.shadowConfirmMs && recovered) {
+          releaseCandidate = freshCandidate;
+          releaseState = confirming;
+        } else {
+          return {
+            desired: exits,
+            waitReason: 'SHADOW_ENTRY_CONFIRM',
+            waitDetail: freshCandidate === undefined ? 'awaiting entry gate recovery' : 'awaiting premium rebound',
+          };
+        }
+      } else {
+        return { desired: exits, waitReason: 'SHADOW_ENTRY_CONFIRM', waitDetail: 'awaiting valid touch' };
+      }
+    }
+
+    if (releaseCandidate === undefined) {
+      if (freshCandidate === undefined) {
+        const watching = this.shadowEntry?.phase === 'WATCHING' ? this.shadowEntry : undefined;
+        const shadow = watching?.order;
+        const row = watching?.instrumentId === undefined
+          ? undefined
+          : this.opts.view.optionRows().get(watching.instrumentId);
+        if (watching === undefined || shadow?.limitPricePaise === undefined || row === undefined || row.askPaise <= 0) {
+          this.shadowEntry = undefined;
+          return { desired: exits };
+        }
+        const distanceTicks = Math.ceil((row.askPaise - shadow.limitPricePaise) / tick);
+        watching.distanceTicks = distanceTicks;
+        if (this.shadowWouldFill(watching, row)) {
+          this.shadowEntry = {
+            ...watching,
+            phase: 'CONFIRMING',
+            triggerTs: nowMs,
+            triggerLowAskPaise: row.askPaise,
+          };
+          return { desired: exits, waitReason: 'SHADOW_ENTRY_CONFIRM', waitDetail: 'shadow fill observed; awaiting gate recovery' };
+        }
+        return {
+          desired: exits,
+          waitReason: 'SHADOW_ENTRY_WAIT',
+          waitDetail: distanceTicks <= params.shadowTriggerTicks
+            ? 'near shadow; awaiting executable fill'
+            : 'awaiting entry gate recovery',
+        };
+      }
+
+      const candidateChanged =
+        this.shadowEntry?.phase !== 'WATCHING' ||
+        this.shadowEntry.instrumentId !== freshCandidate.instrumentId ||
+        this.shadowEntry.order?.reason !== freshCandidate.reason;
+      const shadowExpired =
+        this.shadowEntry?.shadowStartedTs === undefined ||
+        nowMs - this.shadowEntry.shadowStartedTs >= params.shadowQuoteTtlMs;
+      if (candidateChanged || shadowExpired) {
+        this.shadowEntry = this.newWatchingShadow(freshCandidate, nowMs);
+      }
+
+      const watching = this.shadowEntry;
+      const shadow = watching?.order;
+      const row = this.opts.view.optionRows().get(freshCandidate.instrumentId);
+      if (watching === undefined || shadow?.limitPricePaise === undefined || row === undefined || row.askPaise <= 0) {
+        return { desired: exits, waitReason: 'SHADOW_ENTRY_WAIT', waitDetail: 'awaiting valid touch' };
+      }
+      const distanceTicks = Math.ceil((row.askPaise - shadow.limitPricePaise) / tick);
+      watching.distanceTicks = distanceTicks;
+      if (!this.shadowWouldFill(watching, row)) {
+        return {
+          desired: exits,
+          waitReason: 'SHADOW_ENTRY_WAIT',
+          waitDetail: distanceTicks <= params.shadowTriggerTicks
+            ? 'near shadow; awaiting executable fill'
+            : `${distanceTicks} ticks from ${String(freshCandidate.instrumentId)} shadow`,
+        };
+      }
+      this.shadowEntry = {
+        ...watching,
+        phase: 'CONFIRMING',
+        triggerTs: nowMs,
+        triggerLowAskPaise: row.askPaise,
+      };
+      return { desired: exits, waitReason: 'SHADOW_ENTRY_CONFIRM', waitDetail: 'shadow fill observed; awaiting premium rebound' };
+    }
+
+    const candidate = releaseCandidate;
+    const watchingState = releaseState;
+    if (watchingState === undefined) return { desired: exits };
+    const shadow = watchingState.order;
+    if (shadow?.limitPricePaise === undefined) return { desired: exits };
+
+    if (
+      params.maxEntrySubmissionsPerDay > 0 &&
+      this.entrySubmissionsToday >= params.maxEntrySubmissionsPerDay
+    ) {
+      this.shadowEntry = { phase: 'CAP_REACHED', instrumentId: candidate.instrumentId };
+      return {
+        desired: exits,
+        waitReason: 'ENTRY_DAILY_CAP',
+        waitDetail: `${this.entrySubmissionsToday}/${params.maxEntrySubmissionsPerDay} broker entry submissions`,
+      };
+    }
+
+    const protectedLimit = shadow.limitPricePaise + params.shadowProtectionTicks * tick;
+    const hardStop = Math.min(
+      protectedLimit - tick,
+      floorToTick(protectedLimit * (1 - params.hardStopPct / 100), tick),
+    );
+    const released: MmDesiredOrder = {
+      ...cloneDesiredOrder(shadow),
+      limitPricePaise: protectedLimit,
+      ...(candidate.entryFeatures !== undefined
+        ? { entryFeatures: { ...candidate.entryFeatures } }
+        : {}),
+      ...(shadow.stopPlan !== undefined
+        ? { stopPlan: { ...shadow.stopPlan, hardStopPremiumPaise: hardStop } }
+        : {}),
+    };
+    watchingState.order = released;
+    return { desired: [...exits, released] };
+  }
+
+  private newWatchingShadow(order: MmDesiredOrder, nowMs: number): ShadowEntryState {
+    const row = this.opts.view.optionRows().get(order.instrumentId);
+    const limit = order.limitPricePaise;
+    const displayedQty = row !== undefined && limit !== undefined && row.bidPaise === limit ? row.bidQty : 0;
+    const rawQueueLots = Number(this.params.paperQueueAheadLots ?? 2);
+    const queueLots = Number.isFinite(rawQueueLots) ? Math.max(0, rawQueueLots) : 2;
+    return {
+      phase: 'WATCHING',
+      instrumentId: order.instrumentId,
+      order: cloneDesiredOrder(order),
+      shadowStartedTs: nowMs,
+      ...(row !== undefined ? { lastObservedVolume: row.volume } : {}),
+      queueAheadQty: Math.max(displayedQty, Math.ceil(order.qty * queueLots)),
+    };
+  }
+
+  /** Mirrors the ALL_OP paper broker's conservative passive-fill semantics. */
+  private shadowWouldFill(state: ShadowEntryState, row: OptionChainRow): boolean {
+    const limit = state.order?.limitPricePaise;
+    if (limit === undefined) return false;
+    if (row.askPaise > 0 && row.askPaise <= limit) return true;
+
+    const previousVolume = state.lastObservedVolume;
+    state.lastObservedVolume = Math.max(previousVolume ?? row.volume, row.volume);
+    if (previousVolume === undefined) return false;
+    const tradedQty = Math.max(0, row.volume - previousVolume);
+    if (tradedQty <= 0 || row.ltpPaise > limit) return false;
+    if (row.ltpPaise < limit) return true;
+
+    const quantityAfterQueue = tradedQty - (state.queueAheadQty ?? 0);
+    state.queueAheadQty = Math.max(0, (state.queueAheadQty ?? 0) - tradedQty);
+    return quantityAfterQueue > 0;
+  }
+
+  private syncShadowEntryState(nowMs: number): void {
+    const state = this.shadowEntry;
+    if (state?.phase === 'COOLDOWN' && nowMs >= (state.cooldownUntilTs ?? 0)) {
+      this.shadowEntry = undefined;
+      return;
+    }
+    if (state?.phase !== 'LIVE' || state.clientOrderId === undefined) return;
+    const order = this.opts.oms.getOrder(state.clientOrderId);
+    if (order === undefined || !isTerminalOrderState(order.state)) return;
+    if (order.state === 'FILLED') this.shadowEntry = undefined;
+    else this.beginShadowCooldown(order.instrumentId, nowMs);
+  }
+
+  private noteShadowSubmission(order: MmDesiredOrder, clientOrderId: ClientOrderId, nowMs: number): void {
+    const params = this.engine.activeParams();
+    this.entrySubmissionsToday += 1;
+    this.shadowEntry = {
+      phase: 'LIVE',
+      instrumentId: order.instrumentId,
+      order: cloneDesiredOrder(order),
+      clientOrderId,
+      liveUntilTs: nowMs + params.shadowLiveOrderTtlMs,
+      ...(this.shadowEntry?.distanceTicks !== undefined
+        ? { distanceTicks: this.shadowEntry.distanceTicks }
+        : {}),
+    };
+  }
+
+  private beginShadowCooldown(instrumentId: InstrumentId, nowMs: number): void {
+    if (!this.engine.activeParams().shadowEntryEnabled) return;
+    this.shadowEntry = {
+      phase: 'COOLDOWN',
+      instrumentId,
+      cooldownUntilTs: nowMs + this.engine.activeParams().shadowRetryCooldownMs,
+    };
   }
 
   private buildInput(nowMs: number): MmQuoteInput {
@@ -703,6 +1049,19 @@ function intentTypeMatchesOrder(intentType: OrderIntent['type'], orderType: Orde
 function priceMatches(left: number | undefined, right: number | undefined, tolerance: number): boolean {
   if (left === undefined || right === undefined) return left === right;
   return Math.abs(left - right) <= tolerance;
+}
+
+function cloneDesiredOrder(order: MmDesiredOrder): MmDesiredOrder {
+  return {
+    ...order,
+    ...(order.stopPlan !== undefined ? { stopPlan: { ...order.stopPlan } } : {}),
+    ...(order.closeLotIds !== undefined ? { closeLotIds: [...order.closeLotIds] } : {}),
+    ...(order.entryFeatures !== undefined ? { entryFeatures: { ...order.entryFeatures } } : {}),
+  };
+}
+
+function floorToTick(value: number, tick: number): number {
+  return Math.floor(value / tick) * tick;
 }
 
 function broadLane(order: Pick<Order, 'instrumentId' | 'side'> | MmDesiredOrder): string {

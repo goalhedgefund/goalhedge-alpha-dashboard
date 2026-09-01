@@ -225,6 +225,201 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     expect(verdicts).toHaveLength(4);
   });
 
+  it('keeps an anchored shadow internal while the market is far from its entry price', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      shadowEntryEnabled: true,
+      shadowQuoteTtlMs: 30_000,
+      shadowTriggerTicks: 2,
+      shadowProtectionTicks: 2,
+      shadowLiveOrderTtlMs: 3_000,
+      shadowRetryCooldownMs: 45_000,
+      maxEntrySubmissionsPerDay: 60,
+      maxEntryFallPct: 20,
+    });
+
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+
+    expect(r.oms.getOrders()).toHaveLength(0);
+    expect(r.runner.lastNoTrade()).toBe('SHADOW_ENTRY_WAIT');
+    expect(r.runner.mmState()).toEqual(expect.objectContaining({
+      shadowEntryPhase: 'WATCHING',
+      entrySubmissionsToday: 0,
+      entrySubmissionLimit: 60,
+    }));
+    expect(r.runner.mmState().shadowEntryLimitPaise).toBeLessThan(15_000);
+    expect(r.runner.mmState().shadowEntryDistanceTicks).toBeGreaterThan(2);
+  });
+
+  it('releases one protected three-second order only after the sticky shadow would fill', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      shadowEntryEnabled: true,
+      shadowQuoteTtlMs: 30_000,
+      shadowTriggerTicks: 2,
+      shadowProtectionTicks: 2,
+      shadowLiveOrderTtlMs: 3_000,
+      shadowRetryCooldownMs: 45_000,
+      maxEntrySubmissionsPerDay: 60,
+      maxEntryFallPct: 20,
+    });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const shadow = r.runner.mmState().shadowEntryLimitPaise!;
+
+    // Near-touch alone must remain internal; the shadow has not filled.
+    r.view.setRow(row(CE_ID, 'CE', shadow, shadow + TICK, T0 + 500));
+    await r.runner.onTimer(T0 + 500);
+    expect(r.oms.getOrders()).toHaveLength(0);
+    expect(r.runner.mmState().shadowEntryPhase).toBe('WATCHING');
+
+    // An executable ask crossing means the virtual bid would fill. The
+    // anchored shadow now enters confirmation but still sends no order.
+    r.view.setRow(row(CE_ID, 'CE', shadow - TICK, shadow, T0 + 1_000));
+    r.paper.setQuote(CE_ID, {
+      bidPaise: shadow - TICK,
+      askPaise: shadow,
+      ltpPaise: shadow,
+    });
+    await r.runner.onTimer(T0 + 1_000);
+    expect(r.oms.getOrders()).toHaveLength(0);
+    expect(r.runner.mmState().shadowEntryPhase).toBe('CONFIRMING');
+
+    r.view.setRow(row(CE_ID, 'CE', shadow + TICK, shadow + 2 * TICK, T0 + 1_600));
+    r.paper.setQuote(CE_ID, {
+      bidPaise: shadow + TICK,
+      askPaise: shadow + 2 * TICK,
+      ltpPaise: shadow + TICK,
+    });
+    r.paper.holdFills(CE_ID, 1);
+    await r.runner.onTimer(T0 + 1_600);
+
+    const entries = working(r).filter((order) => order.purpose === 'ENTRY');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual(expect.objectContaining({
+      instrumentId: CE_ID,
+      limitPricePaise: shadow + 2 * TICK,
+      state: 'ACKED',
+    }));
+    expect(r.runner.mmState()).toEqual(expect.objectContaining({
+      shadowEntryPhase: 'LIVE',
+      entrySubmissionsToday: 1,
+    }));
+
+    r.oms.expireTtl(T0 + 5_001);
+    await r.runner.onTimer(T0 + 5_001);
+    expect(r.oms.getOrder(entries[0]!.clientOrderId)?.state).toBe('EXPIRED');
+    expect(working(r).filter((order) => order.purpose === 'ENTRY')).toHaveLength(0);
+    expect(r.runner.mmState().shadowEntryPhase).toBe('COOLDOWN');
+  });
+
+  it('requires prints at the shadow price to consume the conservative virtual queue', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      shadowEntryEnabled: true,
+      shadowTriggerTicks: 2,
+      shadowProtectionTicks: 2,
+      paperQueueAheadLots: 2,
+      maxEntryFallPct: 20,
+    });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const shadow = r.runner.mmState().shadowEntryLimitPaise!;
+
+    const atLimit = {
+      ...row(CE_ID, 'CE', shadow, shadow + TICK, T0 + 500),
+      ltpPaise: shadow,
+      volume: 100_000 + 2 * LOT,
+    };
+    r.view.setRow(atLimit);
+    await r.runner.onTimer(T0 + 500);
+    expect(r.runner.mmState().shadowEntryPhase).toBe('WATCHING');
+    expect(r.oms.getOrders()).toHaveLength(0);
+
+    r.view.setRow({ ...atLimit, volume: atLimit.volume + 1, updatedTs: T0 + 750 });
+    await r.runner.onTimer(T0 + 750);
+    expect(r.runner.mmState().shadowEntryPhase).toBe('CONFIRMING');
+    expect(r.oms.getOrders()).toHaveLength(0);
+  });
+
+  it('enforces the daily broker-entry cap after an unfilled shadow order', async () => {
+    r = rig(testRiskProfile, {
+      ...PARAMS,
+      maxLotsInventory: 1,
+      maxScalpLots: 1,
+      maxLotsPerSide: 1,
+      ladderLevels: 1,
+      shadowEntryEnabled: true,
+      shadowQuoteTtlMs: 30_000,
+      shadowTriggerTicks: 2,
+      shadowProtectionTicks: 2,
+      shadowLiveOrderTtlMs: 1_000,
+      shadowRetryCooldownMs: 0,
+      maxEntrySubmissionsPerDay: 1,
+      maxEntryFallPct: 20,
+    });
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const firstShadow = r.runner.mmState().shadowEntryLimitPaise!;
+    r.view.setRow(row(CE_ID, 'CE', firstShadow - TICK, firstShadow, T0 + 100));
+    r.paper.setQuote(CE_ID, {
+      bidPaise: firstShadow - TICK,
+      askPaise: firstShadow,
+      ltpPaise: firstShadow,
+    });
+    await r.runner.onTimer(T0 + 100);
+    r.view.setRow(row(CE_ID, 'CE', firstShadow + TICK, firstShadow + 2 * TICK, T0 + 700));
+    r.paper.setQuote(CE_ID, {
+      bidPaise: firstShadow + TICK,
+      askPaise: firstShadow + 2 * TICK,
+      ltpPaise: firstShadow + TICK,
+    });
+    r.paper.holdFills(CE_ID, 1);
+    await r.runner.onTimer(T0 + 700);
+    const first = working(r).find((order) => order.purpose === 'ENTRY')!;
+    expect(first).toBeDefined();
+
+    r.oms.expireTtl(T0 + 1_701);
+    await r.runner.onTimer(T0 + 1_701);
+    await r.runner.onTimer(T0 + 1_702);
+    const nextShadow = r.runner.mmState().shadowEntryLimitPaise!;
+    r.view.setRow(row(CE_ID, 'CE', nextShadow - TICK, nextShadow, T0 + 1_800));
+    r.paper.setQuote(CE_ID, {
+      bidPaise: nextShadow - TICK,
+      askPaise: nextShadow,
+      ltpPaise: nextShadow,
+    });
+    await r.runner.onTimer(T0 + 1_800);
+    r.view.setRow(row(CE_ID, 'CE', nextShadow + TICK, nextShadow + 2 * TICK, T0 + 2_400));
+    r.paper.setQuote(CE_ID, {
+      bidPaise: nextShadow + TICK,
+      askPaise: nextShadow + 2 * TICK,
+      ltpPaise: nextShadow + TICK,
+    });
+    await r.runner.onTimer(T0 + 2_400);
+
+    expect(r.runner.lastNoTrade()).toBe('ENTRY_DAILY_CAP');
+    expect(r.runner.mmState()).toEqual(expect.objectContaining({
+      shadowEntryPhase: 'CAP_REACHED',
+      entrySubmissionsToday: 1,
+      entrySubmissionLimit: 1,
+    }));
+    expect(r.oms.getOrders().filter((order) => order.purpose === 'ENTRY')).toHaveLength(1);
+  });
+
   it('backs off a risk-rejected preferred entry and tries the other right', async () => {
     r = rig(riskProfile, {
       ...PARAMS,

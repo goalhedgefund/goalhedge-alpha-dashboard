@@ -43,6 +43,14 @@ interface DhanLiveDataPaperBuild {
   recorder: Recorder;
   subscriptions: SubscribeRequest[];
   notePreflightTick: (tick: Tick) => boolean;
+  /**
+   * Record a spot tick's arrival for the preflight freshness probe WITHOUT
+   * ingesting it. Once `startFeedForPreflight` hands the feed over to the live
+   * handler, `PaperHost.ingestTick` owns ingestion — but the timestamp
+   * `preflightLastTickTs` reads is host-external, so it must still be advanced
+   * here or feed freshness can never recover mid-session.
+   */
+  noteSpotArrival: (tick: Tick) => void;
   journalDir: string;
   tickDir: string;
   selectedStrikes: number[];
@@ -415,10 +423,14 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     },
     ...optionSubscriptions,
   ];
-  const notePreflightTick = (tick: Tick): boolean => {
-    if (marketData.classify(tick) !== 'spot') return false;
+  const noteSpotArrival = (tick: Tick): void => {
+    if (marketData.classify(tick) !== 'spot') return;
     const observedTs = Math.min(tick.recvTs, Date.now());
     if (observedTs > liveSpotTickTs) liveSpotTickTs = observedTs;
+  };
+  const notePreflightTick = (tick: Tick): boolean => {
+    if (marketData.classify(tick) !== 'spot') return false;
+    noteSpotArrival(tick);
     marketData.ingest(tick);
     return true;
   };
@@ -430,6 +442,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     recorder,
     subscriptions,
     notePreflightTick,
+    noteSpotArrival,
     journalDir,
     tickDir,
     selectedStrikes,
@@ -550,6 +563,10 @@ async function main(): Promise<void> {
 
   let tickChain = Promise.resolve();
   build.feed.setTickHandler((tick: Tick) => {
+    // Advance the preflight freshness timestamp on arrival, before the tick is
+    // queued. Ingestion is serialized through `tickChain`; feed freshness is a
+    // liveness signal and must not wait behind it.
+    build.noteSpotArrival(tick);
     tickChain = tickChain
       .then(() => build.host.ingestTick(tick))
       .catch((err: unknown) => {

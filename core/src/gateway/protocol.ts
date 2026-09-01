@@ -53,6 +53,14 @@ export interface GatewayMmState {
   selectedEntryRight?: 'CE' | 'PE';
   entryReplacementsLastMin?: number;
   entryReplacementLimit?: number;
+  shadowEntryEnabled?: boolean;
+  shadowEntryPhase?: 'DISABLED' | 'WATCHING' | 'CONFIRMING' | 'LIVE' | 'COOLDOWN' | 'CAP_REACHED';
+  shadowEntryInstrumentId?: string;
+  shadowEntryLimitPaise?: number;
+  shadowEntryDistanceTicks?: number;
+  shadowEntryCooldownUntilTs?: number;
+  entrySubmissionsToday?: number;
+  entrySubmissionLimit?: number;
   lossStreaks?: { CE: number; PE: number };
   expiryDate?: string;
   daysToExpiry?: number;

@@ -49,6 +49,26 @@ export interface MmParams {
   entrySwitchConfirmMs: number;
   /** Maximum entry cancel/replacements in a rolling minute. 0 disables the guard. */
   maxEntryReplacementsPerMin: number;
+  /** Keep passive entry quotes internal until the market approaches the anchored price. */
+  shadowEntryEnabled: boolean;
+  /** Lifetime of one anchored internal quote before it refreshes, without broker traffic. */
+  shadowQuoteTtlMs: number;
+  /** Report a shadow as near-touch within this distance; arming still requires a virtual fill. */
+  shadowTriggerTicks: number;
+  /** Maximum ticks above the shadow price allowed on the protected live limit. */
+  shadowProtectionTicks: number;
+  /** Minimum time after a touch before a recovering premium may release. */
+  shadowConfirmMs: number;
+  /** Executable-bid recovery required from the lowest touched ask. */
+  shadowConfirmBounceTicks: number;
+  /** Abandon a touched shadow if recovery does not arrive in this window. */
+  shadowConfirmTimeoutMs: number;
+  /** Lifetime of the real broker entry order after a shadow trigger. */
+  shadowLiveOrderTtlMs: number;
+  /** Cooldown after an armed order expires, is cancelled, or is rejected unfilled. */
+  shadowRetryCooldownMs: number;
+  /** Hard daily cap on broker-facing entry submissions. 0 disables the cap. */
+  maxEntrySubmissionsPerDay: number;
   defensiveCooldownSec: number;
   /** Strategy-wide pause after any losing defensive exit. */
   globalDefensiveCooldownSec: number;
@@ -117,6 +137,16 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     entrySwitchScoreMargin: boundedParam(params, 'entrySwitchScoreMargin', 0.1, 0, 2),
     entrySwitchConfirmMs: Math.floor(boundedParam(params, 'entrySwitchConfirmMs', 1_500, 0, 60_000)),
     maxEntryReplacementsPerMin: Math.floor(boundedParam(params, 'maxEntryReplacementsPerMin', 12, 0, 120)),
+    shadowEntryEnabled: boolParam(params, 'shadowEntryEnabled', false),
+    shadowQuoteTtlMs: Math.floor(boundedParam(params, 'shadowQuoteTtlMs', 30_000, 1_000, 300_000)),
+    shadowTriggerTicks: Math.floor(boundedParam(params, 'shadowTriggerTicks', 2, 0, 100)),
+    shadowProtectionTicks: Math.floor(boundedParam(params, 'shadowProtectionTicks', 2, 0, 20)),
+    shadowConfirmMs: Math.floor(boundedParam(params, 'shadowConfirmMs', 500, 0, 30_000)),
+    shadowConfirmBounceTicks: Math.floor(boundedParam(params, 'shadowConfirmBounceTicks', 1, 0, 20)),
+    shadowConfirmTimeoutMs: Math.floor(boundedParam(params, 'shadowConfirmTimeoutMs', 5_000, 250, 60_000)),
+    shadowLiveOrderTtlMs: Math.floor(boundedParam(params, 'shadowLiveOrderTtlMs', 3_000, 250, 60_000)),
+    shadowRetryCooldownMs: Math.floor(boundedParam(params, 'shadowRetryCooldownMs', 45_000, 0, 3_600_000)),
+    maxEntrySubmissionsPerDay: Math.floor(boundedParam(params, 'maxEntrySubmissionsPerDay', 60, 0, 10_000)),
     defensiveCooldownSec: boundedParam(params, 'defensiveCooldownSec', 180, 0, 86_400),
     globalDefensiveCooldownSec: boundedParam(params, 'globalDefensiveCooldownSec', 0, 0, 86_400),
     globalLossClusterCount: Math.floor(boundedParam(params, 'globalLossClusterCount', 0, 0, 100)),

@@ -52,6 +52,8 @@ export function reduceJournal(events: readonly JournalEvent[], riskProfile: Risk
   const positions = new Map<string, Position>();
   const trades: Trade[] = [];
   const sessionRisk = new SessionRiskState(riskProfile);
+  // Replay is instantaneous: a LOSS_STREAK latched here is stamped at recovery
+  // time, so a recovered desk serves a fresh cooldown rather than resuming early.
   let lastSeq = 0;
 
   for (const ev of events) {
