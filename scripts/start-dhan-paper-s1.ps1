@@ -60,11 +60,20 @@ foreach ($key in $requiredKeys) {
     throw "$key is missing or blank in $EnvPath"
   }
 }
-# In TOTP mode also verify the access token is present (minted by the dashboard
-# at boot). If it's missing the dashboard hasn't finished its startup mint yet;
-# exiting here triggers a supervisor restart after 30s, by which time it'll be ready.
-if ($totpMode -and $envText -notmatch "(?m)^\s*(export\s+)?DHAN_ACCESS_TOKEN\s*=\s*\S+") {
-  throw "DHAN_ACCESS_TOKEN not yet written to $EnvPath - dashboard TOTP mint is still in progress. Will retry."
+# In TOTP mode wait up to 3 minutes for the dashboard to materialise the
+# minted DHAN_ACCESS_TOKEN into the env file. Previous behaviour was an
+# immediate throw (exit 1) that triggered a supervisor restart after 30s;
+# on 2026-09-01 a transient file lock caused 180 consecutive failures over 3h.
+if ($totpMode) {
+  $tokenDeadline = (Get-Date).AddMinutes(3)
+  while ($envText -notmatch "(?m)^\s*(export\s+)?DHAN_ACCESS_TOKEN\s*=\s*\S+") {
+    if ((Get-Date) -ge $tokenDeadline) {
+      throw "DHAN_ACCESS_TOKEN still not written to $EnvPath after 3 minutes - check TOTP config or restart the dashboard."
+    }
+    Write-LaunchLog "DHAN_ACCESS_TOKEN not yet in $EnvPath; waiting 10s for dashboard TOTP mint..."
+    Start-Sleep -Seconds 10
+    $envText = Get-Content -Raw -LiteralPath $EnvPath
+  }
 }
 
 $env:DHAN_ENV_PATH = $EnvPath

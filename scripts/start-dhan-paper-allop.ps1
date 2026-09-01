@@ -57,8 +57,16 @@ foreach ($key in $requiredKeys) {
     throw "$key is missing or blank in $EnvPath"
   }
 }
-if ($totpMode -and $envText -notmatch "(?m)^\s*(export\s+)?DHAN_ACCESS_TOKEN\s*=\s*\S+") {
-  throw "DHAN_ACCESS_TOKEN not yet written to $EnvPath - dashboard TOTP mint is still in progress. Will retry."
+if ($totpMode) {
+  $tokenDeadline = (Get-Date).AddMinutes(3)
+  while ($envText -notmatch "(?m)^\s*(export\s+)?DHAN_ACCESS_TOKEN\s*=\s*\S+") {
+    if ((Get-Date) -ge $tokenDeadline) {
+      throw "DHAN_ACCESS_TOKEN still not written to $EnvPath after 3 minutes - check TOTP config or restart the dashboard."
+    }
+    Write-LaunchLog "DHAN_ACCESS_TOKEN not yet in $EnvPath; waiting 10s for dashboard TOTP mint..."
+    Start-Sleep -Seconds 10
+    $envText = Get-Content -Raw -LiteralPath $EnvPath
+  }
 }
 
 $env:DHAN_ENV_PATH = $EnvPath
