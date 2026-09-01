@@ -50,10 +50,21 @@ if (-not (Test-Path -LiteralPath $EnvPath)) {
 }
 
 $envText = Get-Content -Raw -LiteralPath $EnvPath
-foreach ($key in @("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_SCRIP_MASTER_PATH")) {
+# When TOTP is configured the dashboard mints DHAN_ACCESS_TOKEN and writes it
+# to this file. Skip that check if the three TOTP vars are already in process
+# env (launcher inherits them via launch-dashboard.ps1 hydration).
+$totpMode = ($env:DHAN_CLIENT_ID -and $env:DHAN_PIN -and $env:DHAN_TOTP_SECRET)
+$requiredKeys = if ($totpMode) { @("DHAN_CLIENT_ID", "DHAN_SCRIP_MASTER_PATH") } else { @("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_SCRIP_MASTER_PATH") }
+foreach ($key in $requiredKeys) {
   if ($envText -notmatch "(?m)^\s*(export\s+)?$key\s*=\s*\S+") {
     throw "$key is missing or blank in $EnvPath"
   }
+}
+# In TOTP mode also verify the access token is present (minted by the dashboard
+# at boot). If it's missing the dashboard hasn't finished its startup mint yet;
+# exiting here triggers a supervisor restart after 30s, by which time it'll be ready.
+if ($totpMode -and $envText -notmatch "(?m)^\s*(export\s+)?DHAN_ACCESS_TOKEN\s*=\s*\S+") {
+  throw "DHAN_ACCESS_TOKEN not yet written to $EnvPath - dashboard TOTP mint is still in progress. Will retry."
 }
 
 $env:DHAN_ENV_PATH = $EnvPath

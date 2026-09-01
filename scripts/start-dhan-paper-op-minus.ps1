@@ -30,8 +30,13 @@ if (-not (Test-Path -LiteralPath $RepoRoot)) { throw "Repo root not found: $Repo
 if (-not (Test-Path -LiteralPath $EnvPath)) { throw "Dhan env file not found: $EnvPath" }
 
 $envText = Get-Content -Raw -LiteralPath $EnvPath
-foreach ($key in @("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_SCRIP_MASTER_PATH")) {
+$totpMode = ($env:DHAN_CLIENT_ID -and $env:DHAN_PIN -and $env:DHAN_TOTP_SECRET)
+$requiredKeys = if ($totpMode) { @("DHAN_CLIENT_ID", "DHAN_SCRIP_MASTER_PATH") } else { @("DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_SCRIP_MASTER_PATH") }
+foreach ($key in $requiredKeys) {
   if ($envText -notmatch "(?m)^\s*(export\s+)?$key\s*=\s*\S+") { throw "$key is missing or blank in $EnvPath" }
+}
+if ($totpMode -and $envText -notmatch "(?m)^\s*(export\s+)?DHAN_ACCESS_TOKEN\s*=\s*\S+") {
+  throw "DHAN_ACCESS_TOKEN not yet written to $EnvPath - dashboard TOTP mint is still in progress. Will retry."
 }
 
 $env:DHAN_ENV_PATH = $EnvPath
