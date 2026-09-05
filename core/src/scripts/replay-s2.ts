@@ -141,7 +141,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   if (!opts.silent) console.log(`  Loaded ${allTicks.length} ticks for ${date}`);
 
   // ── build market data ─────────────────────────────────────────────────────
-  const recording = discoverPlainRecording(allTicks, resolveScripMasterPath());
+  const recording = discoverPlainRecording(allTicks, resolveScripMasterPath(date));
   const clock = new ManualClock(recording.feedTicks[0]!.ts);
   const marketData = new FeedMarketData({
     spotInstrumentId: recording.spotInstrumentId,

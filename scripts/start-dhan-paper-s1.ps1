@@ -83,6 +83,16 @@ $env:DHAN_JOURNAL_ROOT = "journals\s1-momentum-burst"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-s1-momentum-burst"
 $env:DHAN_AUTO_ARM = "true"
 
+# Snapshot the scrip master before trading. Dhan purges expired contracts from
+# the live file, so without a dated copy today's recording stops being
+# replayable one expiry cycle from now. Idempotent; never fatal to the launch.
+try {
+  $archiveOut = & node (Join-Path $RepoRoot "scripts\archive-scrip-master.mjs") 2>&1
+  foreach ($line in $archiveOut) { Write-LaunchLog $line }
+} catch {
+  Write-LaunchLog "WARN: scrip-master archive failed: $_"
+}
+
 Write-LaunchLog "Strategy forced to $env:DHAN_STRATEGY_ID."
 Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."

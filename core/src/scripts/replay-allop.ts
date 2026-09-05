@@ -199,7 +199,7 @@ async function recordingForDate(date: string): Promise<DiscoveredRecording> {
   if (pending === undefined) {
     pending = loadTicksFromGz(join(TICK_ROOT, date, 'ticks.jsonl.gz')).then((ticks) => {
       if (ticks.length === 0) throw new Error(`No ticks loaded for ${date}`);
-      return discoverPlainRecording(ticks, resolveScripMasterPath());
+      return discoverPlainRecording(ticks, resolveScripMasterPath(date));
     });
     recordingCache.set(date, pending);
   }

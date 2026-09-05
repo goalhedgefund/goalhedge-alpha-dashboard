@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { loadTicksFromGz, runReplay, TICK_ROOT } from './replay-s1.js';
+import { loadTicksForDate, runReplay, TICK_ROOT } from './replay-s1.js';
 
 const SCALPER_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SWEEP_ROOT = join(SCALPER_ROOT, 'journals', 's1-sweep');
@@ -113,8 +113,8 @@ async function main(): Promise<void> {
   // shifts the iterator, skips the next day, and mutates CLEAN_DAYS.
   const usableDays: string[] = [];
   for (const date of days) {
-    const tickPath = join(TICK_ROOT, date, 'ticks.jsonl.gz');
-    const ticks = await loadTicksFromGz(tickPath);
+    const tickPath = join(TICK_ROOT, date);
+    const ticks = await loadTicksForDate(tickPath);
     if (ticks.length === 0) {
       console.error(`No ticks available for ${date} — skipping this day.`);
     } else {

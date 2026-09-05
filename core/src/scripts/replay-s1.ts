@@ -33,11 +33,11 @@ import { S1_ENTRY_START, s1MarketProfile } from '../strategy/s1-schedule.js';
 import type { StrategyParams } from '../strategy/types.js';
 import {
   discoverPlainRecording,
-  loadTicksFromGz,
+  loadTicksForDate,
   resolveScripMasterPath,
   type DiscoveredRecording,
 } from './backtest-recording.js';
-export { loadTicksFromGz } from './backtest-recording.js';
+export { loadTicksFromGz, loadTicksForDate } from './backtest-recording.js';
 
 // ─── paths ───────────────────────────────────────────────────────────────────
 
@@ -135,8 +135,10 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const market = s1MarketProfile(marketCfg.value);
 
   // ── load ticks ────────────────────────────────────────────────────────────
-  const tickPath = join(TICK_ROOT, date, 'ticks.jsonl.gz');
-  const allTicks = await loadTicksFromGz(tickPath);
+  // Loads every part (ticks.jsonl.gz, ticks-2.jsonl.gz, …) so a day recorded
+  // across process restarts replays whole.
+  const tickPath = join(TICK_ROOT, date);
+  const allTicks = await loadTicksForDate(tickPath);
   if (allTicks.length === 0) throw new Error(`No ticks loaded from ${tickPath}`);
   if (!opts.silent) console.log(`  Loaded ${allTicks.length} ticks for ${date}`);
 
@@ -144,7 +146,11 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   // discoverRecording resolves instruments from the scrip master and throws
   // when nothing resolves — a stale/mismatched corpus fails loudly, never as
   // a silent 0-trade run.
-  const recording = discoverPlainRecording(allTicks, resolveScripMasterPath());
+  // Date-aware: an expired contract is purged from the live master, so a past
+  // recording must resolve against the master as it stood on that date.
+  const scripMasterPath = resolveScripMasterPath(date);
+  if (!opts.silent) console.log(`  Scrip master: ${scripMasterPath}`);
+  const recording = discoverPlainRecording(allTicks, scripMasterPath);
   assertReplayCoverage(allTicks, recording, date);
   const clock = new ManualClock(recording.feedTicks[0]!.ts);
   const marketData = new FeedMarketData({

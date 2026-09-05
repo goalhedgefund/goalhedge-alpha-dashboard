@@ -1,6 +1,8 @@
 /** Backtest-only discovery for the synthetic OP(-) ladder recordings. */
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { createGunzip } from 'node:zlib';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadScripMaster } from '../marketdata/instrument-master.js';
 import { makeInstrumentId, type InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
@@ -10,8 +12,51 @@ const SYNTHETIC_SPOT_ID = makeInstrumentId('NSE', 'BACKTEST_SYNTHETIC_SPOT');
 const LADDER_ID = /^(NSE:\d+):scalp:ATM(?:(\+|-)(\d+))?$/;
 export const DEFAULT_SCRIP_MASTER_PATH = 'D:\\DHAN_LOGIN\\api-scrip-master.csv';
 
-export function resolveScripMasterPath(): string {
-  return process.env.DHAN_SCRIP_MASTER_PATH?.trim() || DEFAULT_SCRIP_MASTER_PATH;
+const SCALPER_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+/** Dated snapshots: api-scrip-master-YYYY-MM-DD.csv (gitignored, see data/). */
+export const SCRIP_MASTER_ARCHIVE_DIR = join(SCALPER_ROOT, 'data', 'dhan', 'scrip-master');
+const ARCHIVE_NAME = /^api-scrip-master-(\d{4}-\d{2}-\d{2})\.csv$/;
+
+/** Archived snapshot dates, oldest first. */
+export function listArchivedScripMasters(): { date: string; path: string }[] {
+  if (!existsSync(SCRIP_MASTER_ARCHIVE_DIR)) return [];
+  const out: { date: string; path: string }[] = [];
+  for (const name of readdirSync(SCRIP_MASTER_ARCHIVE_DIR)) {
+    const m = ARCHIVE_NAME.exec(name);
+    if (m?.[1] !== undefined) out.push({ date: m[1], path: join(SCRIP_MASTER_ARCHIVE_DIR, name) });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Scrip master to use when resolving a recording.
+ *
+ * The live master is a point-in-time snapshot: expired contracts are purged
+ * from it, so today's file cannot resolve a recording from a past expiry
+ * cycle. Replaying an old day needs the master as it stood *then*. Given
+ * `asOfDate`, pick the newest archived snapshot taken on or before that date
+ * (options are listed well ahead of expiry, so an earlier snapshot still
+ * carries the contracts traded later). Falls back to the oldest snapshot when
+ * the recording predates every archive, then to the live file.
+ *
+ * DHAN_SCRIP_MASTER_PATH overrides everything — it is how a caller pins one
+ * specific master regardless of date.
+ */
+export function resolveScripMasterPath(asOfDate?: string): string {
+  const override = process.env.DHAN_SCRIP_MASTER_PATH?.trim();
+  if (override) return override;
+
+  if (asOfDate !== undefined) {
+    const archives = listArchivedScripMasters();
+    if (archives.length > 0) {
+      let pick = archives.find((a) => a.date <= asOfDate) === undefined
+        ? archives[0]
+        : undefined;
+      for (const a of archives) if (a.date <= asOfDate) pick = a;
+      if (pick !== undefined) return pick.path;
+    }
+  }
+  return DEFAULT_SCRIP_MASTER_PATH;
 }
 
 export interface DiscoveredRecording {
@@ -20,6 +65,37 @@ export interface DiscoveredRecording {
   /** Feed events, including a clearly synthetic spot only when source has none. */
   feedTicks: Tick[];
   syntheticSpot: boolean;
+}
+
+const TICK_PART = /^ticks(?:-(\d+))?\.jsonl\.gz$/;
+
+/**
+ * Every tick part for one recorded day, in write order.
+ *
+ * The recorder writes each process run to its own part (ticks.jsonl.gz,
+ * ticks-2.jsonl.gz, …) so a run killed mid-deflate cannot hide the runs after
+ * it. A day recorded before that change is a single file and still loads.
+ */
+export function listTickParts(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .map((name) => ({ name, m: TICK_PART.exec(name) }))
+    .filter((e): e is { name: string; m: RegExpExecArray } => e.m !== null)
+    .sort((a, b) => Number(a.m[1] ?? '1') - Number(b.m[1] ?? '1'))
+    .map((e) => join(dir, e.name));
+}
+
+/** Load and concatenate every tick part in a day's recording directory. */
+export async function loadTicksForDate(dir: string): Promise<Tick[]> {
+  const parts = listTickParts(dir);
+  if (parts.length === 1) return loadTicksFromGz(parts[0]!);
+  const out: Tick[] = [];
+  for (const part of parts) {
+    // Append element-wise: a day holds ~1e6 ticks and push(...spread) of that
+    // many arguments overflows the call stack.
+    for (const tick of await loadTicksFromGz(part)) out.push(tick);
+  }
+  return out;
 }
 
 /** Load ticks from a (possibly truncated/multi-member) gzip recording. */
