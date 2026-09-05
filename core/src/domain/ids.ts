@@ -34,6 +34,21 @@ export class IdFactory {
     return `${prefix}-${this.sessionId}-${n}`;
   }
 
+  /**
+   * Raise counters past ids already persisted for this session. A process
+   * restart mid-session otherwise rebuilds this factory from zero and
+   * re-issues `trd-<session>-1`, which collides with the PRIMARY KEY in the
+   * SQLite mirror and silently drops the row (the journal keeps both, so the
+   * two stores disagree). Replays and fresh sessions read an empty store, get
+   * no seeds, and keep the deterministic 1..n sequence.
+   */
+  resumeFrom(counters: Iterable<readonly [string, number]>): void {
+    for (const [prefix, n] of counters) {
+      if (!Number.isInteger(n) || n <= 0) continue;
+      if (n > (this.counters.get(prefix) ?? 0)) this.counters.set(prefix, n);
+    }
+  }
+
   intentId(): IntentId {
     return this.next('int') as IntentId;
   }

@@ -247,6 +247,10 @@ export class PaperHost {
       this.opts.persistence === 'off'
         ? undefined
         : this.opts.persistence ?? new Persistence(join(this.opts.journalDir, 'scalper.db'));
+    // A restart mid-session rebuilds IdFactory from zero; without this it
+    // re-issues ids that are PRIMARY KEYs in the mirror, and those rows are
+    // silently dropped. Empty store (fresh session, replay) seeds nothing.
+    if (this.db !== undefined) this.opts.ids.resumeFrom(this.db.maxIdCounters(this.opts.sessionId));
     this.wire();
     // Rehydrate the gateway's in-memory UI state from the durable journal.
     // Risk and recovery gates are rebuilt above; this replay restores trades,

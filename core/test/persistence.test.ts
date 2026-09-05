@@ -8,6 +8,8 @@ import { mirrorEvent } from '../src/journal/mirror.js';
 import { JournalWriter } from '../src/journal/writer.js';
 import { readJournal } from '../src/journal/reader.js';
 import { Persistence } from '../src/persistence/db.js';
+import { IdFactory, makeInstrumentId, makeSessionId } from '../src/domain/ids.js';
+import type { Trade } from '../src/domain/positions.js';
 import { FIXTURE_SESSION, generateSessionPayloads } from './helpers/fixtures.js';
 
 function newDb(): Persistence {
@@ -24,6 +26,57 @@ async function writeAndRead(orderCount: number): Promise<JournalEvent[]> {
   await writer.close();
   return (await readJournal(writer.path)).events;
 }
+
+describe('id counter recovery across a mid-session restart', () => {
+  const SESSION = makeSessionId('2026-07-30', 'paper');
+  const trade = (n: number, netPaise: number): Trade => ({
+    tradeId: `trd-${SESSION}-${n}` as Trade['tradeId'],
+    sessionId: SESSION,
+    strategyId: 's2-vwap-fade',
+    instrumentId: makeInstrumentId('NSE', '42641'),
+    qty: 65,
+    entry: { side: 'BUY', qty: 65, pricePaise: 7000, ts: 1_000 + n, clientOrderId: `ord-${SESSION}-${n}a` as Trade['entry']['clientOrderId'] },
+    exit: { side: 'SELL', qty: 65, pricePaise: 7100, ts: 2_000 + n, clientOrderId: `ord-${SESSION}-${n}b` as Trade['exit']['clientOrderId'] },
+    grossPnlPaise: netPaise,
+    charges: { totalPaise: 0, components: [] },
+    netPnlPaise: netPaise,
+    exitReason: 'L3_TIME',
+    holdMs: 1_000,
+  });
+
+  it('maxIdCounters reports the highest persisted counter per prefix', () => {
+    const db = newDb();
+    db.insertTrade(trade(1, 100));
+    db.insertTrade(trade(7, 200));
+    db.insertTrade(trade(3, 300));
+    const max = db.maxIdCounters(SESSION);
+    expect(max.get('trd')).toBe(7);
+    expect(max.get('pos')).toBeUndefined();       // nothing persisted for that prefix
+    expect(db.maxIdCounters(makeSessionId('2026-08-01', 'paper')).size).toBe(0);
+    db.close();
+  });
+
+  it('a restarted session does not lose a trade to a PRIMARY KEY collision', () => {
+    const db = newDb();
+    // Pre-restart run: one trade.
+    const before = new IdFactory(SESSION);
+    db.insertTrade({ ...trade(0, 100), tradeId: before.tradeId() });
+
+    // Restart. Unseeded this re-issues trd-...-1 and the insert throws,
+    // which is how two live sessions silently lost a trade each.
+    const naive = new IdFactory(SESSION);
+    expect(() => db.insertTrade({ ...trade(0, 999), tradeId: naive.tradeId() })).toThrow();
+
+    // Seeded from the store, the restart continues cleanly.
+    const seeded = new IdFactory(SESSION);
+    seeded.resumeFrom(db.maxIdCounters(SESSION));
+    db.insertTrade({ ...trade(0, 999), tradeId: seeded.tradeId() });
+
+    expect(db.counts(SESSION).trades).toBe(2);
+    expect(db.getTradeNet(`trd-${SESSION}-2`)).toBe(999);
+    db.close();
+  });
+});
 
 describe('SQLite persistence (M1 acceptance)', () => {
   it('opens in WAL mode', () => {

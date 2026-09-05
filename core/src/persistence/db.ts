@@ -298,6 +298,35 @@ export class Persistence {
     return row?.net;
   }
 
+  /**
+   * Highest id counter already persisted for this session, per id prefix.
+   * Feeds `IdFactory.resumeFrom` so a restart never re-issues an id that is a
+   * PRIMARY KEY here. Ids are `<prefix>-<sessionId>-<n>`, so the counter is
+   * whatever follows the known head — no parsing ambiguity.
+   */
+  maxIdCounters(sessionId: SessionId): Map<string, number> {
+    const maxFor = (sql: string, prefix: string): number => {
+      const head = `${prefix}-${sessionId}-`;
+      let max = 0;
+      for (const row of this.db.prepare(sql).all(sessionId) as { id: string | null }[]) {
+        const id = row.id;
+        if (id === null || !id.startsWith(head)) continue;
+        const n = Number(id.slice(head.length));
+        if (Number.isInteger(n) && n > max) max = n;
+      }
+      return max;
+    };
+    const out = new Map<string, number>();
+    const put = (prefix: string, n: number): void => {
+      if (n > 0) out.set(prefix, n);
+    };
+    put('ord', maxFor('SELECT client_order_id AS id FROM orders WHERE session_id = ?', 'ord'));
+    put('int', maxFor('SELECT intent_id AS id FROM orders WHERE session_id = ?', 'int'));
+    put('pos', maxFor('SELECT position_id AS id FROM positions WHERE session_id = ?', 'pos'));
+    put('trd', maxFor('SELECT trade_id AS id FROM trades WHERE session_id = ?', 'trd'));
+    return out;
+  }
+
   counts(sessionId: SessionId): TableCounts {
     const one = (sql: string): number =>
       (this.db.prepare(sql).get(sessionId) as { n: number }).n;
