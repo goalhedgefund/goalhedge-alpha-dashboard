@@ -17,6 +17,10 @@ export interface OpMinusParams {
   pairedExitEnabled: boolean;
   /** Cross paired entries to the bid; false keeps the legacy passive quote. */
   pairedEntryAtBid: boolean;
+  /** Ticks below the observed bid allowed on a paired SELL limit to survive quote movement. */
+  pairedEntryProtectTicks: number;
+  /** Choose the weekly ATM strike from call-put parity instead of monthly futures. */
+  parityAtmEnabled: boolean;
   /** Profit trigger on the combined CE+PE entry premium. */
   combinedTargetPremiumPct: number;
   /** DTE-1 package target; defaults to the base/DTE-0 target. */
@@ -101,6 +105,8 @@ export function resolveOpMinusParams(params: StrategyParams): OpMinusParams {
     hardStopPremiumPct: boundedParam(params, 'hardStopPremiumPct', 9, 0.1, 100),
     pairedExitEnabled: boolParam(params, 'pairedExitEnabled', false),
     pairedEntryAtBid: boolParam(params, 'pairedEntryAtBid', true),
+    pairedEntryProtectTicks: Math.floor(boundedParam(params, 'pairedEntryProtectTicks', 0, 0, 100)),
+    parityAtmEnabled: boolParam(params, 'parityAtmEnabled', false),
     combinedTargetPremiumPct: boundedParam(params, 'combinedTargetPremiumPct', 1, 0.1, 50),
     dte1CombinedTargetPremiumPct: boundedParam(
       params,
@@ -375,7 +381,10 @@ export class OpMinusEngine {
           // bid costs the spread once, but avoids carrying a directional naked
           // leg while a passive quote waits (the observed source of repeated
           // UNPAIRED_TIMEOUT losses).
-          ? row.bidPaise
+          ? Math.max(
+              this.market.tickSizePaise,
+              row.bidPaise - this.params.pairedEntryProtectTicks * this.market.tickSizePaise,
+            )
           : Math.max(
               row.bidPaise + this.market.tickSizePaise,
               row.askPaise - this.params.entryImprovementTicks * this.market.tickSizePaise,

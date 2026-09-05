@@ -1,13 +1,15 @@
 {
   "strategyId": "op-minus-atm-short",
-  "version": "0.4.0",
-  "enabled": true,
+  "version": "0.5.0",
+  "enabled": false,
   "params": {
     "scalpLotsPerRight": 1,
     "targetPremiumPct": 3.5,
     "hardStopPremiumPct": 12,
     "pairedExitEnabled": true,
     "pairedEntryAtBid": true,
+    "pairedEntryProtectTicks": 10,
+    "parityAtmEnabled": true,
     "combinedTargetPremiumPct": 1,
     "dte1CombinedTargetPremiumPct": 2,
     "combinedStopPremiumPct": 3,
@@ -15,7 +17,7 @@
     "quoteTtlSec": 30,
     "minRequoteMs": 8000,
     "maxHoldSec": 600,
-    "dte1MaxHoldSec": 1200,
+    "dte1MaxHoldSec": 900,
     "leggingTimeoutSec": 5,
     "defensiveCooldownSec": 300,
     "cycleCooldownSec": 900,
@@ -33,8 +35,8 @@
     "minDaysToExpiry": 0,
     "maxDaysToExpiry": 1,
     "quoteFrom": "09:45",
-    "dte1QuoteFrom": "12:00",
+    "dte1QuoteFrom": "13:15",
     "entryCutoff": "15:00",
-    "dte1EntryCutoff": "14:50"
+    "dte1EntryCutoff": "13:45"
   }
 }

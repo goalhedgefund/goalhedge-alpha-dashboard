@@ -73,6 +73,7 @@ export class OpMinusRunner {
   /** ATM straddle mid samples for the IV-stability proxy, keyed to one strike. */
   private straddleSamples: Array<{ ts: number; midPaise: number }> = [];
   private straddleStrikePaise: number | undefined;
+  private lastEntryStrikePaise: number | undefined;
 
   constructor(private readonly opts: OpMinusRunnerOptions) {
     this.params = { ...opts.params };
@@ -255,6 +256,26 @@ export class OpMinusRunner {
         return (this.cooldownUntilByRight.get(right) ?? 0) <= nowMs;
       });
 
+      // A paired short must not begin if either leg already fails an entry
+      // gate. Without this preview, the acceptable leg can fill while its mate
+      // is rejected (observed on expiry day when the wrongly selected OTM call
+      // failed the spread gate).
+      const initialPairEntries = desired.filter((order) => order.purpose === 'ENTRY');
+      if (
+        paired &&
+        this.opts.oms.getPositions().every((position) => position.state === 'CLOSED' || position.qty <= 0) &&
+        initialPairEntries.length >= 2
+      ) {
+        const ctx = this.gateContext(nowMs);
+        const rejected = initialPairEntries
+          .map((order) => this.opts.gate.evaluate(this.toIntent(order, nowMs), ctx))
+          .find((verdict) => !verdict.approved);
+        if (rejected !== undefined) {
+          desired = desired.filter((order) => order.purpose !== 'ENTRY');
+          this.noTrade(`GATE_${rejected.reason ?? 'REJECTED'}`);
+        }
+      }
+
       if (this.opts.journalHealthy?.() === false) {
         desired = desired.filter((order) => order.purpose !== 'ENTRY');
         this.noTrade('JOURNAL_UNHEALTHY');
@@ -337,23 +358,7 @@ export class OpMinusRunner {
   }
 
   private async place(order: OpMinusDesiredOrder, nowMs: number): Promise<void> {
-    const intent: OrderIntent = {
-      intentId: this.opts.ids.intentId(),
-      sessionId: this.opts.sessionId,
-      strategyId: this.opts.strategyId,
-      ts: nowMs,
-      side: order.side,
-      instrumentId: order.instrumentId,
-      qty: order.qty,
-      type: order.type,
-      ...(order.limitPricePaise !== undefined ? { limitPricePaise: order.limitPricePaise } : {}),
-      ...(order.protectTicks !== undefined ? { protectTicks: order.protectTicks } : {}),
-      ttlMs: isUrgent(order.reason) ? 2_000 : this.engine.activeParams().quoteTtlSec * 1_000,
-      tag: `${this.opts.strategyId}:${order.reason.toLowerCase()}`,
-      purpose: order.purpose,
-      ...(order.stopPlan !== undefined ? { stopPlan: order.stopPlan } : {}),
-      ...(order.closeLotIds !== undefined ? { closeLotIds: [...order.closeLotIds] } : {}),
-    };
+    const intent = this.toIntent(order, nowMs);
     this.journal('intent.proposed', { intent });
     const verdict = this.opts.gate.evaluate(intent, this.gateContext(nowMs));
     this.journal('risk.verdict', { verdict });
@@ -373,6 +378,26 @@ export class OpMinusRunner {
     for (const lotId of order.closeLotIds ?? []) this.reservedLotIds.add(lotId);
   }
 
+  private toIntent(order: OpMinusDesiredOrder, nowMs: number): OrderIntent {
+    return {
+      intentId: this.opts.ids.intentId(),
+      sessionId: this.opts.sessionId,
+      strategyId: this.opts.strategyId,
+      ts: nowMs,
+      side: order.side,
+      instrumentId: order.instrumentId,
+      qty: order.qty,
+      type: order.type,
+      ...(order.limitPricePaise !== undefined ? { limitPricePaise: order.limitPricePaise } : {}),
+      ...(order.protectTicks !== undefined ? { protectTicks: order.protectTicks } : {}),
+      ttlMs: isUrgent(order.reason) ? 2_000 : this.engine.activeParams().quoteTtlSec * 1_000,
+      tag: `${this.opts.strategyId}:${order.reason.toLowerCase()}`,
+      purpose: order.purpose,
+      ...(order.stopPlan !== undefined ? { stopPlan: order.stopPlan } : {}),
+      ...(order.closeLotIds !== undefined ? { closeLotIds: [...order.closeLotIds] } : {}),
+    };
+  }
+
   private buildInput(nowMs: number): OpMinusInput {
     const rows = this.opts.view.optionRows();
     const strategyView = this.opts.view.strategyView(nowMs);
@@ -380,7 +405,11 @@ export class OpMinusRunner {
     const existingCycleRow = positions
       .map((position) => rows.get(position.instrumentId))
       .find((row) => row?.expiry === this.opts.scalpExpiry);
-    const cycleStrike = existingCycleRow?.strikePaise ?? this.opts.view.atmStrikePaise();
+    const parityStrike = this.engine.activeParams().parityAtmEnabled
+      ? optionParityAtmStrike(rows, this.opts.scalpExpiry, nowMs)
+      : undefined;
+    const cycleStrike = existingCycleRow?.strikePaise ?? parityStrike ?? this.opts.view.atmStrikePaise();
+    this.lastEntryStrikePaise = cycleStrike;
     const rowFor = (expiry: string, right: OptionRight): OptionChainRow | undefined => {
       if (cycleStrike === undefined) return undefined;
       return [...rows.values()].find((row) => row.expiry === expiry && row.right === right && row.strikePaise === cycleStrike);
@@ -566,7 +595,7 @@ export class OpMinusRunner {
   }
 
   private gateContext(nowMs: number): RiskGateContext {
-    const atm = this.opts.view.atmStrikePaise();
+    const atm = this.lastEntryStrikePaise ?? this.opts.view.atmStrikePaise();
     const gates = this.opts.quoteGates;
     return {
       nowMs,
@@ -595,6 +624,43 @@ export class OpMinusRunner {
   private journal<K extends JournalEventType>(type: K, payload: JournalPayloads[K]): void {
     this.opts.journal?.(type, payload);
   }
+}
+
+/**
+ * Estimate the weekly option forward with call-put parity (K + C - P), then
+ * select its nearest available strike. This keeps weekly ATM selection
+ * independent of the current-month futures basis used for VWAP/features.
+ */
+export function optionParityAtmStrike(
+  rows: ReadonlyMap<InstrumentId, OptionChainRow>,
+  expiry: string,
+  nowMs: number,
+  maxAgeMs = 5_000,
+): number | undefined {
+  const pairs = new Map<number, Partial<Record<OptionRight, OptionChainRow>>>();
+  for (const row of rows.values()) {
+    if (row.expiry !== expiry || row.bidPaise <= 0 || row.askPaise <= 0) continue;
+    if (row.updatedTs <= 0 || nowMs - row.updatedTs > maxAgeMs) continue;
+    const pair = pairs.get(row.strikePaise) ?? {};
+    pair[row.right] = row;
+    pairs.set(row.strikePaise, pair);
+  }
+  const estimates: number[] = [];
+  for (const [strike, pair] of pairs) {
+    const ce = pair.CE;
+    const pe = pair.PE;
+    if (ce === undefined || pe === undefined || Math.abs(ce.updatedTs - pe.updatedTs) > maxAgeMs) continue;
+    const ceMid = (ce.bidPaise + ce.askPaise) / 2;
+    const peMid = (pe.bidPaise + pe.askPaise) / 2;
+    estimates.push(strike + ceMid - peMid);
+  }
+  if (estimates.length === 0) return undefined;
+  estimates.sort((a, b) => a - b);
+  const mid = Math.floor(estimates.length / 2);
+  const parityForward = estimates.length % 2 === 0
+    ? ((estimates[mid - 1] as number) + (estimates[mid] as number)) / 2
+    : estimates[mid] as number;
+  return [...pairs.keys()].sort((a, b) => Math.abs(a - parityForward) - Math.abs(b - parityForward) || a - b)[0];
 }
 
 /**

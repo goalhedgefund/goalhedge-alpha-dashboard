@@ -169,7 +169,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
 
   const journalDir =
     opts.journalDir ??
-    join(SCALPER_ROOT, 'journals', 's2-vwap-fade', date, 'replay');
+    join(SCALPER_ROOT, 'journals', 's2-replay', date, 'replay');
   mkdirSync(journalDir, { recursive: true });
 
   const strategy = new S2VwapFade();
@@ -265,7 +265,7 @@ async function main(): Promise<void> {
   console.log(`S2 Replay — ${dateArg}`);
   console.log('Running...');
 
-  const journalDir = join(SCALPER_ROOT, 'journals', 's2-vwap-fade', dateArg, 'replay');
+  const journalDir = join(SCALPER_ROOT, 'journals', 's2-replay', dateArg, 'replay');
   const result = await runReplay({ date: dateArg, journalDir });
 
   const rupeesNet = (result.netPaise / 100).toFixed(2);

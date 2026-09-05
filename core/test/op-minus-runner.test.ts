@@ -9,7 +9,7 @@ import { isTerminalOrderState } from '../src/domain/orders.js';
 import type { Trade } from '../src/domain/positions.js';
 import { ManualClock } from '../src/domain/time.js';
 import { PaperBroker } from '../src/exec/paper-broker.js';
-import { OpMinusRunner, straddleShouldRecenter } from '../src/mm/op-minus-runner.js';
+import { OpMinusRunner, optionParityAtmStrike, straddleShouldRecenter } from '../src/mm/op-minus-runner.js';
 import { ExitEscalator } from '../src/oms/escalation.js';
 import { Oms } from '../src/oms/oms.js';
 import { RiskGate, type RiskGateContext } from '../src/risk/risk-gate.js';
@@ -145,6 +145,24 @@ describe('straddle-drift window re-center hysteresis', () => {
   });
 });
 
+describe('OP(-) weekly ATM reference', () => {
+  it('uses call-put parity instead of a monthly future with a large basis', () => {
+    const rows = new Map<InstrumentId, OptionChainRow>();
+    const addPair = (strike: number, ceMid: number, peMid: number): void => {
+      const ceId = makeInstrumentId('NSE', `ce-${strike}`);
+      const peId = makeInstrumentId('NSE', `pe-${strike}`);
+      rows.set(ceId, { ...optionRow(ceId, 'CE', SCALP_EXPIRY, ceMid - 5, ceMid + 5), strikePaise: strike });
+      rows.set(peId, { ...optionRow(peId, 'PE', SCALP_EXPIRY, peMid - 5, peMid + 5), strikePaise: strike });
+    };
+    // All three pairs imply a weekly forward near 24,123 while the separate
+    // monthly-future reference is 24,250.
+    addPair(2_410_000, 8_700, 6_400);
+    addPair(2_415_000, 6_200, 8_900);
+    addPair(2_420_000, 4_250, 12_000);
+    expect(optionParityAtmStrike(rows, SCALP_EXPIRY, T0)).toBe(2_410_000);
+  });
+});
+
 describe('OP(-) runner naked short sequencing', () => {
   it('reports the selected expiry and calendar DTE', () => {
     const r = rig();
@@ -186,6 +204,18 @@ describe('OP(-) runner naked short sequencing', () => {
     await r.runner.onTimer(T0 + 1_000);
     expect(r.runner.mmState().quotePhase).toBe('PAUSED_REGIME');
     expect(r.oms.getOrder(entry.clientOrderId)?.state).toBe('CANCELLED');
+  });
+
+  it('submits neither paired entry when either leg fails its entry gate', async () => {
+    const r = rig({ scalpLotsPerRight: 1, runnerLots: 0, pairedExitEnabled: true, pairedEntryAtBid: true });
+    const ce = r.view.rows.get(IDS.scalpCe)!;
+    r.view.rows.set(IDS.scalpCe, { ...ce, bidPaise: 8_000, askPaise: 10_000 });
+    r.runner.arm();
+
+    await r.runner.onTimer(T0);
+
+    expect(r.oms.getOrders().filter((order) => order.tag.endsWith(':short_entry'))).toHaveLength(0);
+    expect(r.events.some((event) => event.type === 'strategy.noTrade' && event.payload.reason === 'GATE_SPREAD_GATE')).toBe(true);
   });
 
   it('keeps each working target stable instead of cancelling and recreating it every tick', async () => {

@@ -369,6 +369,17 @@ describe('OP(-) naked short engine', () => {
     expect(entries.map((order) => order.limitPricePaise)).toEqual([9_995, 9_995, 8_995, 8_995]);
   });
 
+  it('uses the protected paired-entry limit below the bid', () => {
+    const evaluation = new OpMinusEngine(market, {
+      ...params,
+      pairedExitEnabled: true,
+      pairedEntryAtBid: true,
+      pairedEntryProtectTicks: 10,
+    }).evaluate(baseInput());
+    const entries = evaluation.desired.filter((order) => order.reason === 'SHORT_ENTRY');
+    expect(entries.map((order) => order.limitPricePaise)).toEqual([9_940, 9_940, 9_940, 9_940]);
+  });
+
   it('honors the expiry-scalper shape: one lot per right, no runner, DTE 0-1, 09:45–15:10', () => {
     const engine = new OpMinusEngine(market, {
       ...params,
