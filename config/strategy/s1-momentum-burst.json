@@ -9,12 +9,12 @@
     "lots": 1,
     "ttlMs": 1500,
     "tickSizePaise": 5,
-    "timeStopSec": 90,
+    "timeStopSec": 150,
     "hardStopPremiumPct": 25,
     "breakevenAtPct": 12,
     "trailStepPct": 8,
     "trailLockPct": 50,
-    "atrMult": 1,
+    "atrMult": 0,
     "cooldownSec": 60
   }
 }
