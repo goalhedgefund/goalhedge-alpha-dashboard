@@ -29,7 +29,6 @@ import { FeedMarketData } from '../host/feed-market-data.js';
 import { PaperHost } from '../host/paper-host.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
-import { S1_ENTRY_START, s1MarketProfile } from '../strategy/s1-schedule.js';
 import type { StrategyParams } from '../strategy/types.js';
 import {
   discoverPlainRecording,
@@ -132,7 +131,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     }
   }
   const params: StrategyParams = { ...strategyCfg.value.params, ...overrides };
-  const market = s1MarketProfile(marketCfg.value);
+  const market = marketCfg.value;
 
   // ── load ticks ────────────────────────────────────────────────────────────
   // Loads every part (ticks.jsonl.gz, ticks-2.jsonl.gz, …) so a day recorded
@@ -201,7 +200,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     market,
     riskProfile: riskCfg.value,
     eligibility: {
-      entryWindows: [{ from: S1_ENTRY_START, to: market.entryCutoff }],
+      entryWindows: [{ from: market.session.open, to: market.entryCutoff }],
       blackoutDates: new Set(),
       maxSpreadPct: 0.015,
       minOi: 100,

@@ -34,7 +34,6 @@ import { loadDhanLiveDataPaperEnv, type DhanLiveDataPaperEnv } from './dhan-live
 import { PaperHost, type HostRunnerPorts } from './paper-host.js';
 import { MmRunner } from '../mm/mm-runner.js';
 import { OpMinusRunner } from '../mm/op-minus-runner.js';
-import { S1_ENTRY_START, s1MarketProfile } from '../strategy/s1-schedule.js';
 
 interface DhanLiveDataPaperBuild {
   host: PaperHost;
@@ -239,7 +238,10 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
       : 0;
   const weekly = latestWeeklyChain(scripRows, date, env.underlyingSymbol, minDaysToExpiry);
   const market = marketWithLiveChainFacts(marketCfg.value, weekly);
-  const strategyMarket = env.strategyId === 's1-momentum-burst' ? s1MarketProfile(market) : market;
+  // Every strategy trades the market profile's own window. S1 previously
+  // overrode it (09:20–15:25, square-off 15:30) which pushed square-off onto
+  // the exchange close with no retry runway; it now shares the base schedule.
+  const strategyMarket = market;
   const initialSpotPaise = pickInitialSpotPaise(weekly, env);
   const selectedStrikes = getChainStrikes(weekly.chain, initialSpotPaise, env.chainDepth);
   const { options, subscriptions: optionSubscriptions } = buildOptionSpecs(weekly, selectedStrikes, env.optionExchangeSegment);
@@ -314,7 +316,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     market: strategyMarket,
     riskProfile: riskCfg.value,
     eligibility: {
-      entryWindows: [{ from: env.strategyId === 's1-momentum-burst' ? S1_ENTRY_START : strategyMarket.session.open, to: strategyMarket.entryCutoff }],
+      entryWindows: [{ from: strategyMarket.session.open, to: strategyMarket.entryCutoff }],
       blackoutDates: new Set(),
       maxSpreadPct: env.maxSpreadPct,
       minOi: env.minOi,
