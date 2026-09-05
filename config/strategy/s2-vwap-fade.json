@@ -2,6 +2,7 @@
   "strategyId": "s2-vwap-fade",
   "version": "0.3.0",
   "enabled": false,
+  "notes": "DISABLED 2026-09-05 - no live edge, not a tuning problem. 121 live paper trades over 18 sessions = -Rs 4,944; the post-Jul-28 window alone is -Rs 4,088 over 83 trades (-Rs 36.49/trade gross, -Rs 49.26/trade net). A random-entry permutation test on the same instruments and sessions puts S2 at the 36th percentile of random long-option entries, i.e. indistinguishable from random. Break-even needs ~+0.75% of premium in 150s (0.22% spread + 0.26% charges + ~0.28% decay); the median trade delivers -0.07%. A 30-cell (entry cutoff x stretch) search found every cell with n>=18 negative. Do not re-enable without a new entry signal validated out-of-sample. Earlier positive reads were journal contamination - see commit a59e65b and the s2-replay journal split.",
   "params": {
     "stretchPct": 0.0015,
     "decelRatio": 0.2,

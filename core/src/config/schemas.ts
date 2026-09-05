@@ -85,6 +85,13 @@ export const StrategyConfigSchema = z.object({
   strategyId: z.string().min(1),
   version: z.string().min(1),
   enabled: z.boolean(),
+  /**
+   * Free-text provenance for a human reading the file — above all, why a
+   * strategy is disabled, so the reason travels with the switch instead of
+   * living only in a commit message. Optional; part of the config hash, so
+   * editing it is recorded as a config change like any other edit.
+   */
+  notes: z.string().optional(),
   params: z.record(z.union([z.number(), z.string(), z.boolean()])),
 });
 

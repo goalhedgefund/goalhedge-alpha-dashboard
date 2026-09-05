@@ -2,6 +2,7 @@
   "strategyId": "op-minus-atm-short",
   "version": "0.5.0",
   "enabled": false,
+  "notes": "DISABLED 2026-09-05 - selling premium is not the fix for S2's losses. 83 live paper trades over 11 sessions = -Rs 4,562 (-Rs 38.37/trade gross), 2/11 winning sessions - statistically the same per-trade loss as S2 long (-Rs 40.65/trade). Both directions pay the same ~0.48% round-trip friction (0.22% spread + 0.26% charges) while premium drift over 60-900s is only +/-0.3%, so direction is not the problem: the hold is too short to clear the cost. Mirror test on journalled quotes has short net-negative at 60/150/300/600/900s, turning positive only at 1800s+ - well beyond maxHoldSec 600. Do not re-enable without a longer-hold, defined-risk redesign validated out-of-sample.",
   "params": {
     "scalpLotsPerRight": 1,
     "targetPremiumPct": 3.5,

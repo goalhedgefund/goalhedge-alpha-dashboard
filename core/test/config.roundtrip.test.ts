@@ -35,6 +35,26 @@ describe('config round trip (M0 acceptance)', () => {
     });
   }
 
+  it('notes survive parsing and are covered by the hash', () => {
+    const base = { strategyId: 's', version: '1', enabled: false, params: { a: 1 } };
+    // Optional: configs without a note still parse (backward compatible).
+    expect(StrategyConfigSchema.parse(base).notes).toBeUndefined();
+    // Present: it is preserved, not stripped as an unknown key.
+    const withNote = StrategyConfigSchema.parse({ ...base, notes: 'why' });
+    expect(withNote.notes).toBe('why');
+    // And it is part of the identity of the config, so edits are recorded.
+    expect(hashValue(withNote)).not.toBe(hashValue(StrategyConfigSchema.parse(base)));
+  });
+
+  it('a disabled strategy config explains why it is disabled', () => {
+    for (const rel of ['strategy/s2-vwap-fade.json', 'strategy/op-minus-atm-short.json',
+                       'strategy/s1-momentum-burst.json', 'strategy/allop-atm-mm.json']) {
+      const cfg = loadConfig(StrategyConfigSchema, join(configDir, rel)).value;
+      if (cfg.enabled) continue;
+      expect(cfg.notes, `${rel} is disabled but carries no note saying why`).toBeTruthy();
+    }
+  });
+
   it('hash is independent of key order (property)', () => {
     const leaf = fc.oneof(fc.integer(), fc.string(), fc.boolean(), fc.constant(null));
     const obj = fc.dictionary(fc.string({ minLength: 1 }), leaf, { maxKeys: 10 });
