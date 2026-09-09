@@ -8,6 +8,7 @@ export type StopTriggerReason =
   | 'L1_UNDERLYING'
   | 'L2_TARGET'
   | 'L2_TRAIL'
+  | 'L3_TRIAGE'
   | 'L3_TIME'
   | 'L4_SESSION';
 
@@ -88,6 +89,7 @@ export class StopEngine {
     else if (target !== undefined && tick.premiumPaise >= target) reason = 'L2_TARGET';
     else if (tick.premiumPaise <= next.stopPremiumPaise) reason = next.layer === 'TRAIL' || next.layer === 'BREAKEVEN' ? 'L2_TRAIL' : 'L1_HARD_PREMIUM';
     else if (this.underlyingInvalidated(managed.stopPlan, tick.underlyingPaise)) reason = 'L1_UNDERLYING';
+    else if (this.triageFailed(managed, next, tick.nowMs)) reason = 'L3_TRIAGE';
     else if (tick.nowMs >= next.timeStopDeadlineTs) reason = 'L3_TIME';
 
     managed.state = next;
@@ -124,6 +126,17 @@ export class StopEngine {
       stopPremiumPaise: candidatePaise,
       lastMoveTs: nowMs,
     };
+  }
+
+  /**
+   * A position that has not shown the required high-water profit by its triage
+   * age is cut early rather than left to run out the full time stop.
+   */
+  private triageFailed(managed: ManagedPosition, state: StopState, nowMs: number): boolean {
+    const { triageAtSec, triageMinProfitPaise } = managed.stopPlan;
+    if (triageAtSec === undefined || triageMinProfitPaise === undefined) return false;
+    if (nowMs < managed.position.openedTs + triageAtSec * 1000) return false;
+    return state.highWaterPremiumPaise - managed.position.avgEntryPricePaise < triageMinProfitPaise;
   }
 
   private underlyingInvalidated(stopPlan: StopPlan, underlyingPaise: number | undefined): boolean {

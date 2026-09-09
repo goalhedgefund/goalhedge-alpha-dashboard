@@ -4,7 +4,7 @@
   "enabled": true,
   "params": {
     "impulsePct": 0.00035,
-    "confirmTicks": 3,
+    "confirmTicks": 4,
     "minImbalance": 0,
     "lots": 1,
     "ttlMs": 1500,

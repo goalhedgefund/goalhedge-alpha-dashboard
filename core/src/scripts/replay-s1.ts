@@ -82,6 +82,10 @@ export interface ReplayOptions {
   params?: Partial<StrategyParams>;
   journalDir?: string;
   silent?: boolean;
+  /** Override the entry window (HH:MM IST). Defaults to session open → entryCutoff. */
+  entryWindow?: { from: string; to: string };
+  /** Shallow-merged over the risk profile, for sweeping risk-layer limits. */
+  riskOverrides?: Record<string, unknown>;
 }
 
 export interface ReplayResult {
@@ -119,8 +123,8 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const { date } = opts;
 
   // ── load configs ──────────────────────────────────────────────────────────
-  const marketCfg = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 'india-nse-options.json'));
-  const riskCfg = loadConfig(RiskProfileSchema, join(CONFIG_DIR, 'risk', 'paper-default.json'));
+  const marketCfg = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 's1-nse-options.json'));
+  const riskCfg = loadConfig(RiskProfileSchema, join(CONFIG_DIR, 'risk', 's1-paper.json'));
   const strategyCfg = loadConfig(StrategyConfigSchema, join(CONFIG_DIR, 'strategy', 's1-momentum-burst.json'));
 
   // Merge any param overrides (for sweep), stripping undefined values.
@@ -132,6 +136,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   }
   const params: StrategyParams = { ...strategyCfg.value.params, ...overrides };
   const market = marketCfg.value;
+  const riskProfile = RiskProfileSchema.parse({ ...riskCfg.value, ...(opts.riskOverrides ?? {}) });
 
   // ── load ticks ────────────────────────────────────────────────────────────
   // Loads every part (ticks.jsonl.gz, ticks-2.jsonl.gz, …) so a day recorded
@@ -198,9 +203,11 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     date,
     mode: 'paper',
     market,
-    riskProfile: riskCfg.value,
+    riskProfile,
     eligibility: {
-      entryWindows: [{ from: market.session.open, to: market.entryCutoff }],
+      entryWindows: [
+        opts.entryWindow ?? { from: market.entryOpen ?? market.session.open, to: market.entryCutoff },
+      ],
       blackoutDates: new Set(),
       maxSpreadPct: 0.015,
       minOi: 100,

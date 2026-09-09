@@ -14,6 +14,10 @@ export interface StopPlanPcts {
   targetPct?: number;
   /** L3 time stop. */
   timeStopSec: number;
+  /** L3 triage age. Omit/0 disables early triage. */
+  triageAtSec?: number;
+  /** High-water profit as % of entry premium required to survive triage. */
+  triageMinProfitPct?: number;
 }
 
 export type UnderlyingInvalidation =
@@ -50,6 +54,14 @@ export function buildLongOptionStopPlan(args: {
     ...(pcts.trailLockPct !== undefined ? { trailLockPct: pcts.trailLockPct } : {}),
     ...(pcts.targetPct !== undefined && pcts.targetPct > 0
       ? { targetPaise: snap(entry * (1 + pcts.targetPct / 100)) }
+      : {}),
+    // Floored at one tick: a 0% bar would demand no profit at all and could
+    // never trigger, silently disabling triage rather than enforcing it.
+    ...(pcts.triageAtSec !== undefined && pcts.triageAtSec > 0
+      ? {
+          triageAtSec: pcts.triageAtSec,
+          triageMinProfitPaise: Math.max(tick, snap(entry * ((pcts.triageMinProfitPct ?? 0) / 100))),
+        }
       : {}),
   };
 

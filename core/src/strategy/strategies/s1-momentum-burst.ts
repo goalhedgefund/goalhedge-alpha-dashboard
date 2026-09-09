@@ -81,6 +81,9 @@ export class S1MomentumBurst implements IStrategy {
         trailStepPct: numParam(p, 'trailStepPct', 8),
         trailLockPct: numParam(p, 'trailLockPct', 50),
         timeStopSec: numParam(p, 'timeStopSec', 90),
+        targetPct: numParam(p, 'targetPct', 0),
+        triageAtSec: numParam(p, 'triageAtSec', 0),
+        triageMinProfitPct: numParam(p, 'triageMinProfitPct', 0),
       },
       ...(spot !== undefined && atr !== undefined && atr > 0
         ? { invalidation: { kind: 'atr' as const, spotPaise: spot, atrPaise: atr, mult: atrMult } }

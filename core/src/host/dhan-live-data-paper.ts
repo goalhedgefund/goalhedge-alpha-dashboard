@@ -216,13 +216,32 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   const isAllOp = env.strategyId === 'allop-atm-mm';
   const isOpMinus = env.strategyId === 'op-minus-atm-short';
   const isMm = isAllOp || isOpMinus;
+  // S1 trades a narrowed 10:00–14:30 entry window on a ₹500/day loss cap; the
+  // shared india/paper-default profiles stay as S2's baseline.
+  const isS1 = env.strategyId === 's1-momentum-burst';
   const marketCfg = loadConfig(
     MarketProfileSchema,
-    fileURLToPath(new URL(isMm ? 'market/allop-nse-options.json' : 'market/india-nse-options.json', configDir)),
+    fileURLToPath(
+      new URL(
+        isMm ? 'market/allop-nse-options.json' : isS1 ? 'market/s1-nse-options.json' : 'market/india-nse-options.json',
+        configDir,
+      ),
+    ),
   );
   const riskCfg = loadConfig(
     RiskProfileSchema,
-    fileURLToPath(new URL(isOpMinus ? 'risk/op-minus-paper.json' : isAllOp ? 'risk/allop-paper.json' : 'risk/paper-default.json', configDir)),
+    fileURLToPath(
+      new URL(
+        isOpMinus
+          ? 'risk/op-minus-paper.json'
+          : isAllOp
+            ? 'risk/allop-paper.json'
+            : isS1
+              ? 'risk/s1-paper.json'
+              : 'risk/paper-default.json',
+        configDir,
+      ),
+    ),
   );
   const strategyCfg = loadConfig(StrategyConfigSchema, fileURLToPath(new URL(`strategy/${env.strategyId}.json`, configDir)));
   if (strategyCfg.value.strategyId !== env.strategyId) {
@@ -316,7 +335,9 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     market: strategyMarket,
     riskProfile: riskCfg.value,
     eligibility: {
-      entryWindows: [{ from: strategyMarket.session.open, to: strategyMarket.entryCutoff }],
+      entryWindows: [
+        { from: strategyMarket.entryOpen ?? strategyMarket.session.open, to: strategyMarket.entryCutoff },
+      ],
       blackoutDates: new Set(),
       maxSpreadPct: env.maxSpreadPct,
       minOi: env.minOi,

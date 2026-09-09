@@ -31,6 +31,8 @@ export const MarketProfileSchema = z.object({
   currency: z.string().length(3),
   timezone: z.string().min(1),
   session: z.object({ open: hhmm, close: hhmm }),
+  /** First entry. Defaults to session.open — the session still starts at open. */
+  entryOpen: hhmm.optional(),
   entryCutoff: hhmm,
   hardSquareOff: hhmm,
   tickSizePaise: z.number().int().positive(),

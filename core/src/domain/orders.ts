@@ -28,6 +28,13 @@ export interface StopPlan {
   /** L3: exit if neither stopped nor targeted within this many seconds. */
   timeStopSec: number;
   targetPaise?: number;
+  /**
+   * L3 triage: at this age, exit unless the position has already shown
+   * `triageMinProfitPaise` of high-water profit. Omit to disable.
+   */
+  triageAtSec?: number;
+  /** High-water profit above entry a position must show to survive triage. */
+  triageMinProfitPaise?: number;
 }
 
 export interface OrderIntent {
