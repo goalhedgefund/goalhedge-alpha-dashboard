@@ -8,7 +8,7 @@ import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema } from '../config/schemas.js';
 import { IdFactory, makeSessionId, type ClientOrderId } from '../domain/ids.js';
 import type { Trade } from '../domain/positions.js';
-import { ManualClock } from '../domain/time.js';
+import { ManualClock, istDayStartMs } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { FeedMarketData } from '../host/feed-market-data.js';
 import { PaperHost, type HostRunnerPorts } from '../host/paper-host.js';
@@ -18,7 +18,7 @@ import { AllOpAtmMm } from '../strategy/strategies/allop-atm-mm.js';
 import type { StrategyParams } from '../strategy/types.js';
 import {
   discoverPlainRecording,
-  loadTicksFromGz,
+  loadTicksForDate,
   resolveScripMasterPath,
   type DiscoveredRecording,
 } from './backtest-recording.js';
@@ -69,6 +69,7 @@ export async function runAllOpReplay(
     spotInstrumentId: recording.spotInstrumentId,
     options: recording.optionSpecs,
     strikeStepPaise: marketCfg.value.contract.strikeStepPaise,
+    sessionFloorMs: istDayStartMs(date),
   });
   const firstSpot = recording.feedTicks.find((tick) => tick.instrumentId === recording.spotInstrumentId);
   if (firstSpot !== undefined) marketData.ingest(firstSpot);
@@ -197,9 +198,26 @@ export async function runAllOpReplay(
 async function recordingForDate(date: string): Promise<DiscoveredRecording> {
   let pending = recordingCache.get(date);
   if (pending === undefined) {
-    pending = loadTicksFromGz(join(TICK_ROOT, date, 'ticks.jsonl.gz')).then((ticks) => {
-      if (ticks.length === 0) throw new Error(`No ticks loaded for ${date}`);
-      return discoverPlainRecording(ticks, resolveScripMasterPath(date));
+    pending = loadTicksForDate(join(TICK_ROOT, date)).then((ticks) => {
+      if (ticks.length === 0) throw new Error(`No ticks loaded for ${date} (check ${join(TICK_ROOT, date)})`);
+      const recording = discoverPlainRecording(ticks, resolveScripMasterPath(date));
+      // Guard against Dhan recycling security IDs across expiry cycles: the
+      // resolved option ladder's median strike must sit within 5% of the
+      // recorded spot. A wider gap means the scrip master matched a different
+      // contract (e.g. Aug 4/5 resolve to June expiry under a stale snapshot).
+      const strikes = recording.optionSpecs.map((s) => s.strikePaise).sort((a, b) => a - b);
+      const kmid = strikes[strikes.length >> 1];
+      const spotTick = ticks.find((t) => t.instrumentId === recording.spotInstrumentId && t.ltpPaise > 0);
+      if (kmid !== undefined && spotTick !== undefined) {
+        const driftPct = Math.abs((kmid - spotTick.ltpPaise) / spotTick.ltpPaise) * 100;
+        if (driftPct > 5) {
+          throw new Error(
+            `${date}: ladder/spot mismatch ${driftPct.toFixed(1)}% — likely recycled Dhan security IDs. ` +
+            `Run node scripts/archive-scrip-master.mjs and retry.`,
+          );
+        }
+      }
+      return recording;
     });
     recordingCache.set(date, pending);
   }

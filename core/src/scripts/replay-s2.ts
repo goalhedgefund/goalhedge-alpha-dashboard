@@ -20,14 +20,14 @@ import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema } from '../config/schemas.js';
 import { makeInstrumentId, makeSessionId, IdFactory } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
-import { ManualClock } from '../domain/time.js';
+import { ManualClock, istDayStartMs } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { FeedMarketData, type OptionSpec } from '../host/feed-market-data.js';
 import { PaperHost } from '../host/paper-host.js';
 import { S2VwapFade } from '../strategy/strategies/s2-vwap-fade.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
 import type { StrategyParams } from '../strategy/types.js';
-import { discoverPlainRecording, loadTicksFromGz, resolveScripMasterPath } from './backtest-recording.js';
+import { discoverPlainRecording, loadTicksForDate, resolveScripMasterPath } from './backtest-recording.js';
 
 // ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -135,9 +135,13 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   const market = marketCfg.value;
 
   // ── load ticks ────────────────────────────────────────────────────────────
-  const tickPath = join(TICK_ROOT, date, 'ticks.jsonl.gz');
-  const allTicks = await loadTicksFromGz(tickPath);
-  if (allTicks.length === 0) throw new Error(`No ticks loaded from ${tickPath}`);
+  // Every part of the day, not just the first: the recorder writes one part per
+  // process run (ticks.jsonl.gz, ticks-2.jsonl.gz, …). Reading only the first
+  // part silently replayed Sep 7 as an empty session and Sep 9 as 512 of
+  // 1,243,648 ticks.
+  const tickDir = join(TICK_ROOT, date);
+  const allTicks = await loadTicksForDate(tickDir);
+  if (allTicks.length === 0) throw new Error(`No ticks loaded from ${tickDir}`);
   if (!opts.silent) console.log(`  Loaded ${allTicks.length} ticks for ${date}`);
 
   // ── build market data ─────────────────────────────────────────────────────
@@ -147,6 +151,12 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     spotInstrumentId: recording.spotInstrumentId,
     options: recording.optionSpecs,
     strikeStepPaise: market.contract.strikeStepPaise,
+    // Match the live host (dhan-live-data-paper): prior-day carryover and
+    // reconnect snapshots must not seed session VWAP or the feature warm-up.
+    // Without this the replay's VWAP is wrong from the first tick — on
+    // 2026-09-08 it inflated the signal count from 132 to 531, with 424 of
+    // them clustered in a single hour.
+    sessionFloorMs: istDayStartMs(date),
   });
 
   // Prime spot so preflight freshness check passes.

@@ -117,13 +117,50 @@ if ($SkipLaunchWindow) {
 } else {
   Wait-UntilLaunchTime -TargetHour 9 -TargetMinute 20
 }
+
+# Snapshot today's scrip master so this session's recordings stay replayable
+# after Dhan purges the expired contracts from the live master.
+Write-LaunchLog "Archiving scrip master snapshot..."
+try {
+  node (Join-Path $RepoRoot "scripts\archive-scrip-master.mjs") *>&1 | Tee-Object -FilePath $script:LogPath -Append
+  Write-LaunchLog "Scrip master archived."
+} catch {
+  Write-LaunchLog "WARNING: scrip master archive failed: $_"
+}
+
 Write-LaunchLog "Starting compiled paper runner (SkipBuild=$SkipBuild)."
 
 Set-Location -LiteralPath $RepoRoot
 # Allow node's stderr (console.warn/error) without killing the PS1 process.
 $ErrorActionPreference = "Continue"
-if ($SkipBuild) {
-  node core\dist\host\allop-live-data-paper.js *>&1 | Tee-Object -FilePath $script:LogPath -Append
-} else {
-  npm run paper:live-data:allop *>&1 | Tee-Object -FilePath $script:LogPath -Append
+
+# Auto-restart loop: if the node process exits before 15:25 IST (end of the
+# trading window) restart it after a short delay so a transient crash does not
+# silently cut the recording short. Once 15:25 passes, exit cleanly.
+$restartCount = 0
+while ($true) {
+  $nowIst = (Get-Date).ToUniversalTime().AddMinutes(330)
+  $cutoffToday = (Get-Date -Year $nowIst.Year -Month $nowIst.Month -Day $nowIst.Day -Hour 15 -Minute 25 -Second 0).ToUniversalTime().AddMinutes(-330)
+  if ((Get-Date) -ge $cutoffToday) {
+    Write-LaunchLog "Past 15:25 IST — not restarting."
+    break
+  }
+  if ($restartCount -gt 0) {
+    Write-LaunchLog "Restart #$restartCount — process exited before 15:25 IST. Waiting 15s before relaunch."
+    Start-Sleep -Seconds 15
+    # Re-read the env file in case the access token was refreshed.
+    $envText = Get-Content -Raw -LiteralPath $EnvPath
+  }
+  $restartCount++
+  Write-LaunchLog "Launching node process (attempt $restartCount)."
+  if ($SkipBuild) {
+    node core\dist\host\allop-live-data-paper.js *>&1 | Tee-Object -FilePath $script:LogPath -Append
+  } else {
+    npm run paper:live-data:allop *>&1 | Tee-Object -FilePath $script:LogPath -Append
+    # After the first run the binary is already built; subsequent restarts can
+    # skip the build step to recover faster.
+    $SkipBuild = $true
+  }
+  $nowIst = (Get-Date).ToUniversalTime().AddMinutes(330)
+  Write-LaunchLog "Node process exited at $($nowIst.ToString('HH:mm')) IST."
 }

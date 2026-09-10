@@ -35,12 +35,18 @@ import { OpMinusRunner } from '../mm/op-minus-runner.js';
 import { FeatureRegimeProvider } from '../strategy/regime.js';
 import { OpMinusAtmShort } from '../strategy/strategies/op-minus-atm-short.js';
 import type { StrategyParams } from '../strategy/types.js';
-import { discoverPlainRecording, discoverRecording } from './backtest-recording.js';
+import { discoverPlainRecording, discoverRecording, listTickParts, loadTicksForDate, resolveScripMasterPath } from './backtest-recording.js';
 
 const SCALPER_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CONFIG_DIR = join(SCALPER_ROOT, 'config');
 // Backtest-only corpus. Live data paths are configured by the live host.
-const DEFAULT_DATA_ROOT = 'D:\\Claude\\workstation\\services\\scalper\\core\\data\\dhan';
+// The live recorder writes to <scalper>/data/dhan. The old hard-coded
+// <scalper>/core/data/dhan holds only the retired synthetic ATM-ladder
+// recordings, which stop at 2026-07-22 - pointing the whole FALLBACK_CORPORA
+// list there made every Aug/Sep day resolve to nothing (the 2026-07-22-30d
+// run processed 21 days and recorded trades=0, entrySignals=0 on all of them).
+const DEFAULT_DATA_ROOT = join(SCALPER_ROOT, 'data', 'dhan');
+const LEGACY_DATA_ROOT = join(SCALPER_ROOT, 'core', 'data', 'dhan');
 const DEFAULT_CORPUS_ROOT = join(DEFAULT_DATA_ROOT, 'ticks-op-minus-atm-short');
 const PREFERRED_CORPUS_ROOT = process.env.OP_MINUS_BACKTEST_CORPUS_ROOT?.trim();
 const FALLBACK_CORPORA = [
@@ -49,6 +55,8 @@ const FALLBACK_CORPORA = [
   join(DEFAULT_DATA_ROOT, 'ticks-allop-atm-mm'),
   join(DEFAULT_DATA_ROOT, 'ticks-s2-vwap-fade'),
   join(DEFAULT_DATA_ROOT, 'ticks'),
+  // Retired synthetic ladder corpus, last so it can never shadow real ticks.
+  join(LEGACY_DATA_ROOT, 'ticks-op-minus-atm-short'),
 ];
 
 const IST_OFFSET_MS = 330 * 60_000;
@@ -131,17 +139,16 @@ function statIsDir(path: string): boolean {
   }
 }
 
+/**
+ * Day directory holding the recording, or undefined when no corpus has it.
+ * Returns the DIRECTORY (not the first part) so every `ticks-N.jsonl.gz` the
+ * recorder wrote for that day is replayed: reading only `ticks.jsonl.gz` saw
+ * 0 of 797,184 ticks on 2026-09-07 and 512 of 1,243,648 on 2026-09-09.
+ */
 function pickSourceDay(date: string): string | undefined {
   for (const root of FALLBACK_CORPORA) {
-    const candidate = join(root, date, 'ticks.jsonl.gz');
-    if (existsSync(candidate)) {
-      if (statIsDir(candidate)) {
-        const nested = join(candidate, 'ticks.jsonl.gz');
-        if (existsSync(nested)) return nested;
-        continue;
-      }
-      return candidate;
-    }
+    const dir = join(root, date);
+    if (statIsDir(dir) && listTickParts(dir).length > 0) return dir;
   }
   return undefined;
 }
@@ -247,7 +254,12 @@ async function backtestDay(
   const riskProfile = Number.isFinite(maxTradesOverride)
     ? { ...riskCfg.value, maxTradesPerDay: Math.max(1, Math.floor(maxTradesOverride)) }
     : riskCfg.value;
-  const masterPath = process.env.DHAN_SCRIP_MASTER_PATH?.trim() || 'D:\\DHAN_LOGIN\\api-scrip-master.csv';
+  // The live scrip master is a point-in-time snapshot: Dhan purges expired
+  // contracts from it, so it cannot resolve a recording from a past expiry
+  // cycle (every Jul/Aug day threw "Could not resolve native spot/options").
+  // resolveScripMasterPath picks the newest archived snapshot on or before the
+  // session date and still honours DHAN_SCRIP_MASTER_PATH as an override.
+  const masterPath = resolveScripMasterPath(date);
 
   const scripRows = loadScripMaster(masterPath);
   const synthetic = ticks.some((tick) => String(tick.instrumentId).includes(':scalp:ATM'));
@@ -430,13 +442,19 @@ async function runBacktest(endDate: string, lookbackDays: number, profile: 'stri
       missingDays.push(date);
       continue;
     }
-    ticks = await loadTicksFromGz(source);
+    ticks = statIsDir(source) ? await loadTicksForDate(source) : await loadTicksFromGz(source);
     if (ticks.length === 0) {
       missingDays.push(date);
       continue;
     }
-    const result = await backtestDay(date, ticks, source, runRoot, profile);
-    dayResults.push(result);
+    try {
+      dayResults.push(await backtestDay(date, ticks, source, runRoot, profile));
+    } catch (err) {
+      // One unresolvable day must not abort a 44-day run; record it as missing
+      // and keep going, so the summary still covers every day that does work.
+      console.warn(`  ${date}: skipped — ${err instanceof Error ? err.message : String(err)}`);
+      missingDays.push(date);
+    }
   }
 
   const reportPathBase = join(runRoot, `summary-${profile}`);
