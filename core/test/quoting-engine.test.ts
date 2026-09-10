@@ -676,7 +676,7 @@ describe('v0.10 production long-option market-maker policy', () => {
     expect(new AllOpAtmMm().version).toBe(strategy.version);
     expect(strategy.params).toEqual(expect.objectContaining({
       spreadCostMultiple: 16,
-      takeProfitCostMultiple: 6,
+      takeProfitCostMultiple: 9,
       maxLotsInventory: 1,
       maxScalpLots: 1,
       maxLotsPerSide: 1,
@@ -688,8 +688,8 @@ describe('v0.10 production long-option market-maker policy', () => {
       trendPct: 0.1,
       trendResumePct: 0.05,
       minRequoteMs: 5_000,
-      maxHoldSec: 30,
-      hardStopPct: 0.5,
+      maxHoldSec: 150,
+      hardStopPct: 4,
       entryRejectCooldownSec: 15,
       entryMomentumLookbackSec: 5,
       maxEntryFallPct: 0.2,
