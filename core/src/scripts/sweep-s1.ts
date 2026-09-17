@@ -8,9 +8,23 @@
  *
  * Usage: node dist/scripts/sweep-s1.js [--days 2026-07-16]
  *
- * ⚠  HONESTY CAVEAT: only 1 clean replayable day (Jul 16) exists.
- *    All results are IN-SAMPLE (at most 1 trade per combo).
- *    Do not promote any combo to production without 2-week forward paper validation.
+ * CLEAN_DAYS stays a single day on purpose — widen it explicitly with --days.
+ * The corpus now holds ~36 recorded days (33 replay; 07-18, 07-19 and 07-25
+ * have no ticks).
+ *
+ * ⚠  RANKING ONLY — never quote this harness in absolute rupees.
+ *    PaperBroker runs at 1-tick slippage and zero ack/fill latency, so it does
+ *    not reproduce live. Measured 2026-09-17 over the overlapping dates with the
+ *    session-floor fix in place: replay +Rs 1,190 on 112 trades against live
+ *    paper -Rs 7,307 on 205 trades — optimistic by ~Rs 41/trade, and not even
+ *    the same trade count. The 2026-09-09 retune was promoted on a "+Rs 3,262"
+ *    figure taken from here; it does not reproduce and never described live.
+ *    Rank combos against each other here; take P&L from journals/ only.
+ *
+ * ⚠  Results are IN-SAMPLE. S1 has no measurable edge against an instrument- and
+ *    day-matched permutation control (p ~ 0.44-0.68 over 25 days), so a combo
+ *    that tops this grid is fitting noise. Do not promote one without forward
+ *    paper validation.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';

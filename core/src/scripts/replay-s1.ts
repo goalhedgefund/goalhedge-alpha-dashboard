@@ -183,6 +183,9 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
   // Deterministic fill model: 1 tick slippage, zero latency. Fine for RANKING
   // combos against each other; do NOT compare absolute ₹ to live paper numbers
   // (live fills ride real ack/fill latency between signal and execution).
+  // Measured 2026-09-17 across the overlapping dates: this harness reports
+  // +₹1,190 on 112 trades where live paper took 205 trades for -₹7,307. It is
+  // optimistic by ~₹41/trade and does not even reproduce the trade count.
   const broker = new PaperBroker({
     clock,
     tickSizePaise: market.tickSizePaise,
