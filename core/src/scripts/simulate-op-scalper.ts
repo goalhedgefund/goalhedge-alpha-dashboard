@@ -73,6 +73,14 @@ interface SimConfig {
   anchorMode: 'naked' | 'vertical';
   /** Strikes out for the vertical's short wing. */
   wing: number;
+  /**
+   * Standing hedge bought once at session start and held: long 1 OTM CE and
+   * long 1 OTM PE (a strangle). Unlike the vertical's short wing this is a
+   * separate position that GAINS on the large directional moves which produce
+   * the covered-scalp machine's forced unwinds.
+   */
+  hedgeMode: 'none' | 'strangle';
+  hedgeWing: number;
   entry: 'passive' | 'cross';
   entryImproveTicks: number;
   /** 0 disables: hard stop on the anchor, in ticks against. */
@@ -162,7 +170,9 @@ type TradeKind =
   | 'ANCHOR_STOP'
   | 'ANCHOR_TIME'
   | 'SWITCH'
-  | 'EOD';
+  | 'EOD'
+  /** Standing long OTM wing held as a hedge, not scalped. */
+  | 'HEDGE';
 
 interface SimTrade {
   date: string;
@@ -503,6 +513,70 @@ class RightScalper {
   }
 }
 
+/**
+ * Long OTM strangle held as a standing hedge: bought once when the desk opens,
+ * squared off on a rule-5 switch (and re-established at the new strike) and at
+ * end of day. It is never scalped — its whole job is to be long the tails that
+ * the ATM covered-scalp machine is short.
+ */
+class StrangleHedge {
+  private legs: { id: InstrumentId; right: OptionRight; entryPaise: number }[] = [];
+  private entryTs = 0;
+  active = false;
+
+  constructor(
+    private readonly market: MarketProfile,
+    private readonly qty: number,
+    private readonly onTrade: (right: OptionRight, t: Omit<SimTrade, 'date' | 'right'>) => void,
+  ) {}
+
+  establish(
+    books: ReadonlyMap<InstrumentId, { bidPaise: number; askPaise: number }>,
+    ceId: InstrumentId | undefined,
+    peId: InstrumentId | undefined,
+    nowMs: number,
+  ): void {
+    if (this.active || ceId === undefined || peId === undefined) return;
+    const ce = books.get(ceId);
+    const pe = books.get(peId);
+    if (ce === undefined || pe === undefined || ce.askPaise <= 0 || pe.askPaise <= 0) return;
+    // Pay the offer on both wings — a hedge you want on gets taken, not rested.
+    this.legs = [
+      { id: ceId, right: 'CE', entryPaise: ce.askPaise },
+      { id: peId, right: 'PE', entryPaise: pe.askPaise },
+    ];
+    this.entryTs = nowMs;
+    this.active = true;
+  }
+
+  unwind(
+    books: ReadonlyMap<InstrumentId, { bidPaise: number; askPaise: number }>,
+    nowMs: number,
+  ): void {
+    if (!this.active) return;
+    for (const leg of this.legs) {
+      const exit = books.get(leg.id)?.bidPaise ?? 0;
+      const gross = (exit - leg.entryPaise) * this.qty;
+      const charges = chargesFor(this.market, this.qty, [
+        { side: 'BUY', pricePaise: leg.entryPaise },
+        { side: 'SELL', pricePaise: Math.max(0, exit) },
+      ]);
+      this.onTrade(leg.right, {
+        kind: 'HEDGE',
+        qty: this.qty,
+        entryPaise: leg.entryPaise,
+        exitPaise: exit,
+        grossPaise: gross,
+        chargesPaise: charges,
+        netPaise: gross - charges,
+        holdMs: nowMs - this.entryTs,
+      });
+    }
+    this.active = false;
+    this.legs = [];
+  }
+}
+
 // ── one day ──────────────────────────────────────────────────────────────────
 
 async function simulateDay(date: string, dir: string, market: MarketProfile, cfg: SimConfig): Promise<DayResult> {
@@ -568,11 +642,19 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
   const cutoffMs = hhmmToMs(cfg.entryCutoff);
   const squareMs = hhmmToMs(cfg.squareOff);
 
+  const hedge = new StrangleHedge(market, qty, (right, t) => trades.push({ date, right, ...t }));
+  /** Long wings sit `hedgeWing` strikes OTM on each side of the current ATM. */
+  const hedgeIds = (): { ce: InstrumentId | undefined; pe: InstrumentId | undefined } => ({
+    ce: idByStrikeRight.get(`${atmStrike + cfg.hedgeWing * step}:CE`),
+    pe: idByStrikeRight.get(`${atmStrike - cfg.hedgeWing * step}:PE`),
+  });
+
   const flattenAll = (nowMs: number, kind: 'SWITCH' | 'EOD'): void => {
     for (const right of ['CE', 'PE'] as const) {
       const u = unitFor(right);
       if (u !== undefined) legs[right].flatten(u, nowMs, kind);
     }
+    if (cfg.hedgeMode === 'strangle') hedge.unwind(books, nowMs);
   };
 
   for (const t of inSession) {
@@ -608,6 +690,14 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
       continue;
     }
 
+    const entriesOpen = intoDay >= fromMs && intoDay < cutoffMs;
+    // "Hedge at the start itself": put the wings on as soon as the desk opens,
+    // and again at the new strike after a switch squared them off.
+    if (cfg.hedgeMode === 'strangle' && entriesOpen) {
+      const h = hedgeIds();
+      hedge.establish(books, h.ce, h.pe, t.ts);
+    }
+
     // Only step the right whose book just moved — either its near or wing leg.
     const spec = specById.get(t.instrumentId);
     if (spec === undefined) continue;
@@ -618,7 +708,7 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
 
     const unit = unitFor(spec.right);
     if (unit === undefined) continue;
-    legs[spec.right].step(unit, t.ts, intoDay >= fromMs && intoDay < cutoffMs);
+    legs[spec.right].step(unit, t.ts, entriesOpen);
   }
 
   flattenAll(dayStart + squareMs, 'EOD');
@@ -679,6 +769,7 @@ function renderRun(days: readonly DayResult[], cfg: SimConfig): string {
   L.push(`# OP-Scalper simulation`);
   L.push('');
   L.push(`- unit: ${cfg.anchorMode}${cfg.anchorMode === 'vertical' ? ` (ATM / ATM±${cfg.wing} debit vertical)` : ' ATM option'}`);
+  L.push(`- hedge: ${cfg.hedgeMode === 'strangle' ? `long ATM±${cfg.hedgeWing} strangle, 1 unit each, held` : 'none'}`);
   L.push(`- costMult: ${cfg.costMult}x round-trip cost`);
   L.push(`- entry: ${cfg.entry}${cfg.entry === 'passive' ? ` (bid + ${cfg.entryImproveTicks} tick)` : ''}`);
   L.push(`- flipTicks: ${cfg.flipTicks} · switchPct: ${(cfg.switchPct * 100).toFixed(2)}% · minTradingDte: ${cfg.minTradingDte}`);
@@ -777,14 +868,18 @@ function renderRun(days: readonly DayResult[], cfg: SimConfig): string {
 
   L.push(`## Day by day`);
   L.push('');
-  L.push(`| Date | DTE | Expiry | Trades | Switches | Net |`);
-  L.push(`| --- | ---: | --- | ---: | ---: | ---: |`);
+  L.push(`| Date | DTE | Expiry | Trades | Switches | Scalp | Hedge | Net |`);
+  L.push(`| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |`);
   for (const d of days) {
     if (d.skipped !== undefined) {
-      L.push(`| ${d.date} | - | - | - | - | _${d.skipped}_ |`);
+      L.push(`| ${d.date} | - | - | - | - | - | - | _${d.skipped}_ |`);
       continue;
     }
-    L.push(`| ${d.date} | ${d.tradingDte} | ${d.expiry} | ${d.trades.length} | ${d.switches} | ${inr(totalsOf(d.trades).net)} |`);
+    const sc = totalsOf(d.trades.filter((x) => x.kind !== 'HEDGE'));
+    const hg = totalsOf(d.trades.filter((x) => x.kind === 'HEDGE'));
+    L.push(
+      `| ${d.date} | ${d.tradingDte} | ${d.expiry} | ${d.trades.length} | ${d.switches} | ${inr(sc.net)} | ${inr(hg.net)} | ${inr(sc.net + hg.net)} |`,
+    );
   }
   L.push('');
   L.push(`_DTE counts weekdays only — no NSE holiday calendar in this repo, so a holiday week overstates DTE by one._`);
@@ -818,6 +913,8 @@ function parseArgs(argv: string[]): { days: number; endDate: string; sweep: bool
       minTradingDte: parseNum(argv, '--min-dte', 2),
       anchorMode: parseStr(argv, '--anchor', 'naked') === 'vertical' ? 'vertical' : 'naked',
       wing: parseNum(argv, '--wing', 2),
+      hedgeMode: parseStr(argv, '--hedge', 'none') === 'strangle' ? 'strangle' : 'none',
+      hedgeWing: parseNum(argv, '--hedge-wing', 2),
       entry: parseStr(argv, '--entry', 'passive') === 'cross' ? 'cross' : 'passive',
       entryImproveTicks: parseNum(argv, '--entry-improve-ticks', 1),
       anchorStopTicks: parseNum(argv, '--anchor-stop-ticks', 0),
@@ -865,17 +962,22 @@ async function main(): Promise<void> {
     // stops silently overwrite each other's report.
     const stops = `as${armCfg.anchorStopTicks}-cs${armCfg.coveredStopTicks}-ts${armCfg.anchorTimeStopSec}`;
     const unit = armCfg.anchorMode === 'vertical' ? `vert${armCfg.wing}` : 'naked';
+    const hedged = armCfg.hedgeMode === 'strangle' ? `-hedge${armCfg.hedgeWing}` : '';
     writeFileSync(
-      join(outDir, `sim-${endDate}-${days}d-${unit}-mult${mult}-${armCfg.entry}-flip${armCfg.flipTicks}-${stops}.md`),
+      join(outDir, `sim-${endDate}-${days}d-${unit}${hedged}-mult${mult}-${armCfg.entry}-flip${armCfg.flipTicks}-${stops}.md`),
       renderRun(results, armCfg),
       'utf8',
     );
 
-    const t = totalsOf(results.flatMap((d) => d.trades));
-    const eps = results.flatMap((d) => d.episodes);
-    const hit = eps.filter((e) => e.outcome === 'TARGET').length;
+    const allTrades = results.flatMap((d) => d.trades);
+    const t = totalsOf(allTrades);
+    // Split scalp from hedge: the whole question is whether the wings pay for
+    // themselves out of the losses they are supposed to offset.
+    const scalp = totalsOf(allTrades.filter((x) => x.kind !== 'HEDGE'));
+    const hedgeT = totalsOf(allTrades.filter((x) => x.kind === 'HEDGE'));
+    const hedgeCol = cfg.hedgeMode === 'strangle' ? ` | hedge ${inr(hedgeT.net).padStart(14)}` : '';
     console.log(
-      `  ${String(mult).padStart(4)}x | trades ${String(t.trades).padStart(6)} | win ${(t.trades > 0 ? (100 * t.wins) / t.trades : 0).toFixed(1).padStart(5)}% | target-hit ${(eps.length > 0 ? (100 * hit) / eps.length : 0).toFixed(1).padStart(5)}% | charges ${inr(-t.charges).padStart(15)} | net ${inr(t.net).padStart(15)}`,
+      `  ${String(mult).padStart(4)}x | trades ${String(t.trades).padStart(6)} | win ${(t.trades > 0 ? (100 * t.wins) / t.trades : 0).toFixed(1).padStart(5)}% | scalp ${inr(scalp.net).padStart(14)}${hedgeCol} | net ${inr(t.net).padStart(15)}`,
     );
   }
 
