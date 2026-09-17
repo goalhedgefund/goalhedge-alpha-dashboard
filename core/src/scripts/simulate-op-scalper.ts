@@ -17,16 +17,20 @@
  * target fills. Rule 5 (underlying moves switchPct) squares everything off and
  * re-centres the ATM strike.
  *
+ * The TRADED UNIT is either a naked ATM option (--anchor naked) or an ATM/OTM
+ * debit vertical (--anchor vertical --wing N), which caps the anchor's loss at
+ * the debit by construction instead of with a stop. Both are priced and charged
+ * leg by leg, so the vertical correctly pays charges on the SUM of the leg
+ * premia while targeting the much smaller spread value.
+ *
  * Usage:
  *   node dist/scripts/simulate-op-scalper.js [--days 30] [--end YYYY-MM-DD]
  *     [--cost-mult 3] [--sweep] [--entry passive|cross]
+ *     [--anchor naked|vertical] [--wing 2]
  *     [--anchor-stop-ticks N] [--anchor-time-stop-sec N]
- *
- * The headline diagnostic is the MFE distribution: how far an entry actually
- * travels in its favour, against how far it must travel to clear costMult x cost.
  */
 
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
@@ -35,9 +39,9 @@ import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, type MarketProfile } from '../config/schemas.js';
 import type { InstrumentId } from '../domain/ids.js';
 import type { OptionRight } from '../domain/instrument.js';
+import type { Side } from '../domain/orders.js';
 import type { Tick } from '../domain/marketdata.js';
 import { istDayStartMs } from '../domain/time.js';
-import { loadScripMaster } from '../marketdata/instrument-master.js';
 import {
   discoverPlainRecording,
   listTickParts,
@@ -59,12 +63,16 @@ const IST_OFFSET_MS = 330 * 60_000;
 interface SimConfig {
   /** Net profit target as a multiple of round-trip cost (rule 3). */
   costMult: number;
-  /** Ticks the bid must fall below the anchor before flipping to sell-first. */
+  /** Ticks the unit bid must fall below the anchor before flipping to sell-first. */
   flipTicks: number;
   /** Underlying move that forces square-off + ATM re-centre (rule 5), fraction. */
   switchPct: number;
   /** Trading days to expiry below which the desk does not trade (rule 1). */
   minTradingDte: number;
+  /** Naked ATM option, or ATM/OTM debit vertical (loss capped at the debit). */
+  anchorMode: 'naked' | 'vertical';
+  /** Strikes out for the vertical's short wing. */
+  wing: number;
   entry: 'passive' | 'cross';
   entryImproveTicks: number;
   /** 0 disables: hard stop on the anchor, in ticks against. */
@@ -76,9 +84,58 @@ interface SimConfig {
   quoteFrom: string;
   entryCutoff: string;
   squareOff: string;
-  /** Skip quoting when the spread is wider than this fraction of mid. */
+  /** Skip quoting when the unit spread is wider than this fraction of mid. */
   maxSpreadPct: number;
   lots: number;
+}
+
+// ── the traded unit ──────────────────────────────────────────────────────────
+
+interface LegFill {
+  side: Side;
+  pricePaise: number;
+}
+
+/**
+ * A tradeable unit (one option, or one vertical) as a two-sided quote.
+ * `legsToBuy` / `legsToSell` are what actually hits the exchange, and are what
+ * statutory charges are computed on — for a vertical that is BOTH legs, so
+ * turnover is the sum of the premia even though the unit's value is the
+ * difference. That asymmetry is the whole point of measuring this.
+ */
+interface UnitQuote {
+  bidPaise: number;
+  askPaise: number;
+  legsToBuy: LegFill[];
+  legsToSell: LegFill[];
+}
+
+function nakedUnit(b: { bidPaise: number; askPaise: number }): UnitQuote {
+  return {
+    bidPaise: b.bidPaise,
+    askPaise: b.askPaise,
+    legsToBuy: [{ side: 'BUY', pricePaise: b.askPaise }],
+    legsToSell: [{ side: 'SELL', pricePaise: b.bidPaise }],
+  };
+}
+
+/** Long the near leg, short the wing: buy at nearAsk - wingBid, sell at nearBid - wingAsk. */
+function verticalUnit(
+  near: { bidPaise: number; askPaise: number },
+  wing: { bidPaise: number; askPaise: number },
+): UnitQuote {
+  return {
+    bidPaise: near.bidPaise - wing.askPaise,
+    askPaise: near.askPaise - wing.bidPaise,
+    legsToBuy: [
+      { side: 'BUY', pricePaise: near.askPaise },
+      { side: 'SELL', pricePaise: wing.bidPaise },
+    ],
+    legsToSell: [
+      { side: 'SELL', pricePaise: near.bidPaise },
+      { side: 'BUY', pricePaise: wing.askPaise },
+    ],
+  };
 }
 
 // ── per-episode bookkeeping ──────────────────────────────────────────────────
@@ -90,9 +147,7 @@ interface AnchorEpisode {
   right: OptionRight;
   entryPaise: number;
   targetIncPaise: number;
-  /** Best favourable excursion over the anchor's life, per unit, paise. */
   mfePaise: number;
-  /** Worst adverse excursion over the anchor's life, per unit, paise. */
   maePaise: number;
   outcome: AnchorOutcome;
   durationMs: number;
@@ -130,6 +185,8 @@ interface DayResult {
   trades: SimTrade[];
   episodes: AnchorEpisode[];
   switches: number;
+  /** Median entry debit of the traded unit — what a vertical would cap loss at. */
+  medianEntryPaise: number;
   skipped?: string;
 }
 
@@ -195,48 +252,47 @@ function percentile(sorted: readonly number[], p: number): number {
   return sorted[idx] ?? 0;
 }
 
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  return percentile([...values].sort((a, b) => a - b), 50);
+}
+
 function inr(paise: number): string {
   return `${paise < 0 ? '-' : ''}₹${Math.abs(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** Round-trip statutory cost, total paise, for `qty` at roughly `pricePaise`. */
-function roundTripCostPaise(market: MarketProfile, qty: number, pricePaise: number): number {
+function chargesFor(market: MarketProfile, qty: number, legs: readonly LegFill[]): number {
   return computeCharges(
-    [
-      { side: 'BUY', qty, pricePaise, orderId: 'in' },
-      { side: 'SELL', qty, pricePaise, orderId: 'out' },
-    ],
+    legs.map((leg, i) => ({ side: leg.side, qty, pricePaise: leg.pricePaise, orderId: `l${i}` })),
     market,
   ).totalPaise;
 }
 
 /**
- * Per-unit premium move needed so that net profit = costMult x round-trip cost.
+ * Per-unit move needed so that net profit = costMult x round-trip cost.
  * Rounded up to a tick — you cannot quote between ticks.
  */
 function targetIncrementPaise(
   market: MarketProfile,
   qty: number,
-  entryPaise: number,
+  roundTripCostPaise: number,
   costMult: number,
 ): number {
-  const cost = roundTripCostPaise(market, qty, entryPaise);
-  const grossNeeded = (costMult + 1) * cost;
-  const perUnit = grossNeeded / qty;
+  const perUnit = ((costMult + 1) * roundTripCostPaise) / qty;
   const tick = market.tickSizePaise;
   return Math.max(tick, Math.ceil(perUnit / tick) * tick);
 }
 
-// ── the machine ──────────────────────────────────────────────────────────────
-
-interface Book {
-  bidPaise: number;
-  askPaise: number;
+/** Round-trip cost of entering and exiting `q` once, at the current book. */
+function roundTripCost(market: MarketProfile, qty: number, q: UnitQuote): number {
+  return chargesFor(market, qty, [...q.legsToBuy, ...q.legsToSell]);
 }
+
+// ── the machine ──────────────────────────────────────────────────────────────
 
 type Phase = 'FLAT' | 'LONG' | 'COVERED';
 
-/** One right's inventory-anchored scalper. */
+/** One right's inventory-anchored scalper over an abstract traded unit. */
 class RightScalper {
   phase: Phase = 'FLAT';
   anchorPaise = 0;
@@ -245,11 +301,14 @@ class RightScalper {
   anchorMfe = 0;
   anchorMae = 0;
   anchorScalps = 0;
+  private anchorLegs: LegFill[] = [];
   shortPaise = 0;
   shortTs = 0;
   shortTargetInc = 0;
+  private shortLegs: LegFill[] = [];
   /** Working passive entry limit; repriced as the book moves, like a real quote. */
   private restingEntry: number | undefined;
+  readonly entryPrices: number[] = [];
 
   constructor(
     readonly right: OptionRight,
@@ -260,22 +319,26 @@ class RightScalper {
     private readonly onEpisode: (e: Omit<AnchorEpisode, 'date' | 'right'>) => void,
   ) {}
 
-  private book(tick: Book): boolean {
-    if (tick.bidPaise <= 0 || tick.askPaise <= 0) return false;
-    if (tick.askPaise <= tick.bidPaise) return false;
-    const mid = (tick.bidPaise + tick.askPaise) / 2;
-    return (tick.askPaise - tick.bidPaise) / mid <= this.cfg.maxSpreadPct;
+  private quotable(q: UnitQuote): boolean {
+    if (q.askPaise <= 0 || q.askPaise <= q.bidPaise) return false;
+    // A vertical's bid can legitimately be <= 0; only the ask must be positive.
+    if (this.cfg.anchorMode === 'naked' && q.bidPaise <= 0) return false;
+    const mid = (q.bidPaise + q.askPaise) / 2;
+    if (mid <= 0) return false;
+    return (q.askPaise - q.bidPaise) / mid <= this.cfg.maxSpreadPct;
   }
 
-  private record(kind: TradeKind, entryPaise: number, exitPaise: number, holdMs: number): void {
+  /** Long round trip: bought via `entryLegs`, sold via `exitLegs`. */
+  private record(
+    kind: TradeKind,
+    entryPaise: number,
+    exitPaise: number,
+    entryLegs: readonly LegFill[],
+    exitLegs: readonly LegFill[],
+    holdMs: number,
+  ): void {
     const gross = (exitPaise - entryPaise) * this.qty;
-    const charges = computeCharges(
-      [
-        { side: 'BUY', qty: this.qty, pricePaise: entryPaise, orderId: 'in' },
-        { side: 'SELL', qty: this.qty, pricePaise: exitPaise, orderId: 'out' },
-      ],
-      this.market,
-    ).totalPaise;
+    const charges = chargesFor(this.market, this.qty, [...entryLegs, ...exitLegs]);
     this.onTrade({
       kind,
       qty: this.qty,
@@ -288,16 +351,17 @@ class RightScalper {
     });
   }
 
-  /** Short scalp: sold first at `shortPaise`, bought back at `exitPaise`. */
-  private recordShort(entryPaise: number, exitPaise: number, holdMs: number, kind: TradeKind = 'COVERED_SCALP'): void {
+  /** Short scalp: sold the unit first, bought it back. */
+  private recordShort(
+    entryPaise: number,
+    exitPaise: number,
+    entryLegs: readonly LegFill[],
+    exitLegs: readonly LegFill[],
+    holdMs: number,
+    kind: TradeKind = 'COVERED_SCALP',
+  ): void {
     const gross = (entryPaise - exitPaise) * this.qty;
-    const charges = computeCharges(
-      [
-        { side: 'SELL', qty: this.qty, pricePaise: entryPaise, orderId: 'in' },
-        { side: 'BUY', qty: this.qty, pricePaise: exitPaise, orderId: 'out' },
-      ],
-      this.market,
-    ).totalPaise;
+    const charges = chargesFor(this.market, this.qty, [...entryLegs, ...exitLegs]);
     this.onTrade({
       kind,
       qty: this.qty,
@@ -322,9 +386,8 @@ class RightScalper {
     });
   }
 
-  /** Advance one quote update. `entriesOpen` gates new anchors by the clock. */
-  step(b: Book, nowMs: number, entriesOpen: boolean): void {
-    if (!this.book(b)) return;
+  step(q: UnitQuote, nowMs: number, entriesOpen: boolean): void {
+    if (!this.quotable(q)) return;
     const tick = this.market.tickSizePaise;
 
     if (this.phase === 'FLAT') {
@@ -333,96 +396,107 @@ class RightScalper {
         return;
       }
       if (this.cfg.entry === 'cross') {
-        this.openAnchor(b.askPaise, nowMs);
+        this.openAnchor(q.askPaise, q, nowMs);
         return;
       }
       // A resting buy only fills when a seller crosses down onto it. Checking
       // the fill BEFORE repricing is what makes the adverse selection real:
       // we get filled on the way down, never at the moment we quote.
-      if (this.restingEntry !== undefined && b.askPaise <= this.restingEntry) {
-        this.openAnchor(this.restingEntry, nowMs);
+      if (this.restingEntry !== undefined && q.askPaise <= this.restingEntry) {
+        this.openAnchor(this.restingEntry, q, nowMs);
         return;
       }
-      const limit = b.bidPaise + this.cfg.entryImproveTicks * tick;
-      this.restingEntry = limit < b.askPaise ? limit : b.askPaise - tick;
+      const limit = q.bidPaise + this.cfg.entryImproveTicks * tick;
+      this.restingEntry = limit < q.askPaise ? limit : q.askPaise - tick;
       return;
     }
 
     if (this.phase === 'LONG') {
       this.restingEntry = undefined;
-      this.anchorMfe = Math.max(this.anchorMfe, b.bidPaise - this.anchorPaise);
-      this.anchorMae = Math.min(this.anchorMae, b.bidPaise - this.anchorPaise);
+      this.anchorMfe = Math.max(this.anchorMfe, q.bidPaise - this.anchorPaise);
+      this.anchorMae = Math.min(this.anchorMae, q.bidPaise - this.anchorPaise);
 
       const target = this.anchorPaise + this.anchorTargetInc;
-      if (b.bidPaise >= target) {
-        this.record('ANCHOR_TARGET', this.anchorPaise, target, nowMs - this.anchorTs);
+      if (q.bidPaise >= target) {
+        this.record('ANCHOR_TARGET', this.anchorPaise, target, this.anchorLegs, q.legsToSell, nowMs - this.anchorTs);
         this.closeEpisode('TARGET', nowMs);
         this.phase = 'FLAT';
         return;
       }
-      if (this.cfg.anchorStopTicks > 0 && b.bidPaise <= this.anchorPaise - this.cfg.anchorStopTicks * tick) {
-        this.record('ANCHOR_STOP', this.anchorPaise, b.bidPaise, nowMs - this.anchorTs);
+      if (this.cfg.anchorStopTicks > 0 && q.bidPaise <= this.anchorPaise - this.cfg.anchorStopTicks * tick) {
+        this.record('ANCHOR_STOP', this.anchorPaise, q.bidPaise, this.anchorLegs, q.legsToSell, nowMs - this.anchorTs);
         this.closeEpisode('STOP', nowMs);
         this.phase = 'FLAT';
         return;
       }
       if (this.cfg.anchorTimeStopSec > 0 && nowMs - this.anchorTs >= this.cfg.anchorTimeStopSec * 1_000) {
-        this.record('ANCHOR_TIME', this.anchorPaise, b.bidPaise, nowMs - this.anchorTs);
+        this.record('ANCHOR_TIME', this.anchorPaise, q.bidPaise, this.anchorLegs, q.legsToSell, nowMs - this.anchorTs);
         this.closeEpisode('TIME', nowMs);
         this.phase = 'FLAT';
         return;
       }
-      // Rule 7: price has walked away from the anchor — flip to sell-first,
+      // Rule 7: the unit has walked away from the anchor — flip to sell-first,
       // covered by the inventory we already hold (never net short).
-      if (b.bidPaise <= this.anchorPaise - this.cfg.flipTicks * tick && entriesOpen) {
-        this.shortPaise = b.bidPaise;
+      if (q.bidPaise <= this.anchorPaise - this.cfg.flipTicks * tick && entriesOpen) {
+        this.shortPaise = q.bidPaise;
+        this.shortLegs = q.legsToSell;
         this.shortTs = nowMs;
-        this.shortTargetInc = targetIncrementPaise(this.market, this.qty, this.shortPaise, this.cfg.costMult);
+        this.shortTargetInc = targetIncrementPaise(
+          this.market,
+          this.qty,
+          roundTripCost(this.market, this.qty, q),
+          this.cfg.costMult,
+        );
         this.phase = 'COVERED';
       }
       return;
     }
 
     // COVERED: anchor long + scalp short = net 0. Buy the short back lower.
-    this.anchorMfe = Math.max(this.anchorMfe, b.bidPaise - this.anchorPaise);
-    this.anchorMae = Math.min(this.anchorMae, b.bidPaise - this.anchorPaise);
+    this.anchorMfe = Math.max(this.anchorMfe, q.bidPaise - this.anchorPaise);
+    this.anchorMae = Math.min(this.anchorMae, q.bidPaise - this.anchorPaise);
 
     const buyBack = this.shortPaise - this.shortTargetInc;
-    if (b.askPaise <= buyBack) {
-      this.recordShort(this.shortPaise, buyBack, nowMs - this.shortTs);
+    if (q.askPaise <= buyBack) {
+      this.recordShort(this.shortPaise, buyBack, this.shortLegs, q.legsToBuy, nowMs - this.shortTs);
       this.anchorScalps++;
       this.phase = 'LONG';
       return;
     }
-    if (this.cfg.coveredStopTicks > 0 && b.askPaise >= this.shortPaise + this.cfg.coveredStopTicks * tick) {
-      this.recordShort(this.shortPaise, b.askPaise, nowMs - this.shortTs, 'COVERED_FORCED');
+    if (this.cfg.coveredStopTicks > 0 && q.askPaise >= this.shortPaise + this.cfg.coveredStopTicks * tick) {
+      this.recordShort(this.shortPaise, q.askPaise, this.shortLegs, q.legsToBuy, nowMs - this.shortTs, 'COVERED_FORCED');
       this.anchorScalps++;
       this.phase = 'LONG';
     }
   }
 
-  private openAnchor(pricePaise: number, nowMs: number): void {
+  private openAnchor(pricePaise: number, q: UnitQuote, nowMs: number): void {
     this.restingEntry = undefined;
     this.anchorPaise = pricePaise;
+    this.anchorLegs = q.legsToBuy;
     this.anchorTs = nowMs;
-    this.anchorTargetInc = targetIncrementPaise(this.market, this.qty, pricePaise, this.cfg.costMult);
+    this.anchorTargetInc = targetIncrementPaise(
+      this.market,
+      this.qty,
+      roundTripCost(this.market, this.qty, q),
+      this.cfg.costMult,
+    );
     this.anchorMfe = 0;
     this.anchorMae = 0;
     this.anchorScalps = 0;
+    this.entryPrices.push(pricePaise);
     this.phase = 'LONG';
   }
 
   /** Force flat at the current book (rule 5 switch, or end of day). */
-  flatten(b: Book, nowMs: number, kind: 'SWITCH' | 'EOD'): void {
+  flatten(q: UnitQuote, nowMs: number, kind: 'SWITCH' | 'EOD'): void {
     if (this.phase === 'COVERED') {
-      const exit = b.askPaise > 0 ? b.askPaise : this.shortPaise;
-      this.recordShort(this.shortPaise, exit, nowMs - this.shortTs, 'COVERED_FORCED');
+      this.recordShort(this.shortPaise, q.askPaise, this.shortLegs, q.legsToBuy, nowMs - this.shortTs, 'COVERED_FORCED');
       this.anchorScalps++;
       this.phase = 'LONG';
     }
     if (this.phase === 'LONG') {
-      const exit = b.bidPaise > 0 ? b.bidPaise : this.anchorPaise;
-      this.record(kind, this.anchorPaise, exit, nowMs - this.anchorTs);
+      this.record(kind, this.anchorPaise, q.bidPaise, this.anchorLegs, q.legsToSell, nowMs - this.anchorTs);
       this.closeEpisode(kind, nowMs);
       this.phase = 'FLAT';
     }
@@ -435,8 +509,7 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
   const ticks = await loadTicksForDate(dir);
   if (ticks.length === 0) return emptyDay(date, 'no ticks');
 
-  const masterPath = resolveScripMasterPath(date);
-  const recording = discoverPlainRecording(ticks, masterPath);
+  const recording = discoverPlainRecording(ticks, resolveScripMasterPath(date));
   const dayStart = istDayStartMs(date);
   const inSession = recording.feedTicks.filter((t) => t.ts >= dayStart && t.ts < dayStart + 86_400_000);
   if (inSession.length === 0) return emptyDay(date, 'no in-session ticks');
@@ -450,38 +523,57 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
   const tradingDte = tradingDaysBetween(date, expiry);
 
   const specs = recording.optionSpecs.filter((s) => s.expiry === expiry);
-  const byStrikeRight = new Map<string, InstrumentId>();
-  for (const s of specs) byStrikeRight.set(`${s.strikePaise}:${s.right}`, s.instrumentId);
+  const idByStrikeRight = new Map<string, InstrumentId>();
+  const specById = new Map<InstrumentId, { strikePaise: number; right: OptionRight }>();
+  for (const s of specs) {
+    idByStrikeRight.set(`${s.strikePaise}:${s.right}`, s.instrumentId);
+    specById.set(s.instrumentId, { strikePaise: s.strikePaise, right: s.right });
+  }
 
   const step = market.contract.strikeStepPaise;
   const qty = market.contract.lotSize * cfg.lots;
   const trades: SimTrade[] = [];
   const episodes: AnchorEpisode[] = [];
-  const books = new Map<InstrumentId, Book>();
+  const books = new Map<InstrumentId, { bidPaise: number; askPaise: number }>();
 
   let spotPaise = 0;
   let atmStrike = 0;
   let strikeAnchorSpot = 0;
   let switches = 0;
 
-  const push = (right: OptionRight) => (t: Omit<SimTrade, 'date' | 'right'>) =>
-    trades.push({ date, right, ...t });
-  const pushEp = (right: OptionRight) => (e: Omit<AnchorEpisode, 'date' | 'right'>) =>
-    episodes.push({ date, right, ...e });
-
+  const push = (right: OptionRight) => (t: Omit<SimTrade, 'date' | 'right'>) => trades.push({ date, right, ...t });
+  const pushEp = (right: OptionRight) => (e: Omit<AnchorEpisode, 'date' | 'right'>) => episodes.push({ date, right, ...e });
   const make = (right: OptionRight): RightScalper =>
     new RightScalper(right, cfg, market, qty, push(right), pushEp(right));
   let legs: Record<OptionRight, RightScalper> = { CE: make('CE'), PE: make('PE') };
+  const entryPrices: number[] = [];
 
-  const bookOf = (right: OptionRight): Book => {
-    const id = byStrikeRight.get(`${atmStrike}:${right}`);
-    const b = id === undefined ? undefined : books.get(id);
-    return b ?? { bidPaise: 0, askPaise: 0 };
+  /** Wing strike for the vertical: OTM for the right being traded. */
+  const wingStrike = (right: OptionRight): number =>
+    right === 'CE' ? atmStrike + cfg.wing * step : atmStrike - cfg.wing * step;
+
+  /** Current tradeable unit for a right, or undefined when a leg is missing. */
+  const unitFor = (right: OptionRight): UnitQuote | undefined => {
+    const nearId = idByStrikeRight.get(`${atmStrike}:${right}`);
+    const near = nearId === undefined ? undefined : books.get(nearId);
+    if (near === undefined) return undefined;
+    if (cfg.anchorMode === 'naked') return nakedUnit(near);
+    const wingId = idByStrikeRight.get(`${wingStrike(right)}:${right}`);
+    const wing = wingId === undefined ? undefined : books.get(wingId);
+    if (wing === undefined) return undefined;
+    return verticalUnit(near, wing);
   };
 
   const fromMs = hhmmToMs(cfg.quoteFrom);
   const cutoffMs = hhmmToMs(cfg.entryCutoff);
   const squareMs = hhmmToMs(cfg.squareOff);
+
+  const flattenAll = (nowMs: number, kind: 'SWITCH' | 'EOD'): void => {
+    for (const right of ['CE', 'PE'] as const) {
+      const u = unitFor(right);
+      if (u !== undefined) legs[right].flatten(u, nowMs, kind);
+    }
+  };
 
   for (const t of inSession) {
     const intoDay = t.ts - dayStart;
@@ -498,8 +590,8 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
         Math.abs(spotPaise - strikeAnchorSpot) / strikeAnchorSpot > cfg.switchPct &&
         intoDay < squareMs
       ) {
-        legs.CE.flatten(bookOf('CE'), t.ts, 'SWITCH');
-        legs.PE.flatten(bookOf('PE'), t.ts, 'SWITCH');
+        flattenAll(t.ts, 'SWITCH');
+        for (const l of [legs.CE, legs.PE]) entryPrices.push(...l.entryPrices);
         atmStrike = Math.round(spotPaise / step) * step;
         strikeAnchorSpot = spotPaise;
         legs = { CE: make('CE'), PE: make('PE') };
@@ -511,25 +603,51 @@ async function simulateDay(date: string, dir: string, market: MarketProfile, cfg
     if (t.bidPaise > 0 && t.askPaise > 0) {
       books.set(t.instrumentId, { bidPaise: t.bidPaise, askPaise: t.askPaise });
     }
-    if (atmStrike === 0) continue;
+    if (atmStrike === 0 || intoDay >= squareMs) {
+      if (intoDay >= squareMs) break;
+      continue;
+    }
 
-    if (intoDay >= squareMs) break;
-    const entriesOpen = intoDay >= fromMs && intoDay < cutoffMs;
+    // Only step the right whose book just moved — either its near or wing leg.
+    const spec = specById.get(t.instrumentId);
+    if (spec === undefined) continue;
+    const relevant =
+      spec.strikePaise === atmStrike ||
+      (cfg.anchorMode === 'vertical' && spec.strikePaise === wingStrike(spec.right));
+    if (!relevant) continue;
 
-    const spec = specs.find((s) => s.instrumentId === t.instrumentId);
-    if (spec === undefined || spec.strikePaise !== atmStrike) continue;
-    legs[spec.right].step({ bidPaise: t.bidPaise, askPaise: t.askPaise }, t.ts, entriesOpen);
+    const unit = unitFor(spec.right);
+    if (unit === undefined) continue;
+    legs[spec.right].step(unit, t.ts, intoDay >= fromMs && intoDay < cutoffMs);
   }
 
-  const endTs = dayStart + squareMs;
-  legs.CE.flatten(bookOf('CE'), endTs, 'EOD');
-  legs.PE.flatten(bookOf('PE'), endTs, 'EOD');
+  flattenAll(dayStart + squareMs, 'EOD');
+  for (const l of [legs.CE, legs.PE]) entryPrices.push(...l.entryPrices);
 
-  return { date, expiry, tradingDte, ticks: inSession.length, trades, episodes, switches };
+  return {
+    date,
+    expiry,
+    tradingDte,
+    ticks: inSession.length,
+    trades,
+    episodes,
+    switches,
+    medianEntryPaise: median(entryPrices),
+  };
 }
 
 function emptyDay(date: string, why: string): DayResult {
-  return { date, expiry: '', tradingDte: 0, ticks: 0, trades: [], episodes: [], switches: 0, skipped: why };
+  return {
+    date,
+    expiry: '',
+    tradingDte: 0,
+    ticks: 0,
+    trades: [],
+    episodes: [],
+    switches: 0,
+    medianEntryPaise: 0,
+    skipped: why,
+  };
 }
 
 // ── reporting ────────────────────────────────────────────────────────────────
@@ -560,6 +678,7 @@ function renderRun(days: readonly DayResult[], cfg: SimConfig): string {
 
   L.push(`# OP-Scalper simulation`);
   L.push('');
+  L.push(`- unit: ${cfg.anchorMode}${cfg.anchorMode === 'vertical' ? ` (ATM / ATM±${cfg.wing} debit vertical)` : ' ATM option'}`);
   L.push(`- costMult: ${cfg.costMult}x round-trip cost`);
   L.push(`- entry: ${cfg.entry}${cfg.entry === 'passive' ? ` (bid + ${cfg.entryImproveTicks} tick)` : ''}`);
   L.push(`- flipTicks: ${cfg.flipTicks} · switchPct: ${(cfg.switchPct * 100).toFixed(2)}% · minTradingDte: ${cfg.minTradingDte}`);
@@ -583,43 +702,52 @@ function renderRun(days: readonly DayResult[], cfg: SimConfig): string {
   for (const tr of all) byKind.set(tr.kind, [...(byKind.get(tr.kind) ?? []), tr]);
   L.push(`## By exit kind`);
   L.push('');
-  L.push(`| Kind | Trades | Gross | Charges | Net |`);
-  L.push(`| --- | ---: | ---: | ---: | ---: |`);
+  L.push(`| Kind | Trades | Gross | Charges | Net | Net/trade |`);
+  L.push(`| --- | ---: | ---: | ---: | ---: | ---: |`);
   for (const [kind, list] of [...byKind.entries()].sort((a, b) => b[1].length - a[1].length)) {
     const k = totalsOf(list);
-    L.push(`| ${kind} | ${k.trades} | ${inr(k.gross)} | ${inr(-k.charges)} | ${inr(k.net)} |`);
+    L.push(
+      `| ${kind} | ${k.trades} | ${inr(k.gross)} | ${inr(-k.charges)} | ${inr(k.net)} | ${inr(Math.round(k.net / Math.max(1, k.trades)))} |`,
+    );
   }
   L.push('');
 
-  // The headline diagnostic: how far entries actually travel, vs how far they
-  // must travel to pay costMult x cost.
+  // Would a structural debit cap bind? Compare realised losses against the
+  // median entry debit — a vertical can never lose more than what it cost.
+  const losses = all.filter((x) => x.netPaise < 0).map((x) => -x.netPaise).sort((a, b) => a - b);
+  const medDebit = median(days.filter((d) => d.skipped === undefined).map((d) => d.medianEntryPaise));
+  L.push(`## Loss distribution — does a debit cap bind?`);
+  L.push('');
+  if (losses.length > 0) {
+    L.push(`| Percentile | Loss per trade |`);
+    L.push(`| --- | ---: |`);
+    for (const p of [50, 75, 90, 95, 99]) L.push(`| p${p} | ${inr(percentile(losses, p))} |`);
+    L.push(`| max | ${inr(losses[losses.length - 1] ?? 0)} |`);
+    L.push('');
+    const capPaise = medDebit * (cfg.lots * 65);
+    L.push(`Median entry debit per unit: ${inr(medDebit)}/unit → max structural loss ≈ ${inr(capPaise)} per lot.`);
+    const over = losses.filter((v) => v > capPaise).length;
+    L.push('');
+    L.push(`Losing trades already smaller than that cap: ${losses.length - over} / ${losses.length} (${((100 * (losses.length - over)) / losses.length).toFixed(1)}%)`);
+    L.push('');
+  }
+
   L.push(`## MFE — can the target even be reached?`);
   L.push('');
-  const mfePct = eps
-    .filter((e) => e.entryPaise > 0)
-    .map((e) => (e.mfePaise / e.entryPaise) * 100)
-    .sort((a, b) => a - b);
-  const needPct = eps
-    .filter((e) => e.entryPaise > 0)
-    .map((e) => (e.targetIncPaise / e.entryPaise) * 100)
-    .sort((a, b) => a - b);
-  const maePct = eps
-    .filter((e) => e.entryPaise > 0)
-    .map((e) => (e.maePaise / e.entryPaise) * 100)
-    .sort((a, b) => a - b);
-
+  const withEntry = eps.filter((e) => e.entryPaise > 0);
+  const mfePct = withEntry.map((e) => (e.mfePaise / e.entryPaise) * 100).sort((a, b) => a - b);
+  const maePct = withEntry.map((e) => (e.maePaise / e.entryPaise) * 100).sort((a, b) => a - b);
+  const needPct = withEntry.map((e) => (e.targetIncPaise / e.entryPaise) * 100).sort((a, b) => a - b);
   if (mfePct.length > 0) {
     L.push(`Anchor episodes: ${eps.length}`);
     L.push('');
-    L.push(`| Percentile | MFE (% of premium) | MAE (% of premium) |`);
+    L.push(`| Percentile | MFE (% of entry) | MAE (% of entry) |`);
     L.push(`| --- | ---: | ---: |`);
     for (const p of [10, 25, 50, 75, 90, 99]) {
       L.push(`| p${p} | ${percentile(mfePct, p).toFixed(3)}% | ${percentile(maePct, 100 - p).toFixed(3)}% |`);
     }
     L.push('');
-    L.push(`**Target needed (median): ${percentile(needPct, 50).toFixed(3)}% of premium**`);
-    // Per-episode, not percentile-vs-percentile: MFE and target must be
-    // compared on the SAME episode or the answer is meaningless.
+    L.push(`**Target needed (median): ${percentile(needPct, 50).toFixed(3)}% of entry value**`);
     const reached = eps.filter((e) => e.mfePaise >= e.targetIncPaise).length;
     L.push('');
     L.push(`Episodes whose MFE reached their own target: ${reached} / ${eps.length} (${eps.length > 0 ? ((100 * reached) / eps.length).toFixed(1) : '0'}%)`);
@@ -640,25 +768,23 @@ function renderRun(days: readonly DayResult[], cfg: SimConfig): string {
 
   const stuckMs = eps.filter((e) => e.outcome !== 'TARGET').map((e) => e.durationMs).sort((a, b) => a - b);
   if (stuckMs.length > 0) {
-    L.push(`Stuck-anchor duration — p50 ${(percentile(stuckMs, 50) / 60_000).toFixed(1)}m · p90 ${(percentile(stuckMs, 90) / 60_000).toFixed(1)}m · max ${(Math.max(...stuckMs) / 60_000).toFixed(1)}m`);
+    L.push(`Stuck-anchor duration — p50 ${(percentile(stuckMs, 50) / 60_000).toFixed(1)}m · p90 ${(percentile(stuckMs, 90) / 60_000).toFixed(1)}m`);
     const scalps = eps.map((e) => e.coveredScalps);
     L.push('');
-    L.push(`Covered scalps per episode — total ${scalps.reduce((s, v) => s + v, 0)} · max ${scalps.length > 0 ? Math.max(...scalps) : 0}`);
+    L.push(`Covered scalps — total ${scalps.reduce((s, v) => s + v, 0)} · max/episode ${scalps.length > 0 ? Math.max(...scalps) : 0}`);
     L.push('');
   }
 
   L.push(`## Day by day`);
   L.push('');
-  L.push(`| Date | DTE | Expiry | Ticks | Trades | Switches | Net |`);
-  L.push(`| --- | ---: | --- | ---: | ---: | ---: | ---: |`);
+  L.push(`| Date | DTE | Expiry | Trades | Switches | Net |`);
+  L.push(`| --- | ---: | --- | ---: | ---: | ---: |`);
   for (const d of days) {
     if (d.skipped !== undefined) {
-      L.push(`| ${d.date} | - | - | - | - | - | _${d.skipped}_ |`);
+      L.push(`| ${d.date} | - | - | - | - | _${d.skipped}_ |`);
       continue;
     }
-    L.push(
-      `| ${d.date} | ${d.tradingDte} | ${d.expiry} | ${d.ticks} | ${d.trades.length} | ${d.switches} | ${inr(totalsOf(d.trades).net)} |`,
-    );
+    L.push(`| ${d.date} | ${d.tradingDte} | ${d.expiry} | ${d.trades.length} | ${d.switches} | ${inr(totalsOf(d.trades).net)} |`);
   }
   L.push('');
   L.push(`_DTE counts weekdays only — no NSE holiday calendar in this repo, so a holiday week overstates DTE by one._`);
@@ -675,19 +801,24 @@ function parseNum(argv: string[], flag: string, dflt: number): number {
   return Number.isFinite(v) ? v : dflt;
 }
 
+function parseStr(argv: string[], flag: string, dflt: string): string {
+  const i = argv.indexOf(flag);
+  return i < 0 ? dflt : String(argv[i + 1] ?? dflt);
+}
+
 function parseArgs(argv: string[]): { days: number; endDate: string; sweep: boolean; cfg: SimConfig } {
-  const endIdx = argv.indexOf('--end');
-  const entryIdx = argv.indexOf('--entry');
   return {
     days: parseNum(argv, '--days', 30),
-    endDate: endIdx >= 0 ? String(argv[endIdx + 1] ?? istDate()) : istDate(),
+    endDate: parseStr(argv, '--end', istDate()),
     sweep: argv.includes('--sweep'),
     cfg: {
       costMult: parseNum(argv, '--cost-mult', 3),
       flipTicks: parseNum(argv, '--flip-ticks', 20),
       switchPct: parseNum(argv, '--switch-pct', 0.5) / 100,
       minTradingDte: parseNum(argv, '--min-dte', 2),
-      entry: String(argv[entryIdx + 1] ?? '') === 'cross' ? 'cross' : 'passive',
+      anchorMode: parseStr(argv, '--anchor', 'naked') === 'vertical' ? 'vertical' : 'naked',
+      wing: parseNum(argv, '--wing', 2),
+      entry: parseStr(argv, '--entry', 'passive') === 'cross' ? 'cross' : 'passive',
       entryImproveTicks: parseNum(argv, '--entry-improve-ticks', 1),
       anchorStopTicks: parseNum(argv, '--anchor-stop-ticks', 0),
       anchorTimeStopSec: parseNum(argv, '--anchor-time-stop-sec', 0),
@@ -703,10 +834,8 @@ function parseArgs(argv: string[]): { days: number; endDate: string; sweep: bool
 
 async function main(): Promise<void> {
   const { days, endDate, sweep, cfg } = parseArgs(process.argv.slice(2));
-  const marketCfg = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 'allop-nse-options.json'));
-  const market = marketCfg.value;
+  const market = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 'allop-nse-options.json')).value;
 
-  // Resolve the corpus once; every sweep arm replays the same days.
   const sources: { date: string; dir: string }[] = [];
   for (const date of listLookbackDays(endDate, days)) {
     const dir = pickSourceDay(date);
@@ -716,18 +845,13 @@ async function main(): Promise<void> {
   console.log(`OP-Scalper simulator`);
   console.log(`  End date   : ${endDate}`);
   console.log(`  Lookback   : ${days} days (${sources.length} with recordings)`);
-  const sampleCost = roundTripCostPaise(market, market.contract.lotSize * cfg.lots, 10_000);
-  console.log(`  Round-trip cost @ ₹100 premium, ${cfg.lots} lot: ${inr(sampleCost)}`);
-  console.log(`  Target @ ${cfg.costMult}x: ${inr(sampleCost * cfg.costMult)} net → needs ${((targetIncrementPaise(market, market.contract.lotSize * cfg.lots, 10_000, cfg.costMult) / 10_000) * 100).toFixed(3)}% premium move`);
+  console.log(`  Unit       : ${cfg.anchorMode}${cfg.anchorMode === 'vertical' ? ` (ATM / ATM±${cfg.wing})` : ''}`);
   console.log('');
 
   const outDir = join(SCALPER_ROOT, 'journals', 'op-scalper-sim');
   mkdirSync(outDir, { recursive: true });
 
-  const arms = sweep ? [1, 1.5, 2, 2.5, 3, 4] : [cfg.costMult];
-  const summary: string[] = [];
-
-  for (const mult of arms) {
+  for (const mult of sweep ? [1, 1.5, 2, 2.5, 3, 4] : [cfg.costMult]) {
     const armCfg: SimConfig = { ...cfg, costMult: mult };
     const results: DayResult[] = [];
     for (const { date, dir } of sources) {
@@ -737,20 +861,22 @@ async function main(): Promise<void> {
         results.push(emptyDay(date, err instanceof Error ? err.message : String(err)));
       }
     }
-    const report = renderRun(results, armCfg);
     // Stop config must be in the name: without it, two runs that differ only by
     // stops silently overwrite each other's report.
     const stops = `as${armCfg.anchorStopTicks}-cs${armCfg.coveredStopTicks}-ts${armCfg.anchorTimeStopSec}`;
-    const path = join(outDir, `sim-${endDate}-${days}d-mult${mult}-${armCfg.entry}-flip${armCfg.flipTicks}-${stops}.md`);
-    writeFileSync(path, report, 'utf8');
+    const unit = armCfg.anchorMode === 'vertical' ? `vert${armCfg.wing}` : 'naked';
+    writeFileSync(
+      join(outDir, `sim-${endDate}-${days}d-${unit}-mult${mult}-${armCfg.entry}-flip${armCfg.flipTicks}-${stops}.md`),
+      renderRun(results, armCfg),
+      'utf8',
+    );
 
     const t = totalsOf(results.flatMap((d) => d.trades));
     const eps = results.flatMap((d) => d.episodes);
     const hit = eps.filter((e) => e.outcome === 'TARGET').length;
-    summary.push(
-      `  ${String(mult).padStart(4)}x | trades ${String(t.trades).padStart(5)} | win ${(t.trades > 0 ? (100 * t.wins) / t.trades : 0).toFixed(1).padStart(5)}% | target-hit ${(eps.length > 0 ? (100 * hit) / eps.length : 0).toFixed(1).padStart(5)}% | net ${inr(t.net).padStart(14)}`,
+    console.log(
+      `  ${String(mult).padStart(4)}x | trades ${String(t.trades).padStart(6)} | win ${(t.trades > 0 ? (100 * t.wins) / t.trades : 0).toFixed(1).padStart(5)}% | target-hit ${(eps.length > 0 ? (100 * hit) / eps.length : 0).toFixed(1).padStart(5)}% | charges ${inr(-t.charges).padStart(15)} | net ${inr(t.net).padStart(15)}`,
     );
-    console.log(summary[summary.length - 1]);
   }
 
   console.log('');
@@ -762,4 +888,4 @@ void main().catch((err) => {
   process.exitCode = 1;
 });
 
-export { RightScalper, targetIncrementPaise, tradingDaysBetween, roundTripCostPaise };
+export { RightScalper, targetIncrementPaise, tradingDaysBetween, verticalUnit, nakedUnit };
