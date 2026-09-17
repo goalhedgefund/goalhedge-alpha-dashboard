@@ -102,7 +102,9 @@ export async function loadTicksForDate(dir: string): Promise<Tick[]> {
 export async function loadTicksFromGz(path: string): Promise<Tick[]> {
   const chunks: Buffer[] = [];
   await new Promise<void>((resolve) => {
-    const gz = createReadStream(path).pipe(createGunzip());
+    const src = createReadStream(path);
+    src.on('error', () => resolve());
+    const gz = src.pipe(createGunzip());
     gz.on('data', (chunk: Buffer) => chunks.push(chunk));
     gz.on('end', resolve);
     gz.on('error', () => resolve());

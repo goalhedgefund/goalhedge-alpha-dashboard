@@ -54,6 +54,8 @@ const CONFIG_DIR = join(SCALPER_ROOT, 'config');
 const CORPUS_ROOTS = [
   join(SCALPER_ROOT, 'data', 'dhan', 'ticks-op-minus-atm-short'),
   join(SCALPER_ROOT, 'data', 'dhan', 'ticks-allop-atm-mm'),
+  join(SCALPER_ROOT, 'data', 'dhan', 'ticks-s1-momentum-burst'),
+  join(SCALPER_ROOT, 'data', 'dhan', 'ticks-s2-vwap-fade'),
   join(SCALPER_ROOT, 'data', 'dhan', 'ticks'),
 ];
 const IST_OFFSET_MS = 330 * 60_000;
