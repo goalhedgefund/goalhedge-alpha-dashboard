@@ -20,7 +20,8 @@
     "s2:replay": "node dist/scripts/replay-s2.js",
     "allop:replay": "node dist/scripts/replay-allop.js",
     "s1:sweep": "node dist/scripts/sweep-s1.js",
-    "op-minus:backtest": "node dist/scripts/backtest-op-minus.js"
+    "op-minus:backtest": "node dist/scripts/backtest-op-minus.js",
+    "op-scalper:sim": "node dist/scripts/simulate-op-scalper.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
