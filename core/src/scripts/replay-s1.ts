@@ -23,7 +23,7 @@ import { loadConfig } from '../config/loader.js';
 import { MarketProfileSchema, RiskProfileSchema, StrategyConfigSchema } from '../config/schemas.js';
 import { makeSessionId, IdFactory, type InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
-import { ManualClock } from '../domain/time.js';
+import { ManualClock, istDayStartMs } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { FeedMarketData } from '../host/feed-market-data.js';
 import { PaperHost } from '../host/paper-host.js';
@@ -161,6 +161,10 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayResult> {
     spotInstrumentId: recording.spotInstrumentId,
     options: recording.optionSpecs,
     strikeStepPaise: market.contract.strikeStepPaise,
+    // Recordings carry ~15k prior-evening reconnect ticks. Without this floor
+    // they seed the ret5s/ATR warm-up that S1's entry rule reads, so the replay
+    // diverges from the live host for reasons unrelated to the strategy.
+    sessionFloorMs: istDayStartMs(date),
   });
 
   // Prime spot so preflight freshness check passes (needs a recent tick).
@@ -306,14 +310,15 @@ async function main(): Promise<void> {
   console.log(`  Avg hold       : ${Math.round(result.avgHoldMs / 1000)}s`);
 
   if (validate) {
-    // Jul 16 corrected baseline: 2 trades. Live showed only 1 because the live
-    // run itself was killed by CLOCK_SKEW (option LTT < spot timestamp). With the
-    // monotonic-clock fix, the second signal on the replayed tick stream fires.
-    if (result.tradeCount !== 2) {
-      console.error(`\n[FAIL] Expected 2 trades, got ${result.tradeCount}`);
+    // Jul 16 baseline: 1 trade, matching what live actually took that day.
+    // It was 2 while the harness lacked sessionFloorMs — prior-evening reconnect
+    // ticks seeded the ret5s/ATR warm-up and manufactured a second signal that
+    // live never saw. Gating the session floor removed it.
+    if (result.tradeCount !== 1) {
+      console.error(`\n[FAIL] Expected 1 trade, got ${result.tradeCount}`);
       process.exitCode = 1;
     } else {
-      console.log('\n[PASS] Validation: 2 trades reproduced.');
+      console.log('\n[PASS] Validation: 1 trade reproduced (matches live).');
     }
   }
 }
