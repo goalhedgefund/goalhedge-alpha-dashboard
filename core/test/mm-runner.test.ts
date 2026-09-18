@@ -625,6 +625,47 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     expect(r.oms.getPositions().filter((p) => p.state !== 'CLOSED' && p.qty > 0)).toHaveLength(0);
   });
 
+  it('holds a frozen take-profit ask across idle passes instead of re-placing it', async () => {
+    r.runner.arm();
+    await r.runner.onTimer(T0);
+    const bestBid = Math.max(
+      ...working(r).filter((o) => o.instrumentId === CE_ID).map((o) => o.limitPricePaise!),
+    );
+    r.paper.setQuote(CE_ID, { bidPaise: bestBid - TICK, askPaise: bestBid, ltpPaise: bestBid });
+    r.view.setRow(row(CE_ID, 'CE', bestBid - TICK, bestBid + TICK, T0 + 1_000));
+    await r.runner.onTimer(T0 + 1_000);
+
+    const asks = working(r).filter((o) => o.side === 'SELL');
+    expect(asks).toHaveLength(1);
+    const askPrice = asks[0]!.limitPricePaise!;
+    const createdAfterFirstAsk = r.events.filter(
+      (e) => e.type === 'order.created' && e.payload.order.tag.endsWith('quote_ask'),
+    ).length;
+
+    // Ten idle passes with an unchanged book. The take-profit is frozen at lot
+    // open, so the reconciler must recognise its own resting ask every pass.
+    for (let i = 2; i <= 11; i++) {
+      r.view.setRow(row(CE_ID, 'CE', bestBid - TICK, bestBid + TICK, T0 + i * 1_000));
+      await r.runner.onTimer(T0 + i * 1_000);
+    }
+
+    const createdTotal = r.events.filter(
+      (e) => e.type === 'order.created' && e.payload.order.tag.endsWith('quote_ask'),
+    ).length;
+    const cancelled = r.events.filter(
+      (e) =>
+        e.type === 'order.updated' &&
+        e.payload.order.tag.endsWith('quote_ask') &&
+        e.payload.order.state === 'CANCELLED',
+    ).length;
+
+    expect(createdTotal).toBe(createdAfterFirstAsk);
+    expect(cancelled).toBe(0);
+    const still = working(r).filter((o) => o.side === 'SELL');
+    expect(still).toHaveLength(1);
+    expect(still[0]!.limitPricePaise).toBe(askPrice);
+  });
+
   it('earns one runner from a profitable pair and closes the intended scalp lot', async () => {
     r.runner.arm();
     await r.runner.onTimer(T0);

@@ -519,8 +519,21 @@ export class MmRunner {
       }
       if (isUrgentExit(order.reason)) this.opts.escalator?.track(result.order, intent);
       // Reserve named lots so the next reconcile cycle cannot emit a second
-      // exit for the same lot while the fill is in flight.
-      for (const lotId of order.closeLotIds ?? []) this.reservedLotIds.add(lotId);
+      // exit for the same lot while the fill is in flight. Only urgent exits
+      // are reserved: they are escalated (cancel → re-price → market), so the
+      // engine must not race a second exit against the same lot mid-ladder.
+      //
+      // A resting take-profit must NOT be reserved. A reserved lot is filtered
+      // out of the book in buildInput(), so the engine would stop emitting the
+      // very ask that is already working; the reconciler would then find no
+      // desired match for its own order and cancel it, re-placing it on the
+      // next pass. That alternation churned hundreds of identical asks per
+      // position and risked the quote being absent exactly when the market
+      // came to lift it. Duplicates cannot occur here anyway: the working
+      // order is matched by the reconciler, so no second ask is placed.
+      if (isUrgentExit(order.reason)) {
+        for (const lotId of order.closeLotIds ?? []) this.reservedLotIds.add(lotId);
+      }
       return result.order.clientOrderId;
     }
   }
