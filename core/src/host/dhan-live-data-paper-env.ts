@@ -2,6 +2,9 @@ import { existsSync, readFileSync } from 'node:fs';
 
 export const DHAN_DEFAULT_ENV_PATH = 'D:\\Claude\\workstation\\secrets\\dhan\\.env';
 export const DHAN_DEFAULT_WS_URL = 'wss://api-feed.dhan.co';
+export const DHAN_DEFAULT_HUB_WS_URL = 'ws://127.0.0.1:8795';
+
+export type FeedSource = 'hub' | 'dhan' | 'replay';
 
 export interface DhanLiveDataPaperEnv {
   envPath: string;
@@ -32,6 +35,8 @@ export interface DhanLiveDataPaperEnv {
   paperSlippageTicks: number;
   paperAckLatencyMs: number;
   paperFillLatencyMs: number;
+  feedSource: FeedSource;
+  hubWsUrl: string;
   initialSpotPaise?: number;
 }
 
@@ -59,6 +64,13 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
   }
 
   const initialSpotPaise = parseInitialSpotPaise(vars);
+  const rawFeedSource = (vars.FEED_SOURCE ?? vars.DHAN_FEED_SOURCE ?? 'hub').trim().toLowerCase();
+  if (rawFeedSource !== 'hub' && rawFeedSource !== 'dhan' && rawFeedSource !== 'replay') {
+    throw new Error(`Invalid FEED_SOURCE "${rawFeedSource}". Must be one of: hub, dhan, replay.`);
+  }
+  const feedSource: FeedSource = rawFeedSource;
+  const hubWsUrl = getString(vars, 'DHAN_HUB_WS_URL', getString(vars, 'HUB_WS_URL', DHAN_DEFAULT_HUB_WS_URL));
+
   return {
     envPath,
     wsUrl: getString(vars, 'DHAN_WS_URL', DHAN_DEFAULT_WS_URL),
@@ -88,6 +100,8 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     paperSlippageTicks: getInt(vars, 'DHAN_PAPER_SLIPPAGE_TICKS', 1, 0),
     paperAckLatencyMs: getInt(vars, 'DHAN_PAPER_ACK_LATENCY_MS', 80, 0),
     paperFillLatencyMs: getInt(vars, 'DHAN_PAPER_FILL_LATENCY_MS', 120, 0),
+    feedSource,
+    hubWsUrl,
     ...(initialSpotPaise !== undefined ? { initialSpotPaise } : {}),
   };
 }

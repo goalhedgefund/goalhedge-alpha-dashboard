@@ -9,8 +9,10 @@ import type { Tick } from '../domain/marketdata.js';
 import { systemClock, istDayStartMs } from '../domain/time.js';
 import { PaperBroker } from '../exec/paper-broker.js';
 import { DhanFeed } from '../feed/dhan/feed.js';
+import { HubFeed } from '../feed/hub/feed.js';
+import { ReplayFeed } from '../feed/replay.js';
 import { Recorder } from '../feed/recorder.js';
-import type { SubscribeRequest } from '../feed/interface.js';
+import type { IFeedAdapter, SubscribeRequest } from '../feed/interface.js';
 import { Gateway } from '../gateway/gateway.js';
 import { registerKillCommands, registerRunnerCommands, registerSessionCommands } from '../gateway/commands.js';
 import type { GatewayState } from '../gateway/protocol.js';
@@ -38,7 +40,7 @@ import { OpMinusRunner } from '../mm/op-minus-runner.js';
 interface DhanLiveDataPaperBuild {
   host: PaperHost;
   gateway: Gateway;
-  feed: DhanFeed;
+  feed: IFeedAdapter;
   recorder: Recorder;
   subscriptions: SubscribeRequest[];
   notePreflightTick: (tick: Tick) => boolean;
@@ -202,6 +204,28 @@ function makeStrategy(strategyId: string): IStrategy {
       return new OpMinusAtmShort();
     default:
       throw new Error(`Unsupported DHAN_STRATEGY_ID=${strategyId}`);
+  }
+}
+
+function buildFeed(env: DhanLiveDataPaperEnv, date: string, root: string): IFeedAdapter {
+  switch (env.feedSource) {
+    case 'hub':
+      return new HubFeed({
+        url: env.hubWsUrl,
+        clientId: env.strategyId,
+        staleTimeoutMs: env.feedStaleMs,
+      });
+    case 'dhan':
+      return new DhanFeed({
+        wsUrl: env.wsUrl,
+        clientId: env.clientId,
+        accessToken: () => loadDhanLiveDataPaperEnv().accessToken,
+        requestCode: env.feedRequestCode,
+      });
+    case 'replay': {
+      const replayPath = join(resolveRepoPath(root, env.recorderRoot), date, 'ticks.jsonl.gz');
+      return new ReplayFeed({ path: replayPath });
+    }
   }
 }
 
@@ -432,12 +456,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
       : {}),
   });
   commandJournal.host = host;
-  const feed = new DhanFeed({
-    wsUrl: env.wsUrl,
-    clientId: env.clientId,
-    accessToken: () => loadDhanLiveDataPaperEnv().accessToken,
-    requestCode: env.feedRequestCode,
-  });
+  const feed = buildFeed(env, date, root);
   const subscriptions: SubscribeRequest[] = [
     {
       exchangeSegment: spotSegment,

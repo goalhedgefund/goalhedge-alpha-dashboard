@@ -40,6 +40,8 @@ DHAN_SCRIP_MASTER_PATH=data/dhan/api-scrip-master.csv
     expect(env.paperSlippageTicks).toBe(1);
     expect(env.paperAckLatencyMs).toBe(80);
     expect(env.paperFillLatencyMs).toBe(120);
+    expect(env.feedSource).toBe('hub');
+    expect(env.hubWsUrl).toBe('ws://127.0.0.1:8795');
   });
 
   it('lets process env override values from the env file', () => {
@@ -88,5 +90,22 @@ DHAN_ACCESS_TOKEN=token-1
       DHAN_CLIENT_ID: 'abc',
       DHAN_ACCESS_TOKEN: 'xyz',
     });
+  });
+
+  it('accepts valid FEED_SOURCE and rejects invalid values', () => {
+    const path = tempEnv(`
+DHAN_CLIENT_ID=client-1
+DHAN_ACCESS_TOKEN=token-1
+DHAN_SCRIP_MASTER_PATH=master.csv
+`);
+
+    const envDhan = loadDhanLiveDataPaperEnv({ DHAN_ENV_PATH: path, FEED_SOURCE: 'dhan' });
+    expect(envDhan.feedSource).toBe('dhan');
+
+    const envReplay = loadDhanLiveDataPaperEnv({ DHAN_ENV_PATH: path, DHAN_FEED_SOURCE: 'replay' });
+    expect(envReplay.feedSource).toBe('replay');
+
+    expect(() => loadDhanLiveDataPaperEnv({ DHAN_ENV_PATH: path, FEED_SOURCE: 'invalid-source' }))
+      .toThrow(/Invalid FEED_SOURCE/);
   });
 });
