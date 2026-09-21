@@ -107,6 +107,16 @@ export class HubUniverse {
       });
     }
 
+    // 3. Add NIFTY spot index instrument ("13") for index spot consumers (e.g. Ex-S1)
+    if (underlying === 'NIFTY' && spotToken !== '13') {
+      initial.push({
+        exchangeSegment: 'IDX_I',
+        brokerToken: '13',
+        instrumentId: makeInstrumentId('NSE', '13'),
+        requestCode: 15,
+      });
+    }
+
     return new HubUniverse(initial);
   }
 
