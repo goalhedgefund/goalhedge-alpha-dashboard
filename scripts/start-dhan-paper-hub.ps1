@@ -103,13 +103,13 @@ $ErrorActionPreference = "Continue"
 $restartCount = 0
 while ($true) {
   $nowIst = (Get-Date).ToUniversalTime().AddMinutes(330)
-  $cutoffToday = (Get-Date -Year $nowIst.Year -Month $nowIst.Month -Day $nowIst.Day -Hour 15 -Minute 35 -Second 0).ToUniversalTime().AddMinutes(-330)
+  $cutoffToday = (Get-Date -Year $nowIst.Year -Month $nowIst.Month -Day $nowIst.Day -Hour 15 -Minute 40 -Second 0).ToUniversalTime().AddMinutes(-330)
   if ((Get-Date) -ge $cutoffToday) {
-    Write-LaunchLog "Past 15:35 IST — not restarting Hub."
+    Write-LaunchLog "Past 15:40 IST — not restarting Hub."
     break
   }
   if ($restartCount -gt 0) {
-    Write-LaunchLog "Restart #$restartCount — Hub process exited before 15:35 IST. Waiting 10s before relaunch."
+    Write-LaunchLog "Restart #$restartCount — Hub process exited before 15:40 IST. Waiting 10s before relaunch."
     Start-Sleep -Seconds 10
     $envText = Get-Content -Raw -LiteralPath $EnvPath
   }
