@@ -200,6 +200,10 @@ async function recordingForDate(date: string): Promise<DiscoveredRecording> {
   if (pending === undefined) {
     pending = loadTicksForDate(join(TICK_ROOT, date)).then((ticks) => {
       if (ticks.length === 0) throw new Error(`No ticks loaded for ${date} (check ${join(TICK_ROOT, date)})`);
+      // Dhan websocket batches can arrive out of timestamp order within one
+      // recorder file. Replay advances a monotonic clock, so preserve the
+      // feed's receive order only as a tie-breaker and sort event time first.
+      ticks.sort((a, b) => a.ts - b.ts || a.recvTs - b.recvTs);
       const recording = discoverPlainRecording(ticks, resolveScripMasterPath(date));
       // Guard against Dhan recycling security IDs across expiry cycles: the
       // resolved option ladder's median strike must sit within 5% of the

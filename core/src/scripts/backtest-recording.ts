@@ -1,5 +1,6 @@
 /** Backtest-only discovery for the synthetic OP(-) ladder recordings. */
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { createGunzip } from 'node:zlib';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,20 +101,23 @@ export async function loadTicksForDate(dir: string): Promise<Tick[]> {
 
 /** Load ticks from a (possibly truncated/multi-member) gzip recording. */
 export async function loadTicksFromGz(path: string): Promise<Tick[]> {
-  const chunks: Buffer[] = [];
-  await new Promise<void>((resolve) => {
-    const src = createReadStream(path);
-    src.on('error', () => resolve());
-    const gz = src.pipe(createGunzip());
-    gz.on('data', (chunk: Buffer) => chunks.push(chunk));
-    gz.on('end', resolve);
-    gz.on('error', () => resolve());
-  });
   const ticks: Tick[] = [];
-  for (const line of Buffer.concat(chunks).toString('utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try { ticks.push(JSON.parse(trimmed) as Tick); } catch { /* partial JSON at EOF */ }
+  const src = createReadStream(path);
+  const gz = src.pipe(createGunzip());
+  const lines = createInterface({ input: gz, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try { ticks.push(JSON.parse(trimmed) as Tick); } catch { /* partial JSON at EOF */ }
+    }
+  } catch {
+    // Recordings can end with a truncated gzip/JSON line after a crash. Keep
+    // the valid prefix, matching the previous loader's recovery behavior.
+  } finally {
+    lines.close();
+    src.destroy();
+    gz.destroy();
   }
   return ticks;
 }
