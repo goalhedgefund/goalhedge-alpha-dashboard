@@ -38,13 +38,15 @@ export function subscriptionKey(segment: string, token: string): string {
  * - Expand-only during a session: added instruments are never removed before end of day.
  * - Seeds with full weekly option chain (all strikes, CE + PE) plus current future/spot.
  * - Tracks universe version incremented on each expansion.
- * - Maps broker token -> canonical InstrumentId for downstream normalization.
+ * - Maps subscription keys to canonical InstrumentIds for downstream normalization.
  */
 export class HubUniverse {
   private version = 1;
   private readonly subscriptions = new Map<string, SubscribeRequest>();
-  private readonly tokenToId = new Map<string, InstrumentId>();
-  private readonly instrumentToKey = new Map<InstrumentId, string>();
+  /** Keyed by exchange segment + broker token; bare tokens are not unique. */
+  private readonly subscriptionToInstrumentId = new Map<string, InstrumentId>();
+  /** A normalized InstrumentId can be shared by legacy callers; retain every key, never overwrite. */
+  private readonly instrumentToKeys = new Map<InstrumentId, Set<string>>();
   /** Active v2 consumer ownership. Upstream subscriptions remain expand-only. */
   private readonly ownerConnectionsByKey = new Map<string, Set<string>>();
   private readonly ownedKeysByConnection = new Map<string, Set<string>>();
@@ -127,8 +129,10 @@ export class HubUniverse {
   private insert(req: SubscribeRequest): void {
     const key = subscriptionKey(req.exchangeSegment, req.brokerToken);
     this.subscriptions.set(key, req);
-    this.tokenToId.set(req.brokerToken, req.instrumentId);
-    this.instrumentToKey.set(req.instrumentId, key);
+    this.subscriptionToInstrumentId.set(key, req.instrumentId);
+    const keys = this.instrumentToKeys.get(req.instrumentId) ?? new Set<string>();
+    keys.add(key);
+    this.instrumentToKeys.set(req.instrumentId, keys);
   }
 
   /**
@@ -213,8 +217,9 @@ export class HubUniverse {
   }
 
   connectionOwnsInstrument(connectionId: string, instrumentId: InstrumentId): boolean {
-    const key = this.instrumentToKey.get(instrumentId);
-    return key !== undefined && this.ownedKeysByConnection.get(connectionId)?.has(key) === true;
+    const keys = this.instrumentToKeys.get(instrumentId);
+    const owned = this.ownedKeysByConnection.get(connectionId);
+    return keys !== undefined && owned !== undefined && Array.from(keys).some((key) => owned.has(key));
   }
 
   activeReferenceCount(exchangeSegment: string, brokerToken: string): number {
@@ -233,16 +238,16 @@ export class HubUniverse {
     return this.subscriptions.has(subscriptionKey(exchangeSegment, brokerToken));
   }
 
-  hasToken(brokerToken: string): boolean {
-    return this.tokenToId.has(brokerToken);
+  hasToken(exchangeSegment: string, brokerToken: string): boolean {
+    return this.subscriptionToInstrumentId.has(subscriptionKey(exchangeSegment, brokerToken));
   }
 
-  getInstrumentId(brokerToken: string): InstrumentId | undefined {
-    return this.tokenToId.get(brokerToken);
+  getInstrumentId(exchangeSegment: string, brokerToken: string): InstrumentId | undefined {
+    return this.subscriptionToInstrumentId.get(subscriptionKey(exchangeSegment, brokerToken));
   }
 
   tokenToInstrumentMap(): ReadonlyMap<string, InstrumentId> {
-    return this.tokenToId;
+    return this.subscriptionToInstrumentId;
   }
 
   allSubscriptions(): SubscribeRequest[] {

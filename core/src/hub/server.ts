@@ -49,6 +49,9 @@ export interface ClientConnection {
   droppedCount: number;
   /** Receive time of the last tick actually routed to this client. */
   lastRelevantTickAt: number;
+  /** Monotonic only across ticks routed to this specific v2 client. */
+  sequence: number;
+  sequenceIdentity?: string;
 }
 
 export interface HubServerOptions {
@@ -97,6 +100,9 @@ export class HubServer {
   private readonly feedOptions: DhanFeedOptions | undefined;
   private recorder: Recorder | undefined;
   private readonly clients = new Set<ClientConnection>();
+  /** Session-scoped cursors preserve v2 sequence continuity across reconnects. */
+  private readonly sequenceByClientIdentity = new Map<string, number>();
+  private static readonly MAX_SEQUENCE_IDENTITIES = 1_024;
   private readonly maxClientQueue: number;
   private readonly maxClientQueueBytes: number;
   private readonly staleThresholdMs: number;
@@ -111,7 +117,6 @@ export class HubServer {
   private lastHealthStatus: HubHealthStatus = 'DISCONNECTED';
   /** Zero means no accepted provider connection; increment only after connect succeeds. */
   private providerEpoch = 0;
-  private sequence = 0;
   private unknownFrameCount = 0;
   private recorderStatus: 'HEALTHY' | 'FAILED' = 'HEALTHY';
   private recorderLastWriteTs = 0;
@@ -166,6 +171,7 @@ export class HubServer {
         queueBytes: 0,
         droppedCount: 0,
         lastRelevantTickAt: 0,
+        sequence: 0,
       };
       this.clients.add(client);
 
@@ -238,6 +244,8 @@ export class HubServer {
       }
       client.clientId = parsed.frame.clientId;
       client.instanceId = parsed.frame.instanceId;
+      client.sequenceIdentity = `${client.clientId}:${client.instanceId}`;
+      client.sequence = this.sequenceByClientIdentity.get(client.sequenceIdentity) ?? 0;
       client.protocol = HUB_PROTOCOL_V2;
       client.handshaken = true;
       this.sendToClient(client, makeHubWelcomeV2({
@@ -353,15 +361,21 @@ export class HubServer {
    * Fans out tick to connected clients using bounded queue with drop-oldest backpressure.
    */
   private fanoutTick(tick: Tick): void {
-    const sequence = ++this.sequence;
     for (const client of this.clients) {
       if (client.socket.readyState !== WsSocket.OPEN) continue;
       if (client.protocol === HUB_PROTOCOL_V2 && !this.universe.connectionOwnsInstrument(client.connectionId, tick.instrumentId)) continue;
 
       client.lastRelevantTickAt = Date.now();
+      // V2 clients see filtered streams.  Their sequence must advance only
+      // for a tick that is relevant to them; a hub-global sequence would turn
+      // ordinary filtering into a false gap and permanently mark them stale.
+      const sequence = client.protocol === HUB_PROTOCOL_V2 ? ++client.sequence : undefined;
+      if (client.sequenceIdentity !== undefined && sequence !== undefined) {
+        this.rememberClientSequence(client.sequenceIdentity, sequence);
+      }
 
       const payload = JSON.stringify(client.protocol === HUB_PROTOCOL_V2
-        ? makeHubTickV2({ sessionId: this.sessionId, providerEpoch: this.providerEpoch, sequence, tick })
+        ? makeHubTickV2({ sessionId: this.sessionId, providerEpoch: this.providerEpoch, sequence: sequence!, tick })
         : { t: 'tick', d: tick }) + '\n';
 
       if (client.socket.bufferedAmount > 2 * 1024 * 1024) {
@@ -398,6 +412,18 @@ export class HubServer {
         client.socket.send(frame);
       }
     }
+  }
+
+  private rememberClientSequence(identity: string, sequence: number): void {
+    // Preserve a bounded session cursor for reconnecting clients.  Eviction
+    // is safe: a client whose old cursor is evicted will detect a gap and
+    // request its normal resync rather than silently accepting data loss.
+    if (!this.sequenceByClientIdentity.has(identity)
+      && this.sequenceByClientIdentity.size >= HubServer.MAX_SEQUENCE_IDENTITIES) {
+      const oldest = this.sequenceByClientIdentity.keys().next().value;
+      if (oldest !== undefined) this.sequenceByClientIdentity.delete(oldest);
+    }
+    this.sequenceByClientIdentity.set(identity, sequence);
   }
 
   ready(): Promise<void> {
@@ -621,14 +647,13 @@ export class HubServer {
     return {
       sessionId: this.sessionId,
       providerEpoch: this.providerEpoch,
-      sequence: this.sequence,
       status: this.currentHealthStatus(),
       recorder: { status: this.recorderStatus, lastWriteTs: this.recorderLastWriteTs, errorCategory: this.recorderErrorCategory },
       clients: Array.from(this.clients, (client) => ({
         clientId: client.clientId, connectionId: client.connectionId, protocol: client.protocol ?? 0,
         subscriptions: this.universe.connectionSubscriptionCount(client.connectionId),
         queuedMessages: client.queue.length, queuedBytes: client.queueBytes, dropped: client.droppedCount,
-        lastRelevantTickAt: client.lastRelevantTickAt,
+        lastRelevantTickAt: client.lastRelevantTickAt, sequence: client.sequence,
       })),
     };
   }

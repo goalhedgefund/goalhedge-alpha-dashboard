@@ -235,6 +235,18 @@ describe('HubServer', () => {
     const tick = received.find((m) => m.t === 'tick' && m.proto === 2);
     expect(tick.sequence).toBeGreaterThan(0);
     expect(tick.sessionId).toBe(welcome.sessionId);
+    // An unrelated provider tick must not consume a sequence for this
+    // filtered client.  Otherwise every normal v2 consumer reports STALE.
+    mockFeed.emitTick({
+      instrumentId: makeInstrumentId('NSE', 'unowned-after-subscribe'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 1,
+      qty: 1, volume: 1, bidPaise: 1, askPaise: 1, bidQty: 1, askQty: 1,
+    });
+    mockFeed.emitTick({
+      instrumentId: makeInstrumentId('NSE', '8888'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 12347,
+      qty: 1, volume: 1, bidPaise: 12342, askPaise: 12352, bidQty: 1, askQty: 1,
+    });
+    await waitFor(() => received.filter((m) => m.t === 'tick' && m.proto === 2).length === 2);
+    expect(received.filter((m) => m.t === 'tick' && m.proto === 2).map((m) => m.sequence)).toEqual([1, 2]);
     (hub as any).sendHealth(serverClient);
     await waitFor(() => received.filter((m) => m.t === 'health').at(-1)?.lastRelevantTickAt > 0);
 
@@ -279,6 +291,46 @@ describe('HubServer', () => {
     expect(client.responseByRequestId.has('two')).toBe(true);
     expect(client.responseByRequestId.has('three')).toBe(true);
     ws.close();
+    await hub.close();
+  });
+
+  it('preserves a filtered v2 sequence cursor across a same-identity reconnect', async () => {
+    const mockFeed = new MockFeed();
+    const hub = new HubServer({ port: 0, host: '127.0.0.1', feed: mockFeed });
+    await hub.start();
+    const port = ((hub as any).wss.address() as { port: number }).port;
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const started = Date.now();
+      while (!predicate()) {
+        if (Date.now() - started > 2_000) throw new Error('timed out waiting for hub frame');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    const connect = async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      const received: any[] = [];
+      ws.on('message', (data) => data.toString().split('\n').filter(Boolean).forEach((line) => received.push(JSON.parse(line))));
+      await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+      ws.send(JSON.stringify({ t: 'hello', proto: 2, clientId: 'reconnect-s1', instanceId: 'stable-instance' }) + '\n');
+      await waitFor(() => received.some((m) => m.t === 'welcome'));
+      ws.send(JSON.stringify({ t: 'sub', requestId: `sub-${Date.now()}`, instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '8888' }] }) + '\n');
+      await waitFor(() => received.some((m) => m.t === 'subAck'));
+      return { ws, received };
+    };
+
+    const first = await connect();
+    mockFeed.emitTick({ instrumentId: makeInstrumentId('NSE', '8888'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 1, qty: 1, volume: 1, bidPaise: 1, askPaise: 1, bidQty: 1, askQty: 1 });
+    await waitFor(() => first.received.some((m) => m.t === 'tick'));
+    expect(first.received.find((m) => m.t === 'tick').sequence).toBe(1);
+    first.ws.close();
+    await waitFor(() => hub.clientCount() === 0);
+
+    const second = await connect();
+    mockFeed.emitTick({ instrumentId: makeInstrumentId('NSE', 'other'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 1, qty: 1, volume: 1, bidPaise: 1, askPaise: 1, bidQty: 1, askQty: 1 });
+    mockFeed.emitTick({ instrumentId: makeInstrumentId('NSE', '8888'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 2, qty: 1, volume: 1, bidPaise: 1, askPaise: 1, bidQty: 1, askQty: 1 });
+    await waitFor(() => second.received.some((m) => m.t === 'tick'));
+    expect(second.received.find((m) => m.t === 'tick').sequence).toBe(2);
+    second.ws.close();
     await hub.close();
   });
 

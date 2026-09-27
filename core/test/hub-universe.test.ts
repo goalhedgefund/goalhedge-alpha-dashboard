@@ -17,7 +17,7 @@ describe('HubUniverse', () => {
     expect(universe.size()).toBe(2);
     expect(universe.has('NSE_FNO', '1001')).toBe(true);
     expect(universe.has('NSE_FNO', '1002')).toBe(true);
-    expect(universe.getInstrumentId('1001')).toBe(makeInstrumentId('NSE', '1001'));
+    expect(universe.getInstrumentId('NSE_FNO', '1001')).toBe(makeInstrumentId('NSE', '1001'));
 
     // Duplicate additions should NOT increment version or return added items
     const res2 = universe.add([
@@ -52,7 +52,7 @@ describe('HubUniverse', () => {
     ]);
     expect(universe.size()).toBe(1);
     expect(universe.has('NSE_FNO', '5001')).toBe(true);
-    expect(universe.hasToken('5001')).toBe(true);
+    expect(universe.hasToken('NSE_FNO', '5001')).toBe(true);
     expect(universe.allSubscriptions().length).toBe(1);
   });
 
@@ -72,11 +72,16 @@ describe('HubUniverse', () => {
     expect(universe.has('NSE_FNO', '7001')).toBe(true);
   });
 
-  it('does not collide tokens that belong to different exchange segments', () => {
+  it('retains ownership lookup for identical tokens across exchange segments', () => {
     const universe = new HubUniverse();
-    universe.subscribe('idx', [{ exchangeSegment: 'IDX_I', brokerToken: '13' }]);
-    universe.subscribe('fno', [{ exchangeSegment: 'NSE_FNO', brokerToken: '13' }]);
+    const sharedId = makeInstrumentId('NSE', '13');
+    universe.subscribe('idx', [{ exchangeSegment: 'IDX_I', brokerToken: '13', instrumentId: sharedId }]);
+    universe.subscribe('fno', [{ exchangeSegment: 'NSE_FNO', brokerToken: '13', instrumentId: sharedId }]);
     expect(universe.activeReferenceCount('IDX_I', '13')).toBe(1);
     expect(universe.activeReferenceCount('NSE_FNO', '13')).toBe(1);
+    expect(universe.connectionOwnsInstrument('idx', sharedId)).toBe(true);
+    expect(universe.connectionOwnsInstrument('fno', sharedId)).toBe(true);
+    expect(universe.getInstrumentId('IDX_I', '13')).toBe(sharedId);
+    expect(universe.getInstrumentId('NSE_FNO', '13')).toBe(sharedId);
   });
 });
