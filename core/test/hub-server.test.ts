@@ -165,4 +165,59 @@ describe('HubServer', () => {
     ws.close();
     await hub.close();
   });
+
+  it('serves a validated v2 handshake with idempotent subscriptions and structured errors', async () => {
+    const mockFeed = new MockFeed();
+    const hub = new HubServer({ port: 0, host: '127.0.0.1', feed: mockFeed });
+    await hub.start();
+    const port = (hub['wss'].address() as any).port;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const received: any[] = [];
+    ws.on('message', (data) => {
+      for (const line of data.toString().split('\n')) {
+        if (line.trim()) received.push(JSON.parse(line));
+      }
+    });
+    await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const started = Date.now();
+      while (!predicate()) {
+        if (Date.now() - started > 2_000) throw new Error('timed out waiting for hub frame');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+
+    ws.send(JSON.stringify({ t: 'sub', requestId: 'before-hello', instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '1' }] }) + '\n');
+    await waitFor(() => received.some((m) => m.code === 'HANDSHAKE_REQUIRED'));
+
+    ws.send(JSON.stringify({ t: 'hello', proto: 2, clientId: 's1', instanceId: 's1-test-1', lastSessionId: null, lastSequence: 0 }) + '\n');
+    await waitFor(() => received.some((m) => m.t === 'welcome' && m.proto === 2));
+    const welcome = received.find((m) => m.t === 'welcome' && m.proto === 2);
+    expect(welcome.connectionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(welcome.providerEpoch).toBe(1);
+
+    const sub = { t: 'sub', requestId: 's1-sub-1', instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '8888' }] };
+    ws.send(JSON.stringify(sub) + '\n');
+    await waitFor(() => received.some((m) => m.t === 'subAck' && m.requestId === 's1-sub-1'));
+    ws.send(JSON.stringify(sub) + '\n');
+    await waitFor(() => received.filter((m) => m.t === 'subAck' && m.requestId === 's1-sub-1').length === 2);
+    expect(mockFeed.subscriptions.filter((s) => s.brokerToken === '8888')).toHaveLength(1);
+
+    ws.send('{not-json}\n');
+    ws.send(JSON.stringify({ t: 'future-command', requestId: 'unknown-1' }) + '\n');
+    await waitFor(() => received.some((m) => m.code === 'MALFORMED_JSON'));
+    await waitFor(() => received.some((m) => m.code === 'UNKNOWN_MESSAGE' && m.requestId === 'unknown-1'));
+
+    mockFeed.emitTick({
+      instrumentId: makeInstrumentId('NSE', '8888'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 12345,
+      qty: 1, volume: 1, bidPaise: 12340, askPaise: 12350, bidQty: 1, askQty: 1,
+    });
+    await waitFor(() => received.some((m) => m.t === 'tick' && m.proto === 2));
+    const tick = received.find((m) => m.t === 'tick' && m.proto === 2);
+    expect(tick.sequence).toBeGreaterThan(0);
+    expect(tick.sessionId).toBe(welcome.sessionId);
+
+    ws.close();
+    await hub.close();
+  });
 });

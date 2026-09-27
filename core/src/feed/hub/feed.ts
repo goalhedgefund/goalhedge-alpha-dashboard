@@ -1,12 +1,18 @@
 import { WebSocket as WsSocket } from 'ws';
+import { randomUUID } from 'node:crypto';
 import type { Tick } from '../../domain/marketdata.js';
 import type { FeedHealth, FeedStatus, IFeedAdapter, SubscribeRequest } from '../interface.js';
+import { HUB_PROTOCOL_V2 } from '../../hub/protocol-v2.js';
 
 export interface HubFeedOptions {
   /** Hub WebSocket URL. Defaults to 'ws://127.0.0.1:8795'. */
   url?: string;
   /** Desk or client identifier, e.g. 'S1', 'ALL_OP'. */
   clientId?: string;
+  /** Stable process identity required by the opt-in protocol-v2 path. */
+  instanceId?: string;
+  /** Defaults to legacy protocol v1. Set only from useSharedHubTransport. */
+  protocolVersion?: 1 | 2;
   /** Staleness timeout in milliseconds. Defaults to 5,000ms. */
   staleTimeoutMs?: number;
   /** Minimum reconnect delay in milliseconds. Defaults to 1,000ms. */
@@ -23,7 +29,7 @@ export interface HubFeedOptions {
  * and automatically re-subscribes upon reconnect without opening Dhan sockets.
  */
 export class HubFeed implements IFeedAdapter {
-  readonly adapterId = 'hub';
+  readonly adapterId: string;
 
   private ws: WsSocket | null = null;
   private connected = false;
@@ -42,13 +48,21 @@ export class HubFeed implements IFeedAdapter {
 
   private readonly url: string;
   private readonly clientId: string;
+  private readonly instanceId: string;
+  private readonly protocolVersion: 1 | 2;
   private readonly staleTimeoutMs: number;
   private readonly reconnectMinMs: number;
   private readonly reconnectMaxMs: number;
+  private requestSequence = 0;
+  private lastSessionId: string | null = null;
+  private lastSequence: number | null = null;
 
   constructor(opts: HubFeedOptions = {}) {
     this.url = opts.url ?? 'ws://127.0.0.1:8795';
     this.clientId = opts.clientId ?? 'hub-client';
+    this.protocolVersion = opts.protocolVersion ?? 1;
+    this.instanceId = opts.instanceId ?? `${this.clientId}-${process.pid}-${randomUUID()}`;
+    this.adapterId = this.protocolVersion === HUB_PROTOCOL_V2 ? 'hub-v2' : 'hub';
     this.staleTimeoutMs = opts.staleTimeoutMs ?? 5_000;
     this.reconnectMinMs = opts.reconnectMinMs ?? 1_000;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? 30_000;
@@ -81,11 +95,9 @@ export class HubFeed implements IFeedAdapter {
       ws.on('open', () => {
         if (this.ws !== ws) return;
         // Send hello handshake frame (§4)
-        const hello = JSON.stringify({
-          t: 'hello',
-          client: this.clientId,
-          proto: 1,
-        }) + '\n';
+        const hello = JSON.stringify(this.protocolVersion === HUB_PROTOCOL_V2
+          ? { t: 'hello', proto: HUB_PROTOCOL_V2, clientId: this.clientId, instanceId: this.instanceId, lastSessionId: this.lastSessionId, lastSequence: this.lastSequence ?? undefined }
+          : { t: 'hello', client: this.clientId, proto: 1 }) + '\n';
         try {
           ws.send(hello);
         } catch (err: any) {
@@ -106,7 +118,13 @@ export class HubFeed implements IFeedAdapter {
             this.lastMessageTs = Date.now();
 
             if (t === 'welcome') {
+              if (msg.proto !== this.protocolVersion) {
+                finishConnect(new Error(`Hub protocol mismatch: expected ${this.protocolVersion}, got ${String(msg.proto)}`));
+                ws.close();
+                return;
+              }
               this.connected = true;
+              if (this.protocolVersion === HUB_PROTOCOL_V2 && typeof msg.sessionId === 'string') this.lastSessionId = msg.sessionId;
               this.hubReportedStatus = 'CONNECTED';
               this.reconnectAttempt = 0;
               this.startRateTimer();
@@ -117,6 +135,7 @@ export class HubFeed implements IFeedAdapter {
               const tick = msg.d as Tick;
               if (tick) {
                 this.lastTickTs = tick.ts || Date.now();
+                if (this.protocolVersion === HUB_PROTOCOL_V2 && typeof msg.sequence === 'number') this.lastSequence = msg.sequence;
                 this.tickCountInWindow++;
                 this.handler?.(tick);
               }
@@ -124,6 +143,8 @@ export class HubFeed implements IFeedAdapter {
               if (typeof msg.status === 'string') {
                 this.hubReportedStatus = msg.status as FeedStatus;
               }
+            } else if (t === 'error' && !this.connected) {
+              finishConnect(new Error(`Hub rejected connection: ${typeof msg.code === 'string' ? msg.code : 'UNKNOWN'}`));
             }
           } catch {
             // Ignore malformed lines
@@ -188,13 +209,15 @@ export class HubFeed implements IFeedAdapter {
 
   private sendSubscriptionChunk(chunk: SubscribeRequest[]): void {
     if (!this.ws || this.ws.readyState !== WsSocket.OPEN) return;
-    const payload = JSON.stringify({
-      t: 'sub',
-      instruments: chunk.map((r) => ({
-        exchangeSegment: r.exchangeSegment,
-        brokerToken: r.brokerToken,
-      })),
-    }) + '\n';
+    const payload = JSON.stringify(this.protocolVersion === HUB_PROTOCOL_V2
+      ? {
+          t: 'sub', requestId: `${this.clientId}-sub-${++this.requestSequence}`,
+          instruments: chunk.map((r) => ({ exchangeSegment: r.exchangeSegment, brokerToken: r.brokerToken })),
+        }
+      : {
+          t: 'sub',
+          instruments: chunk.map((r) => ({ exchangeSegment: r.exchangeSegment, brokerToken: r.brokerToken })),
+        }) + '\n';
     try {
       this.ws.send(payload);
     } catch {

@@ -218,4 +218,35 @@ describe('HubFeed', () => {
     await feed.close();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
+
+  it('uses protocol v2 only when explicitly requested', async () => {
+    const received: any[] = [];
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', resolve));
+    const port = (wss.address() as any).port;
+    wss.on('connection', (socket) => {
+      socket.on('message', (data) => {
+        for (const line of data.toString().split('\n')) {
+          if (!line.trim()) continue;
+          const msg = JSON.parse(line);
+          received.push(msg);
+          if (msg.t === 'hello') {
+            socket.send(JSON.stringify({
+              t: 'welcome', proto: 2, sessionId: 'V2-SESSION', connectionId: 'conn-1', providerEpoch: 1, universeVersion: 1,
+            }) + '\n');
+          }
+        }
+      });
+    });
+    const feed = new HubFeed({ url: `ws://127.0.0.1:${port}`, clientId: 's1', instanceId: 's1-test-instance', protocolVersion: 2 });
+    await feed.connect();
+    expect(feed.adapterId).toBe('hub-v2');
+    expect(received[0]).toMatchObject({ t: 'hello', proto: 2, clientId: 's1', instanceId: 's1-test-instance' });
+    feed.subscribe([{ exchangeSegment: 'NSE_FNO', brokerToken: '42', instrumentId: makeInstrumentId('NSE', '42') }]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const sub = received.find((m) => m.t === 'sub');
+    expect(sub.requestId).toMatch(/^s1-sub-\d+$/);
+    await feed.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
 });

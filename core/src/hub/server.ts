@@ -1,7 +1,9 @@
 import { WebSocketServer, WebSocket as WsSocket } from 'ws';
+import { randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeSessionId } from '../domain/ids.js';
+import type { InstrumentId } from '../domain/ids.js';
 import type { Tick } from '../domain/marketdata.js';
 import { DhanFeed, type DhanFeedOptions } from '../feed/dhan/feed.js';
 import type { IFeedAdapter, SubscribeRequest } from '../feed/interface.js';
@@ -9,6 +11,15 @@ import { Recorder } from '../feed/recorder.js';
 import { loadScripMaster } from '../marketdata/instrument-master.js';
 import { loadDhanLiveDataPaperEnv, type DhanLiveDataPaperEnv } from '../host/dhan-live-data-paper-env.js';
 import { HubUniverse, type HubInstrumentInput } from './universe.js';
+import {
+  HUB_PROTOCOL_V2,
+  MAX_HUB_FRAME_BYTES,
+  makeHubError,
+  makeHubTickV2,
+  makeHubWelcomeV2,
+  parseHubClientFrameV2,
+  type HubSubscribeV2,
+} from './protocol-v2.js';
 
 const IST_OFFSET_MS = 330 * 60_000;
 
@@ -27,6 +38,11 @@ function resolveRepoPath(root: string, path: string): string {
 export interface ClientConnection {
   socket: WsSocket;
   clientId: string;
+  instanceId?: string;
+  connectionId: string;
+  protocol?: 1 | 2;
+  handshaken: boolean;
+  responseByRequestId: Map<string, Record<string, unknown>>;
   queue: string[];
   droppedCount: number;
 }
@@ -76,6 +92,9 @@ export class HubServer {
   private tickRateWindow: number[] = [];
   private healthTimer: NodeJS.Timeout | undefined;
   private lastHealthStatus: HubHealthStatus = 'DISCONNECTED';
+  private providerEpoch = 1;
+  private sequence = 0;
+  private unknownFrameCount = 0;
 
   // Backoff and rate limit tracking for Dhan socket 4 (matching b4e56ca)
   private reconnectAttempts = 0;
@@ -102,6 +121,10 @@ export class HubServer {
     this.wss = new WebSocketServer({
       host: this.host,
       port: this.port,
+      // We additionally check every incoming frame before JSON.parse. Keeping
+      // a small transport cap prevents an unauthenticated local client from
+      // allocating arbitrarily large buffers.
+      maxPayload: 1024 * 1024,
     });
 
     this.setupWebSocketServer();
@@ -112,12 +135,20 @@ export class HubServer {
       const client: ClientConnection = {
         socket,
         clientId: 'anonymous',
+        connectionId: randomUUID(),
+        handshaken: false,
+        responseByRequestId: new Map(),
         queue: [],
         droppedCount: 0,
       };
       this.clients.add(client);
 
       socket.on('message', (raw) => {
+        if (Buffer.byteLength(raw.toString()) > MAX_HUB_FRAME_BYTES) {
+          this.sendProtocolError(client, { code: 'FRAME_TOO_LARGE', message: 'frame exceeds maximum size' });
+          socket.close(1009, 'frame too large');
+          return;
+        }
         this.handleClientMessage(client, raw.toString());
       });
 
@@ -138,37 +169,114 @@ export class HubServer {
       if (!trimmed) continue;
       try {
         const msg = JSON.parse(trimmed) as Record<string, unknown>;
-        const t = msg.t;
-        if (t === 'hello') {
-          if (typeof msg.client === 'string') {
-            client.clientId = msg.client;
-          }
-          this.sendToClient(client, {
-            t: 'welcome',
-            proto: 1,
-            sessionId: this.sessionId,
-            universeVersion: this.universe.currentVersion(),
-          });
-          this.sendHealth(client);
-        } else if (t === 'sub') {
-          const instruments = (Array.isArray(msg.instruments) ? msg.instruments : []) as HubInstrumentInput[];
-          const { added, universeVersion } = this.universe.add(instruments);
-          if (added.length > 0 && this.dhanFeed) {
-            this.dhanFeed.subscribe(added);
-          }
-          this.sendToClient(client, {
-            t: 'subAck',
-            added: added.length,
-            universeVersion,
-          });
-        } else if (t === 'ping') {
-          this.sendToClient(client, { t: 'pong' });
-        }
-        // Unknown 't' values are ignored, not fatal — forward compatibility (§4)
+        this.handleParsedClientMessage(client, msg);
       } catch {
-        // Ignore unparseable frames
+        this.sendProtocolError(client, { code: 'MALFORMED_JSON', message: 'frame is not valid JSON' });
       }
     }
+  }
+
+  private handleParsedClientMessage(client: ClientConnection, msg: Record<string, unknown>): void {
+    // Protocol v1 remains compatibility-only. It is validated enough to avoid
+    // anonymous subscriptions, but never gains Phase 2 behaviour implicitly.
+    if (!client.handshaken && msg.t === 'hello' && msg.proto === 1) {
+      const legacyClientId = typeof msg.client === 'string' ? msg.client.trim() : '';
+      if (!/^[A-Za-z0-9._:-]{1,64}$/.test(legacyClientId)) {
+        this.sendToClient(client, { t: 'error', code: 'INVALID_FRAME', message: 'valid legacy client is required' });
+        return;
+      }
+      client.clientId = legacyClientId;
+      client.protocol = 1;
+      client.handshaken = true;
+      this.sendToClient(client, { t: 'welcome', proto: 1, sessionId: this.sessionId, universeVersion: this.universe.currentVersion() });
+      this.sendHealth(client);
+      return;
+    }
+
+    if (!client.handshaken && msg.t === 'hello' && msg.proto !== HUB_PROTOCOL_V2) {
+      this.sendProtocolError(client, { code: 'UNSUPPORTED_PROTOCOL', message: 'only protocol versions 1 and 2 are supported' });
+      return;
+    }
+
+    if (!client.handshaken) {
+      const parsed = parseHubClientFrameV2(msg);
+      if (!parsed.ok) {
+        this.sendProtocolError(client, parsed.error);
+        return;
+      }
+      if (parsed.frame.t !== 'hello') {
+        this.sendProtocolError(client, { code: 'HANDSHAKE_REQUIRED', message: 'hello handshake is required before commands' });
+        return;
+      }
+      client.clientId = parsed.frame.clientId;
+      client.instanceId = parsed.frame.instanceId;
+      client.protocol = HUB_PROTOCOL_V2;
+      client.handshaken = true;
+      this.sendToClient(client, makeHubWelcomeV2({
+        sessionId: this.sessionId,
+        connectionId: client.connectionId,
+        providerEpoch: this.providerEpoch,
+        universeVersion: this.universe.currentVersion(),
+      }));
+      this.sendHealth(client);
+      return;
+    }
+
+    if (client.protocol === 1) {
+      this.handleLegacyCommand(client, msg);
+      return;
+    }
+
+    const parsed = parseHubClientFrameV2(msg);
+    if (!parsed.ok) {
+      if (parsed.error.code === 'UNKNOWN_MESSAGE') this.unknownFrameCount++;
+      this.sendProtocolError(client, parsed.error);
+      return;
+    }
+    if (parsed.frame.t === 'hello') {
+      this.sendProtocolError(client, { code: 'INVALID_FRAME', message: 'hello may only be sent once' });
+    } else if (parsed.frame.t === 'sub') {
+      this.handleV2Subscribe(client, parsed.frame);
+    } else {
+      this.sendToClient(client, { t: 'pong', proto: HUB_PROTOCOL_V2, ...(parsed.frame.requestId ? { requestId: parsed.frame.requestId } : {}) });
+    }
+  }
+
+  private handleLegacyCommand(client: ClientConnection, msg: Record<string, unknown>): void {
+    if (msg.t === 'sub') {
+      const instruments = (Array.isArray(msg.instruments) ? msg.instruments : []) as HubInstrumentInput[];
+      const { added, universeVersion } = this.universe.add(instruments);
+      if (added.length > 0 && this.dhanFeed) this.dhanFeed.subscribe(added);
+      this.sendToClient(client, { t: 'subAck', added: added.length, universeVersion });
+    } else if (msg.t === 'ping') {
+      this.sendToClient(client, { t: 'pong' });
+    }
+  }
+
+  private handleV2Subscribe(client: ClientConnection, frame: HubSubscribeV2): void {
+    const previous = client.responseByRequestId.get(frame.requestId);
+    if (previous) {
+      this.sendToClient(client, previous);
+      return;
+    }
+    const instruments: HubInstrumentInput[] = frame.instruments.map((instrument) => ({
+      exchangeSegment: instrument.exchangeSegment,
+      brokerToken: instrument.brokerToken,
+      ...(instrument.instrumentId ? { instrumentId: instrument.instrumentId as InstrumentId } : {}),
+      ...(instrument.requestCode !== undefined ? { requestCode: instrument.requestCode } : {}),
+    }));
+    const { added, universeVersion } = this.universe.add(instruments);
+    if (added.length > 0 && this.dhanFeed) this.dhanFeed.subscribe(added);
+    const ack = {
+      t: 'subAck', proto: HUB_PROTOCOL_V2, requestId: frame.requestId,
+      added: added.length, universeVersion, providerEpoch: this.providerEpoch,
+    } as Record<string, unknown>;
+    client.responseByRequestId.set(frame.requestId, ack);
+    this.sendToClient(client, ack);
+  }
+
+  private sendProtocolError(client: ClientConnection, error: Parameters<typeof makeHubError>[0]): void {
+    this.sendToClient(client, makeHubError(error));
   }
 
   private sendToClient(client: ClientConnection, data: unknown): void {
@@ -184,9 +292,13 @@ export class HubServer {
    * Fans out tick to connected clients using bounded queue with drop-oldest backpressure.
    */
   private fanoutTick(tick: Tick): void {
-    const payload = JSON.stringify({ t: 'tick', d: tick }) + '\n';
+    const sequence = ++this.sequence;
     for (const client of this.clients) {
       if (client.socket.readyState !== WsSocket.OPEN) continue;
+
+      const payload = JSON.stringify(client.protocol === HUB_PROTOCOL_V2
+        ? makeHubTickV2({ sessionId: this.sessionId, providerEpoch: this.providerEpoch, sequence, tick })
+        : { t: 'tick', d: tick }) + '\n';
 
       if (client.socket.bufferedAmount > 2 * 1024 * 1024) {
         // If client socket write buffer exceeds 2MB, drop tick to protect hub memory
@@ -294,6 +406,7 @@ export class HubServer {
       subscribed: this.universe.size(),
       dropped: client.droppedCount,
       sessionId: this.sessionId,
+      ...(client.protocol === HUB_PROTOCOL_V2 ? { proto: HUB_PROTOCOL_V2, providerEpoch: this.providerEpoch, unknownFrames: this.unknownFrameCount } : {}),
     };
     this.sendToClient(client, msg);
   }
@@ -313,6 +426,7 @@ export class HubServer {
         subscribed: this.universe.size(),
         dropped: client.droppedCount,
         sessionId: this.sessionId,
+        ...(client.protocol === HUB_PROTOCOL_V2 ? { proto: HUB_PROTOCOL_V2, providerEpoch: this.providerEpoch, unknownFrames: this.unknownFrameCount } : {}),
       };
       this.sendToClient(client, msg);
     }

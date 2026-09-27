@@ -213,6 +213,7 @@ function buildFeed(env: DhanLiveDataPaperEnv, date: string, root: string): IFeed
       return new HubFeed({
         url: env.hubWsUrl,
         clientId: env.consumerId,
+        protocolVersion: env.useSharedHubTransport ? 2 : 1,
         staleTimeoutMs: env.feedStaleMs,
       });
     case 'dhan':
