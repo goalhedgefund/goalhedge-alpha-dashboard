@@ -56,6 +56,8 @@ export class HubFeed implements IFeedAdapter {
   private requestSequence = 0;
   private lastSessionId: string | null = null;
   private lastSequence: number | null = null;
+  private lastProviderEpoch: number | null = null;
+  private resyncRequired = false;
 
   constructor(opts: HubFeedOptions = {}) {
     this.url = opts.url ?? 'ws://127.0.0.1:8795';
@@ -124,18 +126,35 @@ export class HubFeed implements IFeedAdapter {
                 return;
               }
               this.connected = true;
-              if (this.protocolVersion === HUB_PROTOCOL_V2 && typeof msg.sessionId === 'string') this.lastSessionId = msg.sessionId;
+              if (this.protocolVersion === HUB_PROTOCOL_V2) {
+                if (typeof msg.sessionId === 'string' && this.lastSessionId !== null && this.lastSessionId !== msg.sessionId) {
+                  this.resyncRequired = true;
+                  this.lastSequence = null;
+                }
+                if (typeof msg.sessionId === 'string') this.lastSessionId = msg.sessionId;
+                if (typeof msg.providerEpoch === 'number') this.lastProviderEpoch = msg.providerEpoch;
+              }
               this.hubReportedStatus = 'CONNECTED';
               this.reconnectAttempt = 0;
               this.startRateTimer();
               // Re-subscribe on reconnect: adapter replays its registered subscriptions (§5 H2)
               this.flushSubscriptions();
+              // The desired set has been replayed on the new session. A later
+              // sequence/epoch gap will set this again if replay is incomplete.
+              this.resyncRequired = false;
               finishConnect();
             } else if (t === 'tick') {
               const tick = msg.d as Tick;
               if (tick) {
                 this.lastTickTs = tick.ts || Date.now();
-                if (this.protocolVersion === HUB_PROTOCOL_V2 && typeof msg.sequence === 'number') this.lastSequence = msg.sequence;
+                if (this.protocolVersion === HUB_PROTOCOL_V2) {
+                  const sequence = typeof msg.sequence === 'number' ? msg.sequence : undefined;
+                  const epoch = typeof msg.providerEpoch === 'number' ? msg.providerEpoch : undefined;
+                  if (epoch !== undefined && this.lastProviderEpoch !== null && epoch !== this.lastProviderEpoch) this.resyncRequired = true;
+                  if (sequence !== undefined && this.lastSequence !== null && sequence !== this.lastSequence + 1) this.resyncRequired = true;
+                  if (epoch !== undefined) this.lastProviderEpoch = epoch;
+                  if (sequence !== undefined) this.lastSequence = sequence;
+                }
                 this.tickCountInWindow++;
                 this.handler?.(tick);
               }
@@ -267,6 +286,13 @@ export class HubFeed implements IFeedAdapter {
         lastTickTs: this.lastTickTs,
         tickRatePerSec: this.tickRatePerSec,
         detail: 'hub reports stale Dhan feed',
+      };
+    }
+
+    if (this.resyncRequired) {
+      return {
+        status: 'STALE', lastTickTs: this.lastTickTs, tickRatePerSec: this.tickRatePerSec,
+        detail: 'hub session, provider epoch, or sequence discontinuity; resubscription required',
       };
     }
 

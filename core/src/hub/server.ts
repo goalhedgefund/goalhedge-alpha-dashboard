@@ -95,7 +95,8 @@ export class HubServer {
   private tickRateWindow: number[] = [];
   private healthTimer: NodeJS.Timeout | undefined;
   private lastHealthStatus: HubHealthStatus = 'DISCONNECTED';
-  private providerEpoch = 1;
+  /** Zero means no accepted provider connection; increment only after connect succeeds. */
+  private providerEpoch = 0;
   private sequence = 0;
   private unknownFrameCount = 0;
 
@@ -365,10 +366,7 @@ export class HubServer {
     this.running = true;
     await this.ready();
 
-    if (this.dhanFeed) {
-      this.attachFeedHandlers(this.dhanFeed);
-      await this.connectFeedWithBackoff();
-    } else if (this.feedOptions) {
+    if (this.dhanFeed || this.feedOptions) {
       await this.connectFeedWithBackoff();
     }
 
@@ -378,9 +376,10 @@ export class HubServer {
     this.healthTimer.unref();
   }
 
-  private attachFeedHandlers(feed: IFeedAdapter): void {
+  private attachFeedHandlers(feed: IFeedAdapter, epoch: number): void {
     feed.setTickHandler((tick: Tick) => {
-      this.onIncomingTick(tick);
+      // A callback from a replaced provider must never cross its epoch fence.
+      if (this.running && epoch === this.providerEpoch) this.onIncomingTick(tick);
     });
   }
 
@@ -467,13 +466,15 @@ export class HubServer {
 
     if (!this.dhanFeed && this.feedOptions) {
       this.dhanFeed = new DhanFeed(this.feedOptions);
-      this.attachFeedHandlers(this.dhanFeed);
     }
 
     if (!this.dhanFeed) return;
 
     try {
+      const candidateEpoch = this.providerEpoch + 1;
+      this.attachFeedHandlers(this.dhanFeed, candidateEpoch);
       await this.dhanFeed.connect();
+      this.providerEpoch = candidateEpoch;
       this.reconnectAttempts = 0;
       this.rateLimitedUntilTs = 0;
       console.log('[HubServer] Connected to Dhan feed (socket 4). Subscribing option universe...');
