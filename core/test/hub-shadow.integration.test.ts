@@ -5,6 +5,14 @@ import type { FeedHealth, IFeedAdapter, SubscribeRequest } from '../src/feed/int
 import { HubFeed } from '../src/feed/hub/feed.js';
 import { HubServer } from '../src/hub/server.js';
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started >= timeoutMs) throw new Error('timed out waiting for shared-hub condition');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 class SyntheticProvider implements IFeedAdapter {
   readonly adapterId = 'synthetic-provider';
   handler?: (tick: Tick) => void;
@@ -34,9 +42,10 @@ describe('six-consumer offline shared-hub shadow', () => {
       feed.subscribe(tokens.map((token) => ({ exchangeSegment: 'NSE_FNO', brokerToken: token, instrumentId: makeInstrumentId('NSE', token) })));
       return feed;
     }));
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await waitFor(() => (hub.diagnostics().clients as Array<{ subscriptions: number }>).length === Object.keys(definitions).length
+      && (hub.diagnostics().clients as Array<{ subscriptions: number }>).every((client) => client.subscriptions > 0));
     for (const token of ['100', '101', '102', '103', '104', '105', '999']) provider.emit(token);
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await waitFor(() => Array.from(received.entries()).every(([id, ticks]) => ticks.length === definitions[id]?.length));
     for (const [id, tokens] of Object.entries(definitions)) {
       expect(received.get(id)?.sort()).toEqual(tokens.slice().sort());
     }

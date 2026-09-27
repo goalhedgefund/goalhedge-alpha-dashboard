@@ -58,6 +58,8 @@ export class HubFeed implements IFeedAdapter {
   private lastSequence: number | null = null;
   private lastProviderEpoch: number | null = null;
   private resyncRequired = false;
+  private lastSubscriptionError: string | undefined;
+  private readonly pendingSubscriptionRequests = new Set<string>();
 
   constructor(opts: HubFeedOptions = {}) {
     this.url = opts.url ?? 'ws://127.0.0.1:8795';
@@ -162,8 +164,20 @@ export class HubFeed implements IFeedAdapter {
               if (typeof msg.status === 'string') {
                 this.hubReportedStatus = msg.status as FeedStatus;
               }
-            } else if (t === 'error' && !this.connected) {
-              finishConnect(new Error(`Hub rejected connection: ${typeof msg.code === 'string' ? msg.code : 'UNKNOWN'}`));
+            } else if (t === 'subAck') {
+              if (typeof msg.requestId === 'string') this.pendingSubscriptionRequests.delete(msg.requestId);
+              if (msg.ok === false) {
+                this.lastSubscriptionError = `hub rejected subscription: ${typeof msg.code === 'string' ? msg.code : 'UNKNOWN'}`;
+              } else if (this.pendingSubscriptionRequests.size === 0) {
+                this.lastSubscriptionError = undefined;
+              }
+            } else if (t === 'error') {
+              const requestId = typeof msg.requestId === 'string' ? msg.requestId : undefined;
+              const code = typeof msg.code === 'string' ? msg.code : 'UNKNOWN';
+              if (requestId === undefined || this.pendingSubscriptionRequests.delete(requestId)) {
+                this.lastSubscriptionError = `hub rejected subscription${requestId ? ` (${requestId})` : ''}: ${code}`;
+              }
+              if (!this.connected) finishConnect(new Error(`Hub rejected connection: ${code}`));
             }
           } catch {
             // Ignore malformed lines
@@ -228,9 +242,10 @@ export class HubFeed implements IFeedAdapter {
 
   private sendSubscriptionChunk(chunk: SubscribeRequest[]): void {
     if (!this.ws || this.ws.readyState !== WsSocket.OPEN) return;
+    const requestId = `${this.clientId}-sub-${++this.requestSequence}`;
     const payload = JSON.stringify(this.protocolVersion === HUB_PROTOCOL_V2
       ? {
-          t: 'sub', requestId: `${this.clientId}-sub-${++this.requestSequence}`,
+          t: 'sub', requestId,
           instruments: chunk.map((r) => ({ exchangeSegment: r.exchangeSegment, brokerToken: r.brokerToken })),
         }
       : {
@@ -238,6 +253,7 @@ export class HubFeed implements IFeedAdapter {
           instruments: chunk.map((r) => ({ exchangeSegment: r.exchangeSegment, brokerToken: r.brokerToken })),
         }) + '\n';
     try {
+      if (this.protocolVersion === HUB_PROTOCOL_V2) this.pendingSubscriptionRequests.add(requestId);
       this.ws.send(payload);
     } catch {
       // Reconnect will re-send
@@ -293,6 +309,13 @@ export class HubFeed implements IFeedAdapter {
       return {
         status: 'STALE', lastTickTs: this.lastTickTs, tickRatePerSec: this.tickRatePerSec,
         detail: 'hub session, provider epoch, or sequence discontinuity; resubscription required',
+      };
+    }
+
+    if (this.lastSubscriptionError !== undefined) {
+      return {
+        status: 'STALE', lastTickTs: this.lastTickTs, tickRatePerSec: this.tickRatePerSec,
+        detail: this.lastSubscriptionError,
       };
     }
 

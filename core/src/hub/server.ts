@@ -47,6 +47,8 @@ export interface ClientConnection {
   queue: string[];
   queueBytes: number;
   droppedCount: number;
+  /** Receive time of the last tick actually routed to this client. */
+  lastRelevantTickAt: number;
 }
 
 export interface HubServerOptions {
@@ -63,6 +65,8 @@ export interface HubServerOptions {
   staleThresholdMs?: number;
   healthIntervalMs?: number;
   maxInstrumentsPerClient?: number;
+  /** Bounded idempotency cache; old request IDs may be safely retried as new. */
+  maxResponseCacheEntries?: number;
 }
 
 export type HubHealthStatus = 'CONNECTED' | 'DISCONNECTED' | 'STALE';
@@ -71,6 +75,8 @@ export interface HubHealthMessage {
   t: 'health';
   status: HubHealthStatus;
   lastTickTs: number;
+  /** Per-client receive timestamp; never advanced by another consumer's tick. */
+  lastRelevantTickAt: number;
   tickRatePerSec: number;
   subscribed: number;
   dropped?: number;
@@ -96,6 +102,7 @@ export class HubServer {
   private readonly staleThresholdMs: number;
   private readonly healthIntervalMs: number;
   private readonly maxInstrumentsPerClient: number;
+  private readonly maxResponseCacheEntries: number;
 
   private running = false;
   private lastTickTs = 0;
@@ -129,6 +136,7 @@ export class HubServer {
     this.staleThresholdMs = opts.staleThresholdMs ?? 5_000;
     this.healthIntervalMs = opts.healthIntervalMs ?? 5_000;
     this.maxInstrumentsPerClient = opts.maxInstrumentsPerClient ?? 500;
+    this.maxResponseCacheEntries = opts.maxResponseCacheEntries ?? 256;
 
     this.dhanFeed = opts.feed;
     this.feedOptions = opts.feedOptions;
@@ -140,7 +148,7 @@ export class HubServer {
       // We additionally check every incoming frame before JSON.parse. Keeping
       // a small transport cap prevents an unauthenticated local client from
       // allocating arbitrarily large buffers.
-      maxPayload: 1024 * 1024,
+      maxPayload: MAX_HUB_FRAME_BYTES,
     });
 
     this.setupWebSocketServer();
@@ -157,6 +165,7 @@ export class HubServer {
         queue: [],
         queueBytes: 0,
         droppedCount: 0,
+        lastRelevantTickAt: 0,
       };
       this.clients.add(client);
 
@@ -298,7 +307,7 @@ export class HubServer {
       t: 'subAck', proto: HUB_PROTOCOL_V2, requestId: frame.requestId,
       added: added.length, owned, activeCount, universeVersion, providerEpoch: this.providerEpoch,
     } as Record<string, unknown>;
-    client.responseByRequestId.set(frame.requestId, ack);
+    this.cacheResponse(client, frame.requestId, ack);
     this.sendToClient(client, ack);
   }
 
@@ -311,12 +320,24 @@ export class HubServer {
     }));
     const { removed, activeCount } = this.universe.unsubscribe(client.connectionId, instruments);
     const ack = { t: 'unsubAck', proto: HUB_PROTOCOL_V2, requestId: frame.requestId, removed, activeCount } as Record<string, unknown>;
-    client.responseByRequestId.set(frame.requestId, ack);
+    this.cacheResponse(client, frame.requestId, ack);
     this.sendToClient(client, ack);
   }
 
   private sendProtocolError(client: ClientConnection, error: Parameters<typeof makeHubError>[0]): void {
     this.sendToClient(client, makeHubError(error));
+  }
+
+  private cacheResponse(client: ClientConnection, requestId: string, response: Record<string, unknown>): void {
+    // Map insertion order gives deterministic least-recently-created eviction.
+    // A per-connection cap prevents a local misbehaving client from retaining
+    // an unbounded number of idempotency responses for the whole session.
+    while (client.responseByRequestId.size >= this.maxResponseCacheEntries) {
+      const oldest = client.responseByRequestId.keys().next().value;
+      if (oldest === undefined) break;
+      client.responseByRequestId.delete(oldest);
+    }
+    client.responseByRequestId.set(requestId, response);
   }
 
   private sendToClient(client: ClientConnection, data: unknown): void {
@@ -336,6 +357,8 @@ export class HubServer {
     for (const client of this.clients) {
       if (client.socket.readyState !== WsSocket.OPEN) continue;
       if (client.protocol === HUB_PROTOCOL_V2 && !this.universe.connectionOwnsInstrument(client.connectionId, tick.instrumentId)) continue;
+
+      client.lastRelevantTickAt = Date.now();
 
       const payload = JSON.stringify(client.protocol === HUB_PROTOCOL_V2
         ? makeHubTickV2({ sessionId: this.sessionId, providerEpoch: this.providerEpoch, sequence, tick })
@@ -453,6 +476,7 @@ export class HubServer {
       t: 'health',
       status,
       lastTickTs: this.lastTickTs,
+      lastRelevantTickAt: client.lastRelevantTickAt,
       tickRatePerSec: this.calculateTickRate(),
       subscribed: this.universe.size(),
       dropped: client.droppedCount,
@@ -475,6 +499,7 @@ export class HubServer {
         t: 'health',
         status,
         lastTickTs: this.lastTickTs,
+        lastRelevantTickAt: client.lastRelevantTickAt,
         tickRatePerSec: rate,
         subscribed: this.universe.size(),
         dropped: client.droppedCount,
@@ -603,6 +628,7 @@ export class HubServer {
         clientId: client.clientId, connectionId: client.connectionId, protocol: client.protocol ?? 0,
         subscriptions: this.universe.connectionSubscriptionCount(client.connectionId),
         queuedMessages: client.queue.length, queuedBytes: client.queueBytes, dropped: client.droppedCount,
+        lastRelevantTickAt: client.lastRelevantTickAt,
       })),
     };
   }

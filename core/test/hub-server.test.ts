@@ -5,6 +5,7 @@ import type { Tick } from '../src/domain/marketdata.js';
 import type { FeedHealth, IFeedAdapter, SubscribeRequest } from '../src/feed/interface.js';
 import { HubServer } from '../src/hub/server.js';
 import { HubUniverse } from '../src/hub/universe.js';
+import { MAX_HUB_FRAME_BYTES } from '../src/hub/protocol-v2.js';
 
 class MockFeed implements IFeedAdapter {
   readonly adapterId = 'mock-dhan';
@@ -195,6 +196,9 @@ describe('HubServer', () => {
     const welcome = received.find((m) => m.t === 'welcome' && m.proto === 2);
     expect(welcome.connectionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(welcome.providerEpoch).toBe(1);
+    const serverClient = Array.from((hub as any).clients)[0] as any;
+    expect(serverClient.responseByRequestId).toBeInstanceOf(Map);
+    expect((hub as any).wss.options.maxPayload).toBe(MAX_HUB_FRAME_BYTES);
 
     ws.send(JSON.stringify({ t: 'status', requestId: 'status-1' }) + '\n');
     await waitFor(() => received.some((m) => m.t === 'status' && m.requestId === 'status-1'));
@@ -207,6 +211,9 @@ describe('HubServer', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(received.some((m) => m.t === 'tick')).toBe(false);
+    (hub as any).sendHealth(serverClient);
+    await waitFor(() => received.filter((m) => m.t === 'health').length >= 2);
+    expect(received.filter((m) => m.t === 'health').at(-1)).toMatchObject({ lastTickTs: expect.any(Number), lastRelevantTickAt: 0 });
 
     const sub = { t: 'sub', requestId: 's1-sub-1', instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '8888' }] };
     ws.send(JSON.stringify(sub) + '\n');
@@ -228,6 +235,8 @@ describe('HubServer', () => {
     const tick = received.find((m) => m.t === 'tick' && m.proto === 2);
     expect(tick.sequence).toBeGreaterThan(0);
     expect(tick.sessionId).toBe(welcome.sessionId);
+    (hub as any).sendHealth(serverClient);
+    await waitFor(() => received.filter((m) => m.t === 'health').at(-1)?.lastRelevantTickAt > 0);
 
     ws.send(JSON.stringify({ t: 'unsub', requestId: 's1-unsub-1', instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '8888' }] }) + '\n');
     await waitFor(() => received.some((m) => m.t === 'unsubAck' && m.requestId === 's1-unsub-1'));
@@ -239,6 +248,36 @@ describe('HubServer', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(received.filter((m) => m.t === 'tick')).toHaveLength(tickCountBeforeUnsub);
 
+    ws.close();
+    await hub.close();
+  });
+
+  it('bounds each connection request-response cache', async () => {
+    const hub = new HubServer({ port: 0, host: '127.0.0.1', feed: new MockFeed(), maxResponseCacheEntries: 2 });
+    await hub.start();
+    const port = ((hub as any).wss.address() as { port: number }).port;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const received: any[] = [];
+    ws.on('message', (data) => data.toString().split('\n').filter(Boolean).forEach((line) => received.push(JSON.parse(line))));
+    await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const started = Date.now();
+      while (!predicate()) {
+        if (Date.now() - started > 2_000) throw new Error('timed out waiting for hub frame');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    ws.send(JSON.stringify({ t: 'hello', proto: 2, clientId: 'bounded', instanceId: 'bounded-1' }) + '\n');
+    await waitFor(() => received.some((m) => m.t === 'welcome'));
+    for (const id of ['one', 'two', 'three']) {
+      ws.send(JSON.stringify({ t: 'sub', requestId: id, instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: id }] }) + '\n');
+      await waitFor(() => received.some((m) => m.t === 'subAck' && m.requestId === id));
+    }
+    const client = Array.from((hub as any).clients)[0] as any;
+    expect(client.responseByRequestId.size).toBe(2);
+    expect(client.responseByRequestId.has('one')).toBe(false);
+    expect(client.responseByRequestId.has('two')).toBe(true);
+    expect(client.responseByRequestId.has('three')).toBe(true);
     ws.close();
     await hub.close();
   });

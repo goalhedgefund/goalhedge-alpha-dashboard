@@ -249,4 +249,29 @@ describe('HubFeed', () => {
     await feed.close();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
+
+  it('surfaces a rejected v2 subscription as stale health instead of silently continuing', async () => {
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', resolve));
+    const port = (wss.address() as any).port;
+    wss.on('connection', (socket) => socket.on('message', (data) => {
+      for (const line of data.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.t === 'hello') socket.send(JSON.stringify({ t: 'welcome', proto: 2, sessionId: 'V2-SESSION', connectionId: 'conn-1', providerEpoch: 1, universeVersion: 1 }) + '\n');
+        if (msg.t === 'sub') socket.send(JSON.stringify({ t: 'error', proto: 2, code: 'INVALID_FRAME', requestId: msg.requestId, message: 'rejected for test' }) + '\n');
+      }
+    }));
+    const feed = new HubFeed({ url: `ws://127.0.0.1:${port}`, clientId: 's1', instanceId: 's1-sub-error', protocolVersion: 2 });
+    await feed.connect();
+    feed.subscribe([{ exchangeSegment: 'NSE_FNO', brokerToken: '42', instrumentId: makeInstrumentId('NSE', '42') }]);
+    const started = Date.now();
+    while (feed.health().status !== 'STALE') {
+      if (Date.now() - started > 2_000) throw new Error('subscription error was not surfaced in health');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(feed.health().detail).toMatch(/rejected subscription.*INVALID_FRAME/);
+    await feed.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
 });
