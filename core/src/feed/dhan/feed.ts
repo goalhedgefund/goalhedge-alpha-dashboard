@@ -28,7 +28,10 @@ export function dhanPacketToTick(
   tokenToInstrument: ReadonlyMap<string, InstrumentId>,
 ): Tick | null {
   if (p.code !== 1 && p.code !== 2 && p.code !== 4 && p.code !== 8) return null;
-  const instrId = tokenToInstrument.get(p.securityId);
+  // Dhan binary packets include exchangeSegment, while security IDs need not
+  // be globally unique across segments.  Never collapse this lookup to a
+  // bare token or one segment can overwrite another.
+  const instrId = tokenToInstrument.get(instrumentKey(p.exchangeSegment, p.securityId));
   if (instrId === undefined) return null;
 
   const typed = p as DhanIndexPacket | DhanLtpPacket | DhanQuotePacket | DhanFullPacket;
@@ -38,6 +41,7 @@ export function dhanPacketToTick(
   if (typed.code === 1 || typed.code === 2) {
     return {
       instrumentId: instrId,
+      exchangeSegment: p.exchangeSegment,
       ts,
       recvTs,
       ltpPaise,
@@ -57,6 +61,7 @@ export function dhanPacketToTick(
 
   return {
     instrumentId: instrId,
+    exchangeSegment: p.exchangeSegment,
     ts,
     recvTs,
     ltpPaise,
@@ -194,7 +199,7 @@ export class DhanFeed implements IFeedAdapter {
 
   subscribe(requests: SubscribeRequest[]): void {
     for (const r of requests) {
-      this.tokenToInstrument.set(r.brokerToken, r.instrumentId);
+      this.tokenToInstrument.set(instrumentKey(r.exchangeSegment, r.brokerToken), r.instrumentId);
     }
     // Accumulate instead of replacing: a reconnect re-flushes pending
     // subscriptions, so earlier subscribe() batches must survive here.
@@ -305,4 +310,8 @@ export class DhanFeed implements IFeedAdapter {
 
 function subscriptionKey(r: SubscribeRequest): string {
   return `${r.requestCode ?? 'default'}:${r.exchangeSegment}:${r.brokerToken}`;
+}
+
+function instrumentKey(exchangeSegment: string, brokerToken: string): string {
+  return `${exchangeSegment}:${brokerToken}`;
 }

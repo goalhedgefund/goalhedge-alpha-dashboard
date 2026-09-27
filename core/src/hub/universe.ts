@@ -216,10 +216,14 @@ export class HubUniverse {
     })).removed;
   }
 
-  connectionOwnsInstrument(connectionId: string, instrumentId: InstrumentId): boolean {
+  connectionOwnsInstrument(connectionId: string, instrumentId: InstrumentId, exchangeSegment?: string): boolean {
     const keys = this.instrumentToKeys.get(instrumentId);
     const owned = this.ownedKeysByConnection.get(connectionId);
-    return keys !== undefined && owned !== undefined && Array.from(keys).some((key) => owned.has(key));
+    if (keys === undefined || owned === undefined) return false;
+    const relevantKeys = exchangeSegment === undefined
+      ? keys
+      : new Set([subscriptionKey(exchangeSegment, instrumentId.slice(instrumentId.lastIndexOf(':') + 1))]);
+    return Array.from(relevantKeys).some((key) => keys.has(key) && owned.has(key));
   }
 
   activeReferenceCount(exchangeSegment: string, brokerToken: string): number {

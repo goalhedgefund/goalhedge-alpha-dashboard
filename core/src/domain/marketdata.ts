@@ -7,6 +7,8 @@ import type { OptionRight } from './instrument.js';
  */
 export interface Tick {
   instrumentId: InstrumentId;
+  /** Broker exchange segment when supplied by the upstream packet. */
+  exchangeSegment?: string;
   /** Exchange/feed timestamp, epoch-ms. */
   ts: number;
   /** Our receive timestamp, epoch-ms (latency hop t_recv). */

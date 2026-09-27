@@ -54,7 +54,7 @@ describe('code 1 - Index packet', () => {
     }
 
     const spotId = makeInstrumentId('NSE', 'NIFTY_SPOT');
-    const tick = dhanPacketToTick(p!, 1_782_001_000_000, new Map([['13', spotId]]));
+    const tick = dhanPacketToTick(p!, 1_782_001_000_000, new Map([['IDX_I:13', spotId]]));
     expect(tick).not.toBeNull();
     expect(tick!.instrumentId).toBe(spotId);
     expect(tick!.ltpPaise).toBe(2_450_125);
@@ -70,7 +70,7 @@ describe('code 1 - Index packet', () => {
 
     const [p] = decodeDhanBuffer(buf);
     const spotId = makeInstrumentId('NSE', 'NIFTY_SPOT');
-    const tick = dhanPacketToTick(p!, 1_783_317_058_000, new Map([['13', spotId]]));
+    const tick = dhanPacketToTick(p!, 1_783_317_058_000, new Map([['IDX_I:13', spotId]]));
 
     expect(tick).not.toBeNull();
     expect(tick!.ts).toBe(1_783_317_000_000);
@@ -84,7 +84,7 @@ describe('code 1 - Index packet', () => {
 
     const [p] = decodeDhanBuffer(buf);
     const spotId = makeInstrumentId('NSE', 'NIFTY_SPOT');
-    const tick = dhanPacketToTick(p!, 1_783_000_000_000, new Map([['13', spotId]]));
+    const tick = dhanPacketToTick(p!, 1_783_000_000_000, new Map([['IDX_I:13', spotId]]));
 
     expect(tick).not.toBeNull();
     expect(tick!.ts).toBe(1_783_000_000_000);
@@ -238,7 +238,7 @@ describe('code 8 — Full packet with depth', () => {
     const [packet] = decodeDhanBuffer(makeCode8());
     expect(packet?.code).toBe(8);
     const instrId = makeInstrumentId('NSE', '35022');
-    const tick = dhanPacketToTick(packet!, 1_782_001_001_000, new Map([['35022', instrId]]));
+    const tick = dhanPacketToTick(packet!, 1_782_001_001_000, new Map([['NSE_FNO:35022', instrId]]));
 
     expect(tick).not.toBeNull();
     expect(tick!.instrumentId).toBe(instrId);

@@ -363,7 +363,7 @@ export class HubServer {
   private fanoutTick(tick: Tick): void {
     for (const client of this.clients) {
       if (client.socket.readyState !== WsSocket.OPEN) continue;
-      if (client.protocol === HUB_PROTOCOL_V2 && !this.universe.connectionOwnsInstrument(client.connectionId, tick.instrumentId)) continue;
+      if (client.protocol === HUB_PROTOCOL_V2 && !this.universe.connectionOwnsInstrument(client.connectionId, tick.instrumentId, tick.exchangeSegment)) continue;
 
       client.lastRelevantTickAt = Date.now();
       // V2 clients see filtered streams.  Their sequence must advance only

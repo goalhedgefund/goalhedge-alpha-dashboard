@@ -81,6 +81,9 @@ describe('HubUniverse', () => {
     expect(universe.activeReferenceCount('NSE_FNO', '13')).toBe(1);
     expect(universe.connectionOwnsInstrument('idx', sharedId)).toBe(true);
     expect(universe.connectionOwnsInstrument('fno', sharedId)).toBe(true);
+    expect(universe.connectionOwnsInstrument('idx', sharedId, 'IDX_I')).toBe(true);
+    expect(universe.connectionOwnsInstrument('idx', sharedId, 'NSE_FNO')).toBe(false);
+    expect(universe.connectionOwnsInstrument('fno', sharedId, 'NSE_FNO')).toBe(true);
     expect(universe.getInstrumentId('IDX_I', '13')).toBe(sharedId);
     expect(universe.getInstrumentId('NSE_FNO', '13')).toBe(sharedId);
   });
