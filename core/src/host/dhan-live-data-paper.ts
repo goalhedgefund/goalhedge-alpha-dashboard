@@ -549,7 +549,7 @@ async function startFeedForPreflight(build: DhanLiveDataPaperBuild, timeoutMs: n
 async function main(): Promise<void> {
   const env = loadDhanLiveDataPaperEnv();
   console.log(
-    `[scalper] effective feed source: ${env.feedSource} (consumerId=${env.consumerId}, hubMode=${env.hubMode}, useSharedHub=${env.useSharedMarketHub})`,
+    `[scalper] effective feed source: ${env.feedSource} (consumerId=${env.consumerId}, hubMode=${env.hubMode}, sharedTransport=${env.useSharedHubTransport})`,
   );
   const build = buildDhanLiveDataPaper(env);
   await build.gateway.ready();

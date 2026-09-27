@@ -20,7 +20,7 @@ function tempEnv(contents: string): string {
 }
 
 describe('Dhan live-data paper env loader', () => {
-  it('reads the Dhan env file and applies safe runner defaults (USE_SHARED_MARKET_HUB=false -> feedSource=dhan)', () => {
+  it('reads the Dhan env file and preserves the legacy hub baseline by default', () => {
     const path = tempEnv(`
 DHAN_CLIENT_ID=client-1
 DHAN_ACCESS_TOKEN=token-1
@@ -50,6 +50,7 @@ DHAN_SCRIP_MASTER_PATH=data/dhan/api-scrip-master.csv
     expect(env.useSharedMarketHub).toBe(false);
     expect(env.hubMode).toBe('off');
     expect(env.hubConsumers).toEqual([]);
+    expect(env.useSharedHubTransport).toBe(false);
     expect(env.hubWsUrl).toBe('ws://127.0.0.1:8795');
   });
 
@@ -157,18 +158,18 @@ DHAN_ACCESS_TOKEN=token-1
       expect(() => parseSharedMarketHubMode('   ', true)).toThrow(/SHARED_MARKET_HUB_MODE is required/);
     });
 
-    it('accepts valid modes (off, legacy, shadow, consume, direct) case-insensitively with whitespace', () => {
+    it('accepts valid modes (off, legacy, shadow, consume) case-insensitively with whitespace', () => {
       expect(parseSharedMarketHubMode('off', true)).toBe('off');
       expect(parseSharedMarketHubMode('legacy', true)).toBe('off');
       expect(parseSharedMarketHubMode('shadow', true)).toBe('shadow');
       expect(parseSharedMarketHubMode('consume', true)).toBe('consume');
-      expect(parseSharedMarketHubMode('direct', true)).toBe('direct');
       expect(parseSharedMarketHubMode(' SHADOW ', true)).toBe('shadow');
       expect(parseSharedMarketHubMode('Consume', true)).toBe('consume');
     });
 
     it('rejects invalid modes', () => {
       expect(() => parseSharedMarketHubMode('live', true)).toThrow(/Invalid SHARED_MARKET_HUB_MODE/);
+      expect(() => parseSharedMarketHubMode('direct', true)).toThrow(/Invalid SHARED_MARKET_HUB_MODE/);
       expect(() => parseSharedMarketHubMode('standalone', true)).toThrow(/Invalid SHARED_MARKET_HUB_MODE/);
     });
   });
@@ -231,26 +232,16 @@ DHAN_ACCESS_TOKEN=token-1
       expect(envDhan.feedSource).toBe('dhan');
     });
 
-    it('defaults to dhan in explicit direct mode and rejects FEED_SOURCE=hub', () => {
+    it('keeps explicit direct Dhan as a manual feed override without changing hub mode', () => {
       const path = tempEnv(``);
       const envDirect = loadDhanLiveDataPaperEnv({
         ...baseEnv,
         DHAN_ENV_PATH: path,
-        USE_SHARED_MARKET_HUB: 'true',
-        SHARED_MARKET_HUB_MODE: 'direct',
+        FEED_SOURCE: 'dhan',
       });
       expect(envDirect.feedSource).toBe('dhan');
-      expect(envDirect.hubMode).toBe('direct');
-
-      expect(() =>
-        loadDhanLiveDataPaperEnv({
-          ...baseEnv,
-          DHAN_ENV_PATH: path,
-          USE_SHARED_MARKET_HUB: 'true',
-          SHARED_MARKET_HUB_MODE: 'direct',
-          FEED_SOURCE: 'hub',
-        }),
-      ).toThrow(/FEED_SOURCE="hub" cannot be used when SHARED_MARKET_HUB_MODE="direct"/);
+      expect(envDirect.hubMode).toBe('off');
+      expect(envDirect.useSharedHubTransport).toBe(false);
     });
 
     it('keeps strategies on hub by default in shadow mode', () => {
@@ -263,9 +254,11 @@ DHAN_ACCESS_TOKEN=token-1
       });
       expect(env.feedSource).toBe('hub');
       expect(env.hubMode).toBe('shadow');
+      expect(env.hubConsumers).toEqual([]);
+      expect(env.useSharedHubTransport).toBe(false);
     });
 
-    it('in consume mode: selects hub for allow-listed consumers', () => {
+    it('uses the shared transport only for allow-listed consume-mode consumers', () => {
       const path = tempEnv(``);
       const envS1 = loadDhanLiveDataPaperEnv({
         ...baseEnv,
@@ -277,6 +270,31 @@ DHAN_ACCESS_TOKEN=token-1
       });
       expect(envS1.feedSource).toBe('hub');
       expect(envS1.consumerId).toBe('s1');
+      expect(envS1.useSharedHubTransport).toBe(true);
+
+      const envS2 = loadDhanLiveDataPaperEnv({
+        ...baseEnv,
+        DHAN_ENV_PATH: path,
+        USE_SHARED_MARKET_HUB: 'true',
+        SHARED_MARKET_HUB_MODE: 'consume',
+        SHARED_MARKET_HUB_CONSUMERS: 's1',
+        DHAN_STRATEGY_ID: 's2-vwap-fade',
+      });
+      expect(envS2.feedSource).toBe('hub');
+      expect(envS2.consumerId).toBe('s2');
+      expect(envS2.useSharedHubTransport).toBe(false);
+
+      const explicitDhan = loadDhanLiveDataPaperEnv({
+        ...baseEnv,
+        DHAN_ENV_PATH: path,
+        USE_SHARED_MARKET_HUB: 'true',
+        SHARED_MARKET_HUB_MODE: 'consume',
+        SHARED_MARKET_HUB_CONSUMERS: 's1',
+        DHAN_STRATEGY_ID: 's1-momentum-burst',
+        FEED_SOURCE: 'dhan',
+      });
+      expect(explicitDhan.feedSource).toBe('dhan');
+      expect(explicitDhan.useSharedHubTransport).toBe(false);
     });
 
     it('allows explicit replay regardless of hub mode', () => {
@@ -287,6 +305,22 @@ DHAN_ACCESS_TOKEN=token-1
         FEED_SOURCE: 'replay',
       });
       expect(envReplay.feedSource).toBe('replay');
+    });
+
+    it('canonicalizes localhost to the IPv4 hub listener and rejects unsafe URLs', () => {
+      const path = tempEnv(``);
+      const env = loadDhanLiveDataPaperEnv({
+        ...baseEnv,
+        DHAN_ENV_PATH: path,
+        SHARED_MARKET_HUB_URL: 'ws://localhost:8796',
+      });
+      expect(env.hubWsUrl).toBe('ws://127.0.0.1:8796');
+
+      expect(() => loadDhanLiveDataPaperEnv({
+        ...baseEnv,
+        DHAN_ENV_PATH: path,
+        SHARED_MARKET_HUB_URL: 'http://127.0.0.1:8795',
+      })).toThrow(/must use ws:\/\//);
     });
   });
 });

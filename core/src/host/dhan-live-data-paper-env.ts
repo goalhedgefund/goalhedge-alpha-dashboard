@@ -5,7 +5,7 @@ export const DHAN_DEFAULT_WS_URL = 'wss://api-feed.dhan.co';
 export const DHAN_DEFAULT_HUB_WS_URL = 'ws://127.0.0.1:8795';
 
 export type FeedSource = 'hub' | 'dhan' | 'replay';
-export type SharedMarketHubMode = 'off' | 'shadow' | 'consume' | 'direct';
+export type SharedMarketHubMode = 'off' | 'shadow' | 'consume';
 
 export const VALID_HUB_CONSUMER_IDS = [
   's1',
@@ -56,6 +56,12 @@ export interface DhanLiveDataPaperEnv {
   useSharedMarketHub: boolean;
   hubMode: SharedMarketHubMode;
   hubConsumers: SharedMarketHubConsumerId[];
+  /**
+   * True only for a deliberately allow-listed consumer in consume mode.
+   * Phase 2 uses this to select the v2/shared-routing client. Every other
+   * mode and consumer continues on the production legacy hub protocol.
+   */
+  useSharedHubTransport: boolean;
   initialSpotPaise?: number;
 }
 
@@ -85,12 +91,12 @@ export function parseUseSharedMarketHub(raw: string | undefined): boolean {
 export function parseSharedMarketHubMode(raw: string | undefined, enabled: boolean): SharedMarketHubMode {
   if (!enabled) return 'off';
   if (raw === undefined || raw.trim() === '') {
-    throw new Error('SHARED_MARKET_HUB_MODE is required when USE_SHARED_MARKET_HUB is true. Must be "off", "shadow", "consume", or "direct".');
+    throw new Error('SHARED_MARKET_HUB_MODE is required when USE_SHARED_MARKET_HUB is true. Must be "off", "shadow", or "consume".');
   }
   const val = raw.trim().toLowerCase();
   if (val === 'off' || val === 'legacy') return 'off';
-  if (val === 'shadow' || val === 'consume' || val === 'direct') return val;
-  throw new Error(`Invalid SHARED_MARKET_HUB_MODE "${raw}". Must be one of: off, shadow, consume, direct.`);
+  if (val === 'shadow' || val === 'consume') return val;
+  throw new Error(`Invalid SHARED_MARKET_HUB_MODE "${raw}". Must be one of: off, shadow, consume.`);
 }
 
 export function parseHubConsumers(raw: string | undefined): SharedMarketHubConsumerId[] {
@@ -152,7 +158,7 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
 
   const useSharedMarketHub = parseUseSharedMarketHub(vars.USE_SHARED_MARKET_HUB);
   const hubMode = parseSharedMarketHubMode(vars.SHARED_MARKET_HUB_MODE, useSharedMarketHub);
-  const hubConsumers = parseHubConsumers(vars.SHARED_MARKET_HUB_CONSUMERS);
+  const hubConsumers = hubMode === 'consume' ? parseHubConsumers(vars.SHARED_MARKET_HUB_CONSUMERS) : [];
 
   const rawFeedSource = (vars.FEED_SOURCE ?? vars.DHAN_FEED_SOURCE)?.trim().toLowerCase();
   let feedSource: FeedSource;
@@ -164,30 +170,30 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     if (rawFeedSource === 'replay') {
       feedSource = 'replay';
     } else if (rawFeedSource === 'hub') {
-      if (hubMode === 'direct') {
-        throw new Error('FEED_SOURCE="hub" cannot be used when SHARED_MARKET_HUB_MODE="direct"');
-      }
       feedSource = 'hub';
     } else {
       feedSource = 'dhan';
     }
   } else {
     // When FEED_SOURCE is absent:
-    // In legacy/off mode (the default when USE_SHARED_MARKET_HUB=false or omitted):
-    // Preserves the live baseline where S1 and ALL_OP consume the hub on port 8795.
-    // In explicit direct mode: strategies run direct.
-    if (hubMode === 'direct') {
-      feedSource = 'dhan';
-    } else {
-      feedSource = 'hub';
-    }
+    // The production baseline remains the existing hub. The global feature flag
+    // controls only the new v2/shared-routing transport selected in Phase 2;
+    // it must not silently turn legacy clients into new direct Dhan sockets.
+    feedSource = 'hub';
   }
 
-  const hubWsUrl = getString(
+  // A consumer may opt into v2 only while it is actually using the hub
+  // provider family. Explicit Dhan/replay overrides always take precedence.
+  const useSharedHubTransport = feedSource === 'hub'
+    && useSharedMarketHub
+    && hubMode === 'consume'
+    && hubConsumers.includes(consumerId);
+
+  const hubWsUrl = normalizeHubWsUrl(getString(
     vars,
     'SHARED_MARKET_HUB_URL',
     getString(vars, 'DHAN_HUB_WS_URL', getString(vars, 'HUB_WS_URL', DHAN_DEFAULT_HUB_WS_URL)),
-  );
+  ));
 
   return {
     envPath,
@@ -224,6 +230,7 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     useSharedMarketHub,
     hubMode,
     hubConsumers,
+    useSharedHubTransport,
     ...(initialSpotPaise !== undefined ? { initialSpotPaise } : {}),
   };
 }
@@ -232,6 +239,31 @@ function unquoteEnvValue(value: string): string {
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1);
   if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
   return value;
+}
+
+/** Keep consumer connection behaviour aligned with the supervisor's IPv4-only HubServer. */
+function normalizeHubWsUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch (error: any) {
+    throw new Error(`Invalid SHARED_MARKET_HUB_URL "${raw}": ${error.message}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== 'ws:') {
+    throw new Error(`SHARED_MARKET_HUB_URL must use ws://, got "${raw}"`);
+  }
+  if (host !== '127.0.0.1' && host !== 'localhost') {
+    throw new Error(`Loopback only: SHARED_MARKET_HUB_URL must be a loopback address (127.0.0.1 or localhost), got "${raw}"`);
+  }
+  if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new Error(`SHARED_MARKET_HUB_URL must be a bare loopback WebSocket URL, got "${raw}"`);
+  }
+  const port = parsed.port ? Number(parsed.port) : 8795;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`SHARED_MARKET_HUB_URL port must be between 1 and 65535, got "${parsed.port}"`);
+  }
+  return `ws://127.0.0.1:${port}`;
 }
 
 function requireString(vars: Record<string, string>, key: string, envPath: string): string {
