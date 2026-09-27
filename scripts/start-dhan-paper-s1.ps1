@@ -79,7 +79,7 @@ if ($totpMode) {
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "s1-momentum-burst"
 $env:SHARED_MARKET_HUB_CONSUMER_ID = "s1"
-$env:DHAN_GATEWAY_PORT = "8787"
+$env:DHAN_GATEWAY_PORT = "8701"
 $env:DHAN_JOURNAL_ROOT = "journals\s1-momentum-burst"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-s1-momentum-burst"
 $env:DHAN_AUTO_ARM = "true"
@@ -104,11 +104,11 @@ Write-LaunchLog "Auto-arm forced to $env:DHAN_AUTO_ARM."
 # Refuse overlapping S1 launches before touching the day's journal. The
 # gateway's EADDRINUSE failure happens too late and can otherwise leave a
 # second process holding the same journal/trade artifacts open.
-$existingGateway = @(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+$existingGateway = @(Get-NetTCPConnection -LocalPort 8701 -State Listen -ErrorAction SilentlyContinue)
 if ($existingGateway.Count -gt 0) {
   $owners = ($existingGateway | Select-Object -ExpandProperty OwningProcess -Unique) -join ","
-  Write-LaunchLog "S1 gateway port 8787 is already listening (PID $owners); refusing overlapping launch."
-  throw "S1 gateway port 8787 is already in use by PID $owners. Stop the existing S1 runner before launching another."
+  Write-LaunchLog "S1 gateway port 8701 is already listening (PID $owners); refusing overlapping launch."
+  throw "S1 gateway port 8701 is already in use by PID $owners. Stop the existing S1 runner before launching another."
 }
 
 # A paper-only runner cannot safely re-adopt a simulated position after a

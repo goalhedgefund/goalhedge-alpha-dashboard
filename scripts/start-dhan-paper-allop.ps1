@@ -72,7 +72,7 @@ if ($totpMode) {
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "allop-atm-mm"
 $env:SHARED_MARKET_HUB_CONSUMER_ID = "all-op"
-$env:DHAN_GATEWAY_PORT = "8789"
+$env:DHAN_GATEWAY_PORT = "8703"
 $env:DHAN_JOURNAL_ROOT = "journals\allop-atm-mm"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-allop-atm-mm"
 $env:DHAN_AUTO_ARM = "true"

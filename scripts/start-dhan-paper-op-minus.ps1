@@ -50,7 +50,7 @@ if ($totpMode) {
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "op-minus-atm-short"
 $env:SHARED_MARKET_HUB_CONSUMER_ID = "op-minus"
-$env:DHAN_GATEWAY_PORT = "8790"
+$env:DHAN_GATEWAY_PORT = "8704"
 $env:DHAN_JOURNAL_ROOT = "journals\op-minus-atm-short"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-op-minus-atm-short"
 $env:DHAN_AUTO_ARM = "true"

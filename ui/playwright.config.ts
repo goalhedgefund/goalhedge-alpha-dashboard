@@ -14,7 +14,7 @@ export default defineConfig({
       // Demo gateway: full M7 pipeline looping a scripted trade every ~15s.
       command: 'npm run build -w @scalper/core && node core/dist/demo/demo-gateway.js',
       cwd: '..',
-      port: 8787,
+      port: 8701,
       reuseExistingServer: true,
       timeout: 180_000,
     },

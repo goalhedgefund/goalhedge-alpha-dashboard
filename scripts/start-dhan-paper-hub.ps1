@@ -71,7 +71,7 @@ if ($totpMode) {
 }
 
 $env:DHAN_ENV_PATH = $EnvPath
-$targetPort = if ($env:HUB_PORT) { [int]$env:HUB_PORT } else { 8795 }
+$targetPort = if ($env:HUB_PORT) { [int]$env:HUB_PORT } else { 8700 }
 $env:HUB_PORT = [string]$targetPort
 
 # Refuse overlapping Hub launches on target port

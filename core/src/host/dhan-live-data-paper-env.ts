@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 
 export const DHAN_DEFAULT_ENV_PATH = 'D:\\Claude\\workstation\\secrets\\dhan\\.env';
 export const DHAN_DEFAULT_WS_URL = 'wss://api-feed.dhan.co';
-export const DHAN_DEFAULT_HUB_WS_URL = 'ws://127.0.0.1:8795';
+export const DHAN_DEFAULT_HUB_WS_URL = 'ws://127.0.0.1:8700';
 
 export type FeedSource = 'hub' | 'dhan' | 'replay';
 export type SharedMarketHubMode = 'off' | 'shadow' | 'consume';
@@ -208,7 +208,7 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     spotExchangeSegment: getString(vars, 'DHAN_SPOT_EXCHANGE_SEGMENT', ''),
     optionExchangeSegment: getString(vars, 'DHAN_OPTION_EXCHANGE_SEGMENT', 'NSE_FNO'),
     feedRequestCode: getInt(vars, 'DHAN_FEED_REQUEST_CODE', 21, 1),
-    gatewayPort: getInt(vars, 'DHAN_GATEWAY_PORT', 8787, 1),
+    gatewayPort: getInt(vars, 'DHAN_GATEWAY_PORT', 8701, 1),
     journalRoot: getString(vars, 'DHAN_JOURNAL_ROOT', 'journals'),
     recorderRoot: getString(vars, 'DHAN_RECORDER_ROOT', 'data/dhan/ticks'),
     chainDepth: getInt(vars, 'DHAN_CHAIN_DEPTH', 5, 0),
@@ -259,7 +259,7 @@ function normalizeHubWsUrl(raw: string): string {
   if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
     throw new Error(`SHARED_MARKET_HUB_URL must be a bare loopback WebSocket URL, got "${raw}"`);
   }
-  const port = parsed.port ? Number(parsed.port) : 8795;
+  const port = parsed.port ? Number(parsed.port) : 8700;
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`SHARED_MARKET_HUB_URL port must be between 1 and 65535, got "${parsed.port}"`);
   }

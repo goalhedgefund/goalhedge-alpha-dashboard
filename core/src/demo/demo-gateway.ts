@@ -1,7 +1,7 @@
 /**
  * Demo gateway — drives the full M7 pipeline (S1 → gate → OMS → PaperBroker
  * → StopEngine) on a looping scripted scenario and publishes everything
- * through the Gateway on port 8787 (DEMO_GATEWAY_PORT overrides; likewise
+ * through the Gateway on port 8701 (DEMO_GATEWAY_PORT overrides; likewise
  * DEMO_STRATEGY_ID), so the mission-control UI has a live trade lifecycle
  * to render (~1 completed trade every ~20s).
  *
@@ -36,7 +36,7 @@ import { AllOpAtmMm } from '../strategy/strategies/allop-atm-mm.js';
 import { S1MomentumBurst } from '../strategy/strategies/s1-momentum-burst.js';
 import type { IStrategy, StrategyView } from '../strategy/types.js';
 
-const PORT = Number(process.env.DEMO_GATEWAY_PORT ?? 8787);
+const PORT = Number(process.env.DEMO_GATEWAY_PORT ?? 8701);
 // Demo defaults to S1; DEMO_STRATEGY_ID=allop-atm-mm serves the ALL_OP desk
 // skeleton (connect-test only — the MM engine lands in CP2/CP3).
 const STRATEGY_ID = process.env.DEMO_STRATEGY_ID ?? 's1-momentum-burst';

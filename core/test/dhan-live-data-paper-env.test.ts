@@ -51,7 +51,7 @@ DHAN_SCRIP_MASTER_PATH=data/dhan/api-scrip-master.csv
     expect(env.hubMode).toBe('off');
     expect(env.hubConsumers).toEqual([]);
     expect(env.useSharedHubTransport).toBe(false);
-    expect(env.hubWsUrl).toBe('ws://127.0.0.1:8795');
+    expect(env.hubWsUrl).toBe('ws://127.0.0.1:8700');
   });
 
   it('lets process env override values from the env file', () => {

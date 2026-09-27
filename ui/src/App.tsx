@@ -14,7 +14,7 @@ import {
 } from './components/panels.js';
 
 const GATEWAY_URL =
-  (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? 'ws://127.0.0.1:8787';
+  (import.meta.env.VITE_GATEWAY_URL as string | undefined) ?? 'ws://127.0.0.1:8701';
 
 export default function App(): JSX.Element {
   const { state, status, client } = useGatewayClient(GATEWAY_URL);

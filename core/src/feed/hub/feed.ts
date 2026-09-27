@@ -5,7 +5,7 @@ import type { FeedHealth, FeedStatus, IFeedAdapter, SubscribeRequest } from '../
 import { HUB_PROTOCOL_V2 } from '../../hub/protocol-v2.js';
 
 export interface HubFeedOptions {
-  /** Hub WebSocket URL. Defaults to 'ws://127.0.0.1:8795'. */
+  /** Hub WebSocket URL. Defaults to 'ws://127.0.0.1:8700'. */
   url?: string;
   /** Desk or client identifier, e.g. 'S1', 'ALL_OP'. */
   clientId?: string;
@@ -24,7 +24,7 @@ export interface HubFeedOptions {
 /**
  * HubFeed is the 3rd IFeedAdapter implementation.
  *
- * It connects to the standalone Workstation Feed Hub over loopback WS (127.0.0.1:8795),
+ * It connects to the standalone Workstation Feed Hub over loopback WS (127.0.0.1:8700),
  * receives normalized Tick objects verbatim, tracks silence/staleness,
  * and automatically re-subscribes upon reconnect without opening Dhan sockets.
  */
@@ -62,7 +62,7 @@ export class HubFeed implements IFeedAdapter {
   private readonly pendingSubscriptionRequests = new Set<string>();
 
   constructor(opts: HubFeedOptions = {}) {
-    this.url = opts.url ?? 'ws://127.0.0.1:8795';
+    this.url = opts.url ?? 'ws://127.0.0.1:8700';
     this.clientId = opts.clientId ?? 'hub-client';
     this.protocolVersion = opts.protocolVersion ?? 1;
     this.instanceId = opts.instanceId ?? `${this.clientId}-${process.pid}-${randomUUID()}`;
