@@ -5,7 +5,7 @@ export const DHAN_DEFAULT_WS_URL = 'wss://api-feed.dhan.co';
 export const DHAN_DEFAULT_HUB_WS_URL = 'ws://127.0.0.1:8795';
 
 export type FeedSource = 'hub' | 'dhan' | 'replay';
-export type SharedMarketHubMode = 'off' | 'shadow' | 'consume';
+export type SharedMarketHubMode = 'off' | 'shadow' | 'consume' | 'direct';
 
 export const VALID_HUB_CONSUMER_IDS = [
   's1',
@@ -85,11 +85,12 @@ export function parseUseSharedMarketHub(raw: string | undefined): boolean {
 export function parseSharedMarketHubMode(raw: string | undefined, enabled: boolean): SharedMarketHubMode {
   if (!enabled) return 'off';
   if (raw === undefined || raw.trim() === '') {
-    throw new Error('SHARED_MARKET_HUB_MODE is required when USE_SHARED_MARKET_HUB is true. Must be "off", "shadow", or "consume".');
+    throw new Error('SHARED_MARKET_HUB_MODE is required when USE_SHARED_MARKET_HUB is true. Must be "off", "shadow", "consume", or "direct".');
   }
   const val = raw.trim().toLowerCase();
-  if (val === 'off' || val === 'shadow' || val === 'consume') return val;
-  throw new Error(`Invalid SHARED_MARKET_HUB_MODE "${raw}". Must be one of: off, shadow, consume.`);
+  if (val === 'off' || val === 'legacy') return 'off';
+  if (val === 'shadow' || val === 'consume' || val === 'direct') return val;
+  throw new Error(`Invalid SHARED_MARKET_HUB_MODE "${raw}". Must be one of: off, shadow, consume, direct.`);
 }
 
 export function parseHubConsumers(raw: string | undefined): SharedMarketHubConsumerId[] {
@@ -163,19 +164,8 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     if (rawFeedSource === 'replay') {
       feedSource = 'replay';
     } else if (rawFeedSource === 'hub') {
-      if (!useSharedMarketHub || hubMode === 'off') {
-        throw new Error('FEED_SOURCE="hub" cannot be used when USE_SHARED_MARKET_HUB is false/off');
-      }
-      if (hubMode === 'shadow') {
-        throw new Error(
-          'FEED_SOURCE="hub" cannot be consumed when SHARED_MARKET_HUB_MODE="shadow". Shadow mode keeps strategies on legacy feeds.',
-        );
-      }
-      // consume mode
-      if (!hubConsumers.includes(consumerId)) {
-        throw new Error(
-          `FEED_SOURCE="hub" requested, but consumer "${consumerId}" is not in SHARED_MARKET_HUB_CONSUMERS.`,
-        );
+      if (hubMode === 'direct') {
+        throw new Error('FEED_SOURCE="hub" cannot be used when SHARED_MARKET_HUB_MODE="direct"');
       }
       feedSource = 'hub';
     } else {
@@ -183,11 +173,13 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     }
   } else {
     // When FEED_SOURCE is absent:
-    // Default to 'dhan' unless USE_SHARED_MARKET_HUB=true, mode=consume, and consumer is allow-listed.
-    if (useSharedMarketHub && hubMode === 'consume' && hubConsumers.includes(consumerId)) {
-      feedSource = 'hub';
-    } else {
+    // In legacy/off mode (the default when USE_SHARED_MARKET_HUB=false or omitted):
+    // Preserves the live baseline where S1 and ALL_OP consume the hub on port 8795.
+    // In explicit direct mode: strategies run direct.
+    if (hubMode === 'direct') {
       feedSource = 'dhan';
+    } else {
+      feedSource = 'hub';
     }
   }
 

@@ -86,7 +86,7 @@ export class HubServer {
   private static readonly RATE_LIMIT_COOLDOWN_MS = 120_000;
 
   constructor(opts: HubServerOptions = {}) {
-    this.port = opts.port ?? 8795;
+    this.port = opts.port ?? (process.env.HUB_PORT ? parseInt(process.env.HUB_PORT, 10) : 8795);
     // BIND LOOPBACK EXPLICITLY - NEVER 0.0.0.0 (§4)
     this.host = opts.host ?? '127.0.0.1';
     this.sessionId = opts.sessionId ?? `HUB-${istDate()}-${Math.floor(Date.now() / 1000)}`;
@@ -450,8 +450,9 @@ async function main(): Promise<void> {
   const recorder = new Recorder({ dir: recordingsDir, compression: 'gzip' });
   console.log(`[HubServer] Recorder output directory: ${recordingsDir}`);
 
+  const hubPort = process.env.HUB_PORT ? parseInt(process.env.HUB_PORT, 10) : 8795;
   const hub = new HubServer({
-    port: 8795,
+    port: hubPort,
     host: '127.0.0.1',
     universe,
     recorder,

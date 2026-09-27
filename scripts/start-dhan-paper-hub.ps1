@@ -71,14 +71,15 @@ if ($totpMode) {
 }
 
 $env:DHAN_ENV_PATH = $EnvPath
-$env:HUB_PORT = "8795"
+$targetPort = if ($env:HUB_PORT) { [int]$env:HUB_PORT } else { 8795 }
+$env:HUB_PORT = [string]$targetPort
 
-# Refuse overlapping Hub launches on port 8795
-$existingHub = @(Get-NetTCPConnection -LocalPort 8795 -State Listen -ErrorAction SilentlyContinue)
+# Refuse overlapping Hub launches on target port
+$existingHub = @(Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue)
 if ($existingHub.Count -gt 0) {
   $owners = ($existingHub | Select-Object -ExpandProperty OwningProcess -Unique) -join ","
-  Write-LaunchLog "Feed Hub port 8795 is already listening (PID $owners); refusing overlapping launch."
-  throw "Feed Hub port 8795 is already in use by PID $owners. Stop the existing Hub runner before launching another."
+  Write-LaunchLog "Feed Hub port $targetPort is already listening (PID $owners); refusing overlapping launch."
+  throw "Feed Hub port $targetPort is already in use by PID $owners. Stop the existing Hub runner before launching another."
 }
 
 if ($SkipLaunchWindow) {
