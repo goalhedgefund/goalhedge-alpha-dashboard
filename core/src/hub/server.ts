@@ -460,8 +460,10 @@ export class HubServer {
   }
 
   private onIncomingTick(tick: Tick): void {
-    this.lastTickTs = tick.ts || Date.now();
     const now = Date.now();
+    // Report transport freshness from local receipt time. `tick.ts` is Dhan's
+    // last-traded/exchange time and may be old for illiquid option contracts.
+    this.lastTickTs = Math.min(tick.recvTs || now, now);
     this.tickRateWindow.push(now);
 
     // Write to recorder
