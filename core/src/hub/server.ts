@@ -258,6 +258,8 @@ export class HubServer {
       this.handleV2Subscribe(client, parsed.frame);
     } else if (parsed.frame.t === 'unsub') {
       this.handleV2Unsubscribe(client, parsed.frame);
+    } else if (parsed.frame.t === 'status') {
+      this.sendToClient(client, { t: 'status', proto: HUB_PROTOCOL_V2, requestId: parsed.frame.requestId, ...this.diagnostics() });
     } else {
       this.sendToClient(client, { t: 'pong', proto: HUB_PROTOCOL_V2, ...(parsed.frame.requestId ? { requestId: parsed.frame.requestId } : {}) });
     }

@@ -196,6 +196,10 @@ describe('HubServer', () => {
     expect(welcome.connectionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(welcome.providerEpoch).toBe(1);
 
+    ws.send(JSON.stringify({ t: 'status', requestId: 'status-1' }) + '\n');
+    await waitFor(() => received.some((m) => m.t === 'status' && m.requestId === 'status-1'));
+    expect(received.find((m) => m.t === 'status' && m.requestId === 'status-1')).toMatchObject({ recorder: { status: 'HEALTHY' } });
+
     // A v2 client receives only instruments it actively owns.
     mockFeed.emitTick({
       instrumentId: makeInstrumentId('NSE', 'unowned'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 1,
