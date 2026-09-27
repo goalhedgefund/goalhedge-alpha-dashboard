@@ -71,6 +71,7 @@ if ($totpMode) {
 
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "allop-atm-mm"
+$env:SHARED_MARKET_HUB_CONSUMER_ID = "all-op"
 $env:DHAN_GATEWAY_PORT = "8789"
 $env:DHAN_JOURNAL_ROOT = "journals\allop-atm-mm"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-allop-atm-mm"
@@ -79,6 +80,7 @@ $env:DHAN_AUTO_ARM = "true"
 $env:DHAN_FEED_STALE_MS = "20000"
 
 Write-LaunchLog "Strategy forced to $env:DHAN_STRATEGY_ID."
+Write-LaunchLog "Consumer ID forced to $env:SHARED_MARKET_HUB_CONSUMER_ID."
 Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."

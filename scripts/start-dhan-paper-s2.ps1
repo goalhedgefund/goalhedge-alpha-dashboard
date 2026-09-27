@@ -71,12 +71,14 @@ if ($totpMode) {
 
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "s2-vwap-fade"
+$env:SHARED_MARKET_HUB_CONSUMER_ID = "s2"
 $env:DHAN_AUTO_ARM = "true"
 $env:DHAN_GATEWAY_PORT = "8788"
 $env:DHAN_JOURNAL_ROOT = "journals\s2-vwap-fade"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-s2-vwap-fade"
 
 Write-LaunchLog "Strategy forced to $env:DHAN_STRATEGY_ID."
+Write-LaunchLog "Consumer ID forced to $env:SHARED_MARKET_HUB_CONSUMER_ID."
 Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."

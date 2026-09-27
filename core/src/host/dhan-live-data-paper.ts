@@ -212,7 +212,7 @@ function buildFeed(env: DhanLiveDataPaperEnv, date: string, root: string): IFeed
     case 'hub':
       return new HubFeed({
         url: env.hubWsUrl,
-        clientId: env.strategyId,
+        clientId: env.consumerId,
         staleTimeoutMs: env.feedStaleMs,
       });
     case 'dhan':
@@ -548,6 +548,9 @@ async function startFeedForPreflight(build: DhanLiveDataPaperBuild, timeoutMs: n
 
 async function main(): Promise<void> {
   const env = loadDhanLiveDataPaperEnv();
+  console.log(
+    `[scalper] effective feed source: ${env.feedSource} (consumerId=${env.consumerId}, hubMode=${env.hubMode}, useSharedHub=${env.useSharedMarketHub})`,
+  );
   const build = buildDhanLiveDataPaper(env);
   await build.gateway.ready();
   console.log(`[scalper] gateway listening on ws://127.0.0.1:${build.gateway.port()}`);

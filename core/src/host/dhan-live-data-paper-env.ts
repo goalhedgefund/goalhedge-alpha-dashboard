@@ -5,6 +5,21 @@ export const DHAN_DEFAULT_WS_URL = 'wss://api-feed.dhan.co';
 export const DHAN_DEFAULT_HUB_WS_URL = 'ws://127.0.0.1:8795';
 
 export type FeedSource = 'hub' | 'dhan' | 'replay';
+export type SharedMarketHubMode = 'off' | 'shadow' | 'consume';
+
+export const VALID_HUB_CONSUMER_IDS = [
+  's1',
+  's2',
+  'all-op',
+  'op-minus',
+  'ex-s1',
+  'arb',
+  'dh',
+  'vol-short',
+  'cash-scalp',
+] as const;
+
+export type SharedMarketHubConsumerId = (typeof VALID_HUB_CONSUMER_IDS)[number];
 
 export interface DhanLiveDataPaperEnv {
   envPath: string;
@@ -14,6 +29,7 @@ export interface DhanLiveDataPaperEnv {
   scripMasterPath: string;
   underlyingSymbol: string;
   strategyId: string;
+  consumerId: SharedMarketHubConsumerId;
   spotSecurityId: string;
   spotExchangeSegment: string;
   optionExchangeSegment: string;
@@ -37,6 +53,9 @@ export interface DhanLiveDataPaperEnv {
   paperFillLatencyMs: number;
   feedSource: FeedSource;
   hubWsUrl: string;
+  useSharedMarketHub: boolean;
+  hubMode: SharedMarketHubMode;
+  hubConsumers: SharedMarketHubConsumerId[];
   initialSpotPaise?: number;
 }
 
@@ -55,6 +74,65 @@ export function parseDhanEnvText(text: string): Record<string, string> {
   return parsed;
 }
 
+export function parseUseSharedMarketHub(raw: string | undefined): boolean {
+  if (raw === undefined || raw.trim() === '') return false;
+  const val = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(val)) return true;
+  if (['0', 'false', 'no', 'off'].includes(val)) return false;
+  throw new Error(`USE_SHARED_MARKET_HUB must be a boolean (true/false, 1/0, yes/no, on/off), got "${raw}"`);
+}
+
+export function parseSharedMarketHubMode(raw: string | undefined, enabled: boolean): SharedMarketHubMode {
+  if (!enabled) return 'off';
+  if (raw === undefined || raw.trim() === '') {
+    throw new Error('SHARED_MARKET_HUB_MODE is required when USE_SHARED_MARKET_HUB is true. Must be "off", "shadow", or "consume".');
+  }
+  const val = raw.trim().toLowerCase();
+  if (val === 'off' || val === 'shadow' || val === 'consume') return val;
+  throw new Error(`Invalid SHARED_MARKET_HUB_MODE "${raw}". Must be one of: off, shadow, consume.`);
+}
+
+export function parseHubConsumers(raw: string | undefined): SharedMarketHubConsumerId[] {
+  if (raw === undefined || raw.trim() === '') return [];
+  const parts = raw.split(',').map((p) => p.trim().toLowerCase()).filter((p) => p !== '');
+  const seen = new Set<SharedMarketHubConsumerId>();
+  for (const part of parts) {
+    if (!(VALID_HUB_CONSUMER_IDS as readonly string[]).includes(part)) {
+      throw new Error(`Unknown consumer ID "${part}". Valid consumer IDs are: ${VALID_HUB_CONSUMER_IDS.join(', ')}`);
+    }
+    seen.add(part as SharedMarketHubConsumerId);
+  }
+  return Array.from(seen);
+}
+
+export function strategyIdToConsumerId(strategyId: string): SharedMarketHubConsumerId {
+  switch (strategyId) {
+    case 's1-momentum-burst':
+      return 's1';
+    case 's2-vwap-fade':
+      return 's2';
+    case 'allop-atm-mm':
+      return 'all-op';
+    case 'op-minus-atm-short':
+      return 'op-minus';
+    default:
+      if ((VALID_HUB_CONSUMER_IDS as readonly string[]).includes(strategyId)) {
+        return strategyId as SharedMarketHubConsumerId;
+      }
+      throw new Error(
+        `Cannot map strategyId "${strategyId}" to a valid consumer ID. Valid IDs are: ${VALID_HUB_CONSUMER_IDS.join(', ')}`,
+      );
+  }
+}
+
+function parseSingleConsumerId(raw: string): SharedMarketHubConsumerId {
+  const normalized = raw.trim().toLowerCase();
+  if (!(VALID_HUB_CONSUMER_IDS as readonly string[]).includes(normalized)) {
+    throw new Error(`Unknown consumer ID "${raw}". Valid consumer IDs are: ${VALID_HUB_CONSUMER_IDS.join(', ')}`);
+  }
+  return normalized as SharedMarketHubConsumerId;
+}
+
 export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env): DhanLiveDataPaperEnv {
   const envPath = source.DHAN_ENV_PATH?.trim() || DHAN_DEFAULT_ENV_PATH;
   const fileVars = existsSync(envPath) ? parseDhanEnvText(readFileSync(envPath, 'utf8')) : {};
@@ -64,12 +142,60 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
   }
 
   const initialSpotPaise = parseInitialSpotPaise(vars);
-  const rawFeedSource = (vars.FEED_SOURCE ?? vars.DHAN_FEED_SOURCE ?? 'hub').trim().toLowerCase();
-  if (rawFeedSource !== 'hub' && rawFeedSource !== 'dhan' && rawFeedSource !== 'replay') {
-    throw new Error(`Invalid FEED_SOURCE "${rawFeedSource}". Must be one of: hub, dhan, replay.`);
+  const strategyId = getStrategyId(vars, 'DHAN_STRATEGY_ID', 's1-momentum-burst');
+
+  const rawConsumerId = vars.SHARED_MARKET_HUB_CONSUMER_ID ?? vars.CONSUMER_ID;
+  const consumerId: SharedMarketHubConsumerId = rawConsumerId
+    ? parseSingleConsumerId(rawConsumerId)
+    : strategyIdToConsumerId(strategyId);
+
+  const useSharedMarketHub = parseUseSharedMarketHub(vars.USE_SHARED_MARKET_HUB);
+  const hubMode = parseSharedMarketHubMode(vars.SHARED_MARKET_HUB_MODE, useSharedMarketHub);
+  const hubConsumers = parseHubConsumers(vars.SHARED_MARKET_HUB_CONSUMERS);
+
+  const rawFeedSource = (vars.FEED_SOURCE ?? vars.DHAN_FEED_SOURCE)?.trim().toLowerCase();
+  let feedSource: FeedSource;
+
+  if (rawFeedSource !== undefined && rawFeedSource !== '') {
+    if (rawFeedSource !== 'hub' && rawFeedSource !== 'dhan' && rawFeedSource !== 'replay') {
+      throw new Error(`Invalid FEED_SOURCE "${rawFeedSource}". Must be one of: hub, dhan, replay.`);
+    }
+    if (rawFeedSource === 'replay') {
+      feedSource = 'replay';
+    } else if (rawFeedSource === 'hub') {
+      if (!useSharedMarketHub || hubMode === 'off') {
+        throw new Error('FEED_SOURCE="hub" cannot be used when USE_SHARED_MARKET_HUB is false/off');
+      }
+      if (hubMode === 'shadow') {
+        throw new Error(
+          'FEED_SOURCE="hub" cannot be consumed when SHARED_MARKET_HUB_MODE="shadow". Shadow mode keeps strategies on legacy feeds.',
+        );
+      }
+      // consume mode
+      if (!hubConsumers.includes(consumerId)) {
+        throw new Error(
+          `FEED_SOURCE="hub" requested, but consumer "${consumerId}" is not in SHARED_MARKET_HUB_CONSUMERS.`,
+        );
+      }
+      feedSource = 'hub';
+    } else {
+      feedSource = 'dhan';
+    }
+  } else {
+    // When FEED_SOURCE is absent:
+    // Default to 'dhan' unless USE_SHARED_MARKET_HUB=true, mode=consume, and consumer is allow-listed.
+    if (useSharedMarketHub && hubMode === 'consume' && hubConsumers.includes(consumerId)) {
+      feedSource = 'hub';
+    } else {
+      feedSource = 'dhan';
+    }
   }
-  const feedSource: FeedSource = rawFeedSource;
-  const hubWsUrl = getString(vars, 'DHAN_HUB_WS_URL', getString(vars, 'HUB_WS_URL', DHAN_DEFAULT_HUB_WS_URL));
+
+  const hubWsUrl = getString(
+    vars,
+    'SHARED_MARKET_HUB_URL',
+    getString(vars, 'DHAN_HUB_WS_URL', getString(vars, 'HUB_WS_URL', DHAN_DEFAULT_HUB_WS_URL)),
+  );
 
   return {
     envPath,
@@ -78,7 +204,8 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     accessToken: requireString(vars, 'DHAN_ACCESS_TOKEN', envPath),
     scripMasterPath: requireString(vars, 'DHAN_SCRIP_MASTER_PATH', envPath),
     underlyingSymbol: getString(vars, 'DHAN_UNDERLYING_SYMBOL', 'NIFTY').toUpperCase(),
-    strategyId: getStrategyId(vars, 'DHAN_STRATEGY_ID', 's1-momentum-burst'),
+    strategyId,
+    consumerId,
     spotSecurityId: getString(vars, 'DHAN_SPOT_SECURITY_ID', ''),
     spotExchangeSegment: getString(vars, 'DHAN_SPOT_EXCHANGE_SEGMENT', ''),
     optionExchangeSegment: getString(vars, 'DHAN_OPTION_EXCHANGE_SEGMENT', 'NSE_FNO'),
@@ -102,6 +229,9 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     paperFillLatencyMs: getInt(vars, 'DHAN_PAPER_FILL_LATENCY_MS', 120, 0),
     feedSource,
     hubWsUrl,
+    useSharedMarketHub,
+    hubMode,
+    hubConsumers,
     ...(initialSpotPaise !== undefined ? { initialSpotPaise } : {}),
   };
 }

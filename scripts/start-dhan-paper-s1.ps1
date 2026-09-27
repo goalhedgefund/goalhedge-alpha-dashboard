@@ -78,6 +78,7 @@ if ($totpMode) {
 
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "s1-momentum-burst"
+$env:SHARED_MARKET_HUB_CONSUMER_ID = "s1"
 $env:DHAN_GATEWAY_PORT = "8787"
 $env:DHAN_JOURNAL_ROOT = "journals\s1-momentum-burst"
 $env:DHAN_RECORDER_ROOT = "data\dhan\ticks-s1-momentum-burst"
@@ -94,6 +95,7 @@ try {
 }
 
 Write-LaunchLog "Strategy forced to $env:DHAN_STRATEGY_ID."
+Write-LaunchLog "Consumer ID forced to $env:SHARED_MARKET_HUB_CONSUMER_ID."
 Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."
