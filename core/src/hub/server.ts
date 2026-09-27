@@ -409,7 +409,11 @@ export class HubServer {
       const frame = client.queue.shift();
       if (frame !== undefined) {
         client.queueBytes -= Buffer.byteLength(frame);
-        client.socket.send(frame);
+        try {
+          client.socket.send(frame);
+        } catch {
+          break;
+        }
       }
     }
   }
