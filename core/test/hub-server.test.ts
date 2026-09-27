@@ -136,7 +136,9 @@ describe('HubServer', () => {
     // 4. Emit tick from feed and verify client gets tick verbatim
     const sampleTick: Tick = {
       instrumentId: makeInstrumentId('NSE', '8888'),
-      ts: Date.now(),
+      // An illiquid contract can retain an old exchange timestamp while its
+      // packet is freshly delivered. That must not make HUB health stale.
+      ts: Date.now() - 60_000,
       recvTs: Date.now(),
       ltpPaise: 2505000,
       qty: 50,
@@ -161,6 +163,7 @@ describe('HubServer', () => {
     const tickMsg = received.find((m) => m.t === 'tick');
     expect(tickMsg.d.instrumentId).toBe(sampleTick.instrumentId);
     expect(tickMsg.d.ltpPaise).toBe(2505000);
+    expect(hub.currentHealthStatus()).toBe('CONNECTED');
 
     ws.close();
     await hub.close();

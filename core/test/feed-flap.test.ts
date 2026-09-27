@@ -94,6 +94,7 @@ describe('DhanFeed feed-flap behavior (03-TESTING-PLAN §4)', () => {
       InstrumentList: [{ SecurityId: '101' }],
     });
     first.emit('message', { data: packet('101', 111.25) });
+    expect(feed.health().status).toBe('CONNECTED');
 
     feed.subscribe([
       { exchangeSegment: 'NSE_FNO', brokerToken: '101', instrumentId: token1 },

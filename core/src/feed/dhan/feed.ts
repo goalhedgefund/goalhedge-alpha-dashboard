@@ -160,7 +160,10 @@ export class DhanFeed implements IFeedAdapter {
         for (const p of packets) {
           const tick = this.packetToTick(p, recvTs);
           if (tick !== null) {
-            this.lastTickTs = tick.ts;
+            // Feed health is about transport freshness, not the instrument's
+            // last-traded time. Illiquid contracts can legitimately carry an
+            // old exchange timestamp while packets are still arriving live.
+            this.lastTickTs = recvTs;
             this.handler?.(tick);
           }
         }
