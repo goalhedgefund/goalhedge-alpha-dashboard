@@ -238,4 +238,19 @@ describe('HubServer', () => {
     ws.close();
     await hub.close();
   });
+
+  it('latches recorder failures without crashing the provider tick path', async () => {
+    const mockFeed = new MockFeed();
+    const hub = new HubServer({
+      port: 0, host: '127.0.0.1', feed: mockFeed,
+      recorder: { record: () => { throw new Error('disk full'); }, close: async () => undefined } as any,
+    });
+    await hub.start();
+    mockFeed.emitTick({
+      instrumentId: makeInstrumentId('NSE', 'recorder-test'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 1,
+      qty: 1, volume: 1, bidPaise: 1, askPaise: 1, bidQty: 1, askQty: 1,
+    });
+    expect(hub.diagnostics()).toMatchObject({ recorder: { status: 'FAILED', errorCategory: 'Error' } });
+    await hub.close();
+  });
 });

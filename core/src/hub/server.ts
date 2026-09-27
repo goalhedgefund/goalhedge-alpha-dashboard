@@ -45,6 +45,7 @@ export interface ClientConnection {
   handshaken: boolean;
   responseByRequestId: Map<string, Record<string, unknown>>;
   queue: string[];
+  queueBytes: number;
   droppedCount: number;
 }
 
@@ -58,6 +59,7 @@ export interface HubServerOptions {
   recordingsDir?: string;
   sessionId?: string;
   maxClientQueue?: number;
+  maxClientQueueBytes?: number;
   staleThresholdMs?: number;
   healthIntervalMs?: number;
   maxInstrumentsPerClient?: number;
@@ -73,6 +75,10 @@ export interface HubHealthMessage {
   subscribed: number;
   dropped?: number;
   sessionId: string;
+  recorderStatus?: 'HEALTHY' | 'FAILED';
+  recorderLastWriteTs?: number;
+  providerEpoch?: number;
+  unknownFrames?: number;
 }
 
 export class HubServer {
@@ -86,6 +92,7 @@ export class HubServer {
   private recorder: Recorder | undefined;
   private readonly clients = new Set<ClientConnection>();
   private readonly maxClientQueue: number;
+  private readonly maxClientQueueBytes: number;
   private readonly staleThresholdMs: number;
   private readonly healthIntervalMs: number;
   private readonly maxInstrumentsPerClient: number;
@@ -99,6 +106,9 @@ export class HubServer {
   private providerEpoch = 0;
   private sequence = 0;
   private unknownFrameCount = 0;
+  private recorderStatus: 'HEALTHY' | 'FAILED' = 'HEALTHY';
+  private recorderLastWriteTs = 0;
+  private recorderErrorCategory: string | undefined;
 
   // Backoff and rate limit tracking for Dhan socket 4 (matching b4e56ca)
   private reconnectAttempts = 0;
@@ -115,6 +125,7 @@ export class HubServer {
     this.sessionId = opts.sessionId ?? `HUB-${istDate()}-${Math.floor(Date.now() / 1000)}`;
     this.universe = opts.universe ?? new HubUniverse();
     this.maxClientQueue = opts.maxClientQueue ?? 5_000;
+    this.maxClientQueueBytes = opts.maxClientQueueBytes ?? 2 * 1024 * 1024;
     this.staleThresholdMs = opts.staleThresholdMs ?? 5_000;
     this.healthIntervalMs = opts.healthIntervalMs ?? 5_000;
     this.maxInstrumentsPerClient = opts.maxInstrumentsPerClient ?? 500;
@@ -144,6 +155,7 @@ export class HubServer {
         handshaken: false,
         responseByRequestId: new Map(),
         queue: [],
+        queueBytes: 0,
         droppedCount: 0,
       };
       this.clients.add(client);
@@ -333,11 +345,19 @@ export class HubServer {
         continue;
       }
 
-      if (client.queue.length >= this.maxClientQueue) {
-        client.queue.shift(); // Drop oldest
+      const payloadBytes = Buffer.byteLength(payload);
+      while (client.queue.length >= this.maxClientQueue || client.queueBytes + payloadBytes > this.maxClientQueueBytes) {
+        const dropped = client.queue.shift(); // Drop oldest
+        if (dropped === undefined) break;
+        client.queueBytes -= Buffer.byteLength(dropped);
         client.droppedCount++;
       }
+      if (client.droppedCount >= this.maxClientQueue) {
+        client.socket.close(1013, 'slow consumer');
+        continue;
+      }
       client.queue.push(payload);
+      client.queueBytes += payloadBytes;
       this.drainClientQueue(client);
     }
   }
@@ -349,6 +369,7 @@ export class HubServer {
       }
       const frame = client.queue.shift();
       if (frame !== undefined) {
+        client.queueBytes -= Buffer.byteLength(frame);
         client.socket.send(frame);
       }
     }
@@ -391,7 +412,10 @@ export class HubServer {
     // Write to recorder
     try {
       this.recorder?.record(tick);
+      this.recorderLastWriteTs = Date.now();
     } catch (err) {
+      this.recorderStatus = 'FAILED';
+      this.recorderErrorCategory = err instanceof Error ? err.name : 'RecorderError';
       console.error('[HubServer] Recorder write failed; ignoring error to keep tick path live:', err);
     }
 
@@ -432,6 +456,8 @@ export class HubServer {
       dropped: client.droppedCount,
       sessionId: this.sessionId,
       ...(client.protocol === HUB_PROTOCOL_V2 ? { proto: HUB_PROTOCOL_V2, providerEpoch: this.providerEpoch, unknownFrames: this.unknownFrameCount } : {}),
+      recorderStatus: this.recorderStatus,
+      recorderLastWriteTs: this.recorderLastWriteTs,
     };
     this.sendToClient(client, msg);
   }
@@ -452,6 +478,8 @@ export class HubServer {
         dropped: client.droppedCount,
         sessionId: this.sessionId,
         ...(client.protocol === HUB_PROTOCOL_V2 ? { proto: HUB_PROTOCOL_V2, providerEpoch: this.providerEpoch, unknownFrames: this.unknownFrameCount } : {}),
+        recorderStatus: this.recorderStatus,
+        recorderLastWriteTs: this.recorderLastWriteTs,
       };
       this.sendToClient(client, msg);
     }
@@ -559,6 +587,22 @@ export class HubServer {
 
   getUniverse(): HubUniverse {
     return this.universe;
+  }
+
+  /** Copy-only diagnostics for the supervisor/dashboard; never expose sockets or mutable sets. */
+  diagnostics(): Record<string, unknown> {
+    return {
+      sessionId: this.sessionId,
+      providerEpoch: this.providerEpoch,
+      sequence: this.sequence,
+      status: this.currentHealthStatus(),
+      recorder: { status: this.recorderStatus, lastWriteTs: this.recorderLastWriteTs, errorCategory: this.recorderErrorCategory },
+      clients: Array.from(this.clients, (client) => ({
+        clientId: client.clientId, connectionId: client.connectionId, protocol: client.protocol ?? 0,
+        subscriptions: this.universe.connectionSubscriptionCount(client.connectionId),
+        queuedMessages: client.queue.length, queuedBytes: client.queueBytes, dropped: client.droppedCount,
+      })),
+    };
   }
 }
 
