@@ -29,6 +29,11 @@ const subSchema = z.object({
   requestId: id,
   instruments: z.array(instrument).min(1).max(MAX_HUB_INSTRUMENTS_PER_REQUEST),
 }).strict();
+const unsubSchema = z.object({
+  t: z.literal('unsub'),
+  requestId: id,
+  instruments: z.array(instrument).min(1).max(MAX_HUB_INSTRUMENTS_PER_REQUEST),
+}).strict();
 
 const pingSchema = z.object({
   t: z.literal('ping'),
@@ -37,8 +42,9 @@ const pingSchema = z.object({
 
 export type HubHelloV2 = z.infer<typeof helloSchema>;
 export type HubSubscribeV2 = z.infer<typeof subSchema>;
+export type HubUnsubscribeV2 = z.infer<typeof unsubSchema>;
 export type HubPingV2 = z.infer<typeof pingSchema>;
-export type HubClientFrameV2 = HubHelloV2 | HubSubscribeV2 | HubPingV2;
+export type HubClientFrameV2 = HubHelloV2 | HubSubscribeV2 | HubUnsubscribeV2 | HubPingV2;
 
 export interface HubProtocolError {
   code: 'MALFORMED_JSON' | 'INVALID_FRAME' | 'HANDSHAKE_REQUIRED' | 'UNSUPPORTED_PROTOCOL' | 'UNKNOWN_MESSAGE' | 'FRAME_TOO_LARGE';
@@ -64,7 +70,7 @@ export function parseHubClientFrameV2(value: unknown): ParseV2Result {
     return { ok: false, error: { code: 'INVALID_FRAME', message: 'frame type is required', ...(requestId ? { requestId } : {}) } };
   }
 
-  const schema = raw.t === 'hello' ? helloSchema : raw.t === 'sub' ? subSchema : raw.t === 'ping' ? pingSchema : undefined;
+  const schema = raw.t === 'hello' ? helloSchema : raw.t === 'sub' ? subSchema : raw.t === 'unsub' ? unsubSchema : raw.t === 'ping' ? pingSchema : undefined;
   if (!schema) {
     return { ok: false, error: { code: 'UNKNOWN_MESSAGE', message: `unknown frame type "${raw.t}"`, ...(requestId ? { requestId } : {}) } };
   }

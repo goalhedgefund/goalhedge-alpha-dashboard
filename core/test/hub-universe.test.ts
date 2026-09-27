@@ -55,4 +55,28 @@ describe('HubUniverse', () => {
     expect(universe.hasToken('5001')).toBe(true);
     expect(universe.allSubscriptions().length).toBe(1);
   });
+
+  it('keeps upstream subscriptions expand-only while reference-counting active owners', () => {
+    const universe = new HubUniverse();
+    const request = [{ exchangeSegment: 'NSE_FNO', brokerToken: '7001' }];
+    const a = universe.subscribe('conn-a', request);
+    const b = universe.subscribe('conn-b', request);
+    expect(a.added).toHaveLength(1);
+    expect(b.added).toHaveLength(0);
+    expect(universe.activeReferenceCount('NSE_FNO', '7001')).toBe(2);
+    expect(universe.connectionSubscriptionCount('conn-a')).toBe(1);
+    expect(universe.unsubscribe('conn-a', request)).toMatchObject({ removed: 1, activeCount: 0 });
+    expect(universe.activeReferenceCount('NSE_FNO', '7001')).toBe(1);
+    expect(universe.releaseConnection('conn-b')).toBe(1);
+    expect(universe.activeReferenceCount('NSE_FNO', '7001')).toBe(0);
+    expect(universe.has('NSE_FNO', '7001')).toBe(true);
+  });
+
+  it('does not collide tokens that belong to different exchange segments', () => {
+    const universe = new HubUniverse();
+    universe.subscribe('idx', [{ exchangeSegment: 'IDX_I', brokerToken: '13' }]);
+    universe.subscribe('fno', [{ exchangeSegment: 'NSE_FNO', brokerToken: '13' }]);
+    expect(universe.activeReferenceCount('IDX_I', '13')).toBe(1);
+    expect(universe.activeReferenceCount('NSE_FNO', '13')).toBe(1);
+  });
 });

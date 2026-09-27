@@ -19,6 +19,7 @@ import {
   makeHubWelcomeV2,
   parseHubClientFrameV2,
   type HubSubscribeV2,
+  type HubUnsubscribeV2,
 } from './protocol-v2.js';
 
 const IST_OFFSET_MS = 330 * 60_000;
@@ -59,6 +60,7 @@ export interface HubServerOptions {
   maxClientQueue?: number;
   staleThresholdMs?: number;
   healthIntervalMs?: number;
+  maxInstrumentsPerClient?: number;
 }
 
 export type HubHealthStatus = 'CONNECTED' | 'DISCONNECTED' | 'STALE';
@@ -86,6 +88,7 @@ export class HubServer {
   private readonly maxClientQueue: number;
   private readonly staleThresholdMs: number;
   private readonly healthIntervalMs: number;
+  private readonly maxInstrumentsPerClient: number;
 
   private running = false;
   private lastTickTs = 0;
@@ -113,6 +116,7 @@ export class HubServer {
     this.maxClientQueue = opts.maxClientQueue ?? 5_000;
     this.staleThresholdMs = opts.staleThresholdMs ?? 5_000;
     this.healthIntervalMs = opts.healthIntervalMs ?? 5_000;
+    this.maxInstrumentsPerClient = opts.maxInstrumentsPerClient ?? 500;
 
     this.dhanFeed = opts.feed;
     this.feedOptions = opts.feedOptions;
@@ -153,10 +157,12 @@ export class HubServer {
       });
 
       socket.on('close', () => {
+        this.universe.releaseConnection(client.connectionId);
         this.clients.delete(client);
       });
 
       socket.on('error', () => {
+        this.universe.releaseConnection(client.connectionId);
         this.clients.delete(client);
       });
     });
@@ -237,6 +243,8 @@ export class HubServer {
       this.sendProtocolError(client, { code: 'INVALID_FRAME', message: 'hello may only be sent once' });
     } else if (parsed.frame.t === 'sub') {
       this.handleV2Subscribe(client, parsed.frame);
+    } else if (parsed.frame.t === 'unsub') {
+      this.handleV2Unsubscribe(client, parsed.frame);
     } else {
       this.sendToClient(client, { t: 'pong', proto: HUB_PROTOCOL_V2, ...(parsed.frame.requestId ? { requestId: parsed.frame.requestId } : {}) });
     }
@@ -265,12 +273,29 @@ export class HubServer {
       ...(instrument.instrumentId ? { instrumentId: instrument.instrumentId as InstrumentId } : {}),
       ...(instrument.requestCode !== undefined ? { requestCode: instrument.requestCode } : {}),
     }));
-    const { added, universeVersion } = this.universe.add(instruments);
+    if (this.universe.connectionSubscriptionCount(client.connectionId) + instruments.length > this.maxInstrumentsPerClient) {
+      this.sendProtocolError(client, { code: 'INVALID_FRAME', message: 'consumer subscription limit exceeded', requestId: frame.requestId });
+      return;
+    }
+    const { added, owned, activeCount, universeVersion } = this.universe.subscribe(client.connectionId, instruments);
     if (added.length > 0 && this.dhanFeed) this.dhanFeed.subscribe(added);
     const ack = {
       t: 'subAck', proto: HUB_PROTOCOL_V2, requestId: frame.requestId,
-      added: added.length, universeVersion, providerEpoch: this.providerEpoch,
+      added: added.length, owned, activeCount, universeVersion, providerEpoch: this.providerEpoch,
     } as Record<string, unknown>;
+    client.responseByRequestId.set(frame.requestId, ack);
+    this.sendToClient(client, ack);
+  }
+
+  private handleV2Unsubscribe(client: ClientConnection, frame: HubUnsubscribeV2): void {
+    const previous = client.responseByRequestId.get(frame.requestId);
+    if (previous) { this.sendToClient(client, previous); return; }
+    const instruments: HubInstrumentInput[] = frame.instruments.map((instrument) => ({
+      exchangeSegment: instrument.exchangeSegment,
+      brokerToken: instrument.brokerToken,
+    }));
+    const { removed, activeCount } = this.universe.unsubscribe(client.connectionId, instruments);
+    const ack = { t: 'unsubAck', proto: HUB_PROTOCOL_V2, requestId: frame.requestId, removed, activeCount } as Record<string, unknown>;
     client.responseByRequestId.set(frame.requestId, ack);
     this.sendToClient(client, ack);
   }
@@ -295,6 +320,7 @@ export class HubServer {
     const sequence = ++this.sequence;
     for (const client of this.clients) {
       if (client.socket.readyState !== WsSocket.OPEN) continue;
+      if (client.protocol === HUB_PROTOCOL_V2 && !this.universe.connectionOwnsInstrument(client.connectionId, tick.instrumentId)) continue;
 
       const payload = JSON.stringify(client.protocol === HUB_PROTOCOL_V2
         ? makeHubTickV2({ sessionId: this.sessionId, providerEpoch: this.providerEpoch, sequence, tick })

@@ -44,6 +44,10 @@ export class HubUniverse {
   private version = 1;
   private readonly subscriptions = new Map<string, SubscribeRequest>();
   private readonly tokenToId = new Map<string, InstrumentId>();
+  private readonly instrumentToKey = new Map<InstrumentId, string>();
+  /** Active v2 consumer ownership. Upstream subscriptions remain expand-only. */
+  private readonly ownerConnectionsByKey = new Map<string, Set<string>>();
+  private readonly ownedKeysByConnection = new Map<string, Set<string>>();
 
   constructor(initialRequests?: SubscribeRequest[]) {
     if (initialRequests && initialRequests.length > 0) {
@@ -124,6 +128,7 @@ export class HubUniverse {
     const key = subscriptionKey(req.exchangeSegment, req.brokerToken);
     this.subscriptions.set(key, req);
     this.tokenToId.set(req.brokerToken, req.instrumentId);
+    this.instrumentToKey.set(req.instrumentId, key);
   }
 
   /**
@@ -154,6 +159,74 @@ export class HubUniverse {
     }
 
     return { added, universeVersion: this.version };
+  }
+
+  /** Idempotently adds active ownership while retaining expand-only upstream state. */
+  subscribe(connectionId: string, instruments: HubInstrumentInput[]): {
+    added: SubscribeRequest[];
+    owned: number;
+    activeCount: number;
+    universeVersion: number;
+  } {
+    const { added, universeVersion } = this.add(instruments);
+    let connectionKeys = this.ownedKeysByConnection.get(connectionId);
+    if (!connectionKeys) {
+      connectionKeys = new Set();
+      this.ownedKeysByConnection.set(connectionId, connectionKeys);
+    }
+    let owned = 0;
+    for (const item of instruments) {
+      const key = subscriptionKey(item.exchangeSegment, item.brokerToken);
+      if (connectionKeys.has(key)) continue;
+      connectionKeys.add(key);
+      const owners = this.ownerConnectionsByKey.get(key) ?? new Set<string>();
+      owners.add(connectionId);
+      this.ownerConnectionsByKey.set(key, owners);
+      owned++;
+    }
+    return { added, owned, activeCount: connectionKeys.size, universeVersion };
+  }
+
+  /** Idempotent: removing an absent subscription never affects another client. */
+  unsubscribe(connectionId: string, instruments: HubInstrumentInput[]): { removed: number; activeCount: number } {
+    const connectionKeys = this.ownedKeysByConnection.get(connectionId);
+    if (!connectionKeys) return { removed: 0, activeCount: 0 };
+    let removed = 0;
+    for (const item of instruments) {
+      const key = subscriptionKey(item.exchangeSegment, item.brokerToken);
+      if (!connectionKeys.delete(key)) continue;
+      const owners = this.ownerConnectionsByKey.get(key);
+      owners?.delete(connectionId);
+      if (owners?.size === 0) this.ownerConnectionsByKey.delete(key);
+      removed++;
+    }
+    if (connectionKeys.size === 0) this.ownedKeysByConnection.delete(connectionId);
+    return { removed, activeCount: connectionKeys.size };
+  }
+
+  releaseConnection(connectionId: string): number {
+    const keys = Array.from(this.ownedKeysByConnection.get(connectionId) ?? []);
+    return this.unsubscribe(connectionId, keys.map((key) => {
+      const [exchangeSegment, brokerToken] = key.split(':', 2);
+      return { exchangeSegment: exchangeSegment ?? '', brokerToken: brokerToken ?? '' };
+    })).removed;
+  }
+
+  connectionOwnsInstrument(connectionId: string, instrumentId: InstrumentId): boolean {
+    const key = this.instrumentToKey.get(instrumentId);
+    return key !== undefined && this.ownedKeysByConnection.get(connectionId)?.has(key) === true;
+  }
+
+  activeReferenceCount(exchangeSegment: string, brokerToken: string): number {
+    return this.ownerConnectionsByKey.get(subscriptionKey(exchangeSegment, brokerToken))?.size ?? 0;
+  }
+
+  connectionSubscriptionCount(connectionId: string): number {
+    return this.ownedKeysByConnection.get(connectionId)?.size ?? 0;
+  }
+
+  ownershipSnapshot(): ReadonlyMap<string, readonly string[]> {
+    return new Map(Array.from(this.ownerConnectionsByKey, ([key, connections]) => [key, Array.from(connections)]));
   }
 
   has(exchangeSegment: string, brokerToken: string): boolean {

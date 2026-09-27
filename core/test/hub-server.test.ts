@@ -196,6 +196,14 @@ describe('HubServer', () => {
     expect(welcome.connectionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(welcome.providerEpoch).toBe(1);
 
+    // A v2 client receives only instruments it actively owns.
+    mockFeed.emitTick({
+      instrumentId: makeInstrumentId('NSE', 'unowned'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 1,
+      qty: 1, volume: 1, bidPaise: 1, askPaise: 1, bidQty: 1, askQty: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(received.some((m) => m.t === 'tick')).toBe(false);
+
     const sub = { t: 'sub', requestId: 's1-sub-1', instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '8888' }] };
     ws.send(JSON.stringify(sub) + '\n');
     await waitFor(() => received.some((m) => m.t === 'subAck' && m.requestId === 's1-sub-1'));
@@ -216,6 +224,16 @@ describe('HubServer', () => {
     const tick = received.find((m) => m.t === 'tick' && m.proto === 2);
     expect(tick.sequence).toBeGreaterThan(0);
     expect(tick.sessionId).toBe(welcome.sessionId);
+
+    ws.send(JSON.stringify({ t: 'unsub', requestId: 's1-unsub-1', instruments: [{ exchangeSegment: 'NSE_FNO', brokerToken: '8888' }] }) + '\n');
+    await waitFor(() => received.some((m) => m.t === 'unsubAck' && m.requestId === 's1-unsub-1'));
+    const tickCountBeforeUnsub = received.filter((m) => m.t === 'tick').length;
+    mockFeed.emitTick({
+      instrumentId: makeInstrumentId('NSE', '8888'), ts: Date.now(), recvTs: Date.now(), ltpPaise: 12346,
+      qty: 1, volume: 1, bidPaise: 12341, askPaise: 12351, bidQty: 1, askQty: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(received.filter((m) => m.t === 'tick')).toHaveLength(tickCountBeforeUnsub);
 
     ws.close();
     await hub.close();
