@@ -140,7 +140,8 @@ export class HubServer {
     this.maxClientQueueBytes = opts.maxClientQueueBytes ?? 2 * 1024 * 1024;
     this.staleThresholdMs = opts.staleThresholdMs ?? 5_000;
     this.healthIntervalMs = opts.healthIntervalMs ?? 5_000;
-    this.maxInstrumentsPerClient = opts.maxInstrumentsPerClient ?? 500;
+    this.maxInstrumentsPerClient = opts.maxInstrumentsPerClient
+      ?? (process.env.HUB_MAX_INSTRUMENTS_PER_CLIENT ? parseInt(process.env.HUB_MAX_INSTRUMENTS_PER_CLIENT, 10) : 2000);
     this.maxResponseCacheEntries = opts.maxResponseCacheEntries ?? 256;
 
     this.dhanFeed = opts.feed;
