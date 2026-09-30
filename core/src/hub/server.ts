@@ -650,10 +650,14 @@ export class HubServer {
 
   /** Copy-only diagnostics for the supervisor/dashboard; never expose sockets or mutable sets. */
   diagnostics(): Record<string, unknown> {
+    const feedHealth = this.dhanFeed?.health();
     return {
       sessionId: this.sessionId,
       providerEpoch: this.providerEpoch,
       status: this.currentHealthStatus(),
+      lastTickTs: this.lastTickTs,
+      tickRatePerSec: this.calculateTickRate(),
+      providerDetail: feedHealth?.detail,
       recorder: { status: this.recorderStatus, lastWriteTs: this.recorderLastWriteTs, errorCategory: this.recorderErrorCategory },
       clients: Array.from(this.clients, (client) => ({
         clientId: client.clientId, connectionId: client.connectionId, protocol: client.protocol ?? 0,

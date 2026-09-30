@@ -110,6 +110,7 @@ export class DhanFeed implements IFeedAdapter {
   private tokenToInstrument = new Map<string, InstrumentId>();
   private handler: ((tick: Tick) => void) | undefined;
   private lastTickTs = 0;
+  private lastDisconnectDetail: string | undefined;
   private readonly opts: Required<DhanFeedOptions>;
 
   constructor(opts: DhanFeedOptions) {
@@ -146,6 +147,7 @@ export class DhanFeed implements IFeedAdapter {
       ws.addEventListener('open', () => {
         if (this.ws !== ws) return;
         this.connected = true;
+        this.lastDisconnectDetail = undefined;
         this.reconnectAttempt = 0;
         this.flushSubscriptions();
         this.startKeepAlive();
@@ -163,6 +165,11 @@ export class DhanFeed implements IFeedAdapter {
         );
         const recvTs = Date.now();
         for (const p of packets) {
+          if (p.code === 50 && 'disconnectReason' in p) {
+            this.lastDisconnectDetail = `Dhan disconnect packet reason=${p.disconnectReason}`;
+            console.warn(`[DhanFeed] ${this.lastDisconnectDetail}`);
+            continue;
+          }
           const tick = this.packetToTick(p, recvTs);
           if (tick !== null) {
             // Feed health is about transport freshness, not the instrument's
@@ -174,16 +181,25 @@ export class DhanFeed implements IFeedAdapter {
         }
       });
 
-      ws.addEventListener('close', () => {
+      ws.addEventListener('close', (event) => {
         if (this.ws !== ws) return;
         this.connected = false;
+        const closeReason = event.reason ? ` reason=${event.reason}` : '';
+        this.lastDisconnectDetail = this.lastDisconnectDetail
+          ?? `WebSocket closed code=${event.code}${closeReason}`;
+        console.warn(`[DhanFeed] ${this.lastDisconnectDetail}`);
         this.stopKeepAlive();
         if (this.shouldReconnect) this.scheduleReconnect();
       });
 
-      ws.addEventListener('error', () => {
+      ws.addEventListener('error', (event) => {
         if (this.ws !== ws) return;
         this.connected = false;
+        const rawMessage = (event as { message?: unknown }).message;
+        const message = typeof rawMessage === 'string'
+          ? rawMessage.trim()
+          : '';
+        this.lastDisconnectDetail = message ? `WebSocket error: ${message}` : 'WebSocket error';
         this.stopKeepAlive();
         this.ws = null;
         try {
@@ -251,7 +267,12 @@ export class DhanFeed implements IFeedAdapter {
     const staleness = Date.now() - this.lastTickTs;
     let status: FeedHealth['status'] = this.connected ? 'CONNECTED' : 'DISCONNECTED';
     if (status === 'CONNECTED' && this.lastTickTs > 0 && staleness > 5_000) status = 'STALE';
-    return { status, lastTickTs: this.lastTickTs, tickRatePerSec: 0 };
+    return {
+      status,
+      lastTickTs: this.lastTickTs,
+      tickRatePerSec: 0,
+      ...(this.lastDisconnectDetail === undefined ? {} : { detail: this.lastDisconnectDetail }),
+    };
   }
 
   close(): Promise<void> {

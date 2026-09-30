@@ -160,8 +160,7 @@ $ErrorActionPreference = "Continue"
 $restartCount = 0
 while ($true) {
   $nowIst = (Get-Date).ToUniversalTime().AddMinutes(330)
-  $cutoffToday = (Get-Date -Year $nowIst.Year -Month $nowIst.Month -Day $nowIst.Day -Hour 15 -Minute 25 -Second 0).ToUniversalTime().AddMinutes(-330)
-  if ((Get-Date) -ge $cutoffToday) {
+  if (($nowIst.Hour * 60 + $nowIst.Minute) -ge (15 * 60 + 25)) {
     Write-LaunchLog "Past 15:25 IST — not restarting."
     break
   }

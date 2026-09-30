@@ -104,8 +104,10 @@ $ErrorActionPreference = "Continue"
 $restartCount = 0
 while ($true) {
   $nowIst = (Get-Date).ToUniversalTime().AddMinutes(330)
-  $cutoffToday = (Get-Date -Year $nowIst.Year -Month $nowIst.Month -Day $nowIst.Day -Hour 15 -Minute 40 -Second 0).ToUniversalTime().AddMinutes(-330)
-  if ((Get-Date) -ge $cutoffToday) {
+  # Compare the synthetic IST wall clock directly. Constructing the cutoff via
+  # local Get-Date and then applying another offset made 15:40 become 10:10 on
+  # machines already configured for IST, preventing any intraday restart.
+  if (($nowIst.Hour * 60 + $nowIst.Minute) -ge (15 * 60 + 40)) {
     Write-LaunchLog "Past 15:40 IST — not restarting Hub."
     break
   }
