@@ -1,6 +1,6 @@
 {
   "strategyId": "allop-atm-mm",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "enabled": true,
   "params": {
     "spreadCostMultiple": 16,
@@ -34,7 +34,7 @@
     "shadowConfirmBounceTicks": 1,
     "shadowConfirmTimeoutMs": 5000,
     "shadowLiveOrderTtlMs": 3000,
-    "shadowRetryCooldownMs": 45000,
+    "shadowRetryCooldownMs": 20000,
     "maxEntrySubmissionsPerDay": 60,
     "paperQueueAheadLots": 2,
     "defensiveCooldownSec": 300,
@@ -49,8 +49,8 @@
     "deltaSkewLots": 3,
     "knifePct": 0.35,
     "knifeCooldownMin": 10,
-    "trendPct": 0.10,
-    "trendResumePct": 0.05,
+    "trendPct": 0.25,
+    "trendResumePct": 0.12,
     "directionalOnly": false,
     "lossStreakEscalation": 2,
     "escalatedCooldownSec": 900,

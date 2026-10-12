@@ -241,7 +241,7 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
   const isAllOp = env.strategyId === 'allop-atm-mm';
   const isOpMinus = env.strategyId === 'op-minus-atm-short';
   const isMm = isAllOp || isOpMinus;
-  // S1 trades a narrowed 10:00–14:30 entry window on a ₹500/day loss cap; the
+  // S1 trades a narrowed 10:00–14:30 entry window on a ₹5,000/day loss cap (matching S1-LIVE); the
   // shared india/paper-default profiles stay as S2's baseline.
   const isS1 = env.strategyId === 's1-momentum-burst';
   const marketCfg = loadConfig(

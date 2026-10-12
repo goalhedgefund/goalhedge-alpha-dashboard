@@ -670,9 +670,9 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.10 production long-option market-maker policy', () => {
+describe('v0.11 production long-option market-maker policy', () => {
   it('is frozen at one shadow-armed lot with favorable payoff and a session-wide cluster brake', () => {
-    expect(strategy.version).toBe('0.10.0');
+    expect(strategy.version).toBe('0.11.0');
     expect(new AllOpAtmMm().version).toBe(strategy.version);
     expect(strategy.params).toEqual(expect.objectContaining({
       spreadCostMultiple: 16,
@@ -685,8 +685,8 @@ describe('v0.10 production long-option market-maker policy', () => {
       // v0.6: neutral (chop) is the desk's edge — quote both sides there and rely on
       // the TREND defence to drop only the against-trend right during real trends.
       directionalOnly: false,
-      trendPct: 0.1,
-      trendResumePct: 0.05,
+      trendPct: 0.25,
+      trendResumePct: 0.12,
       minRequoteMs: 5_000,
       maxHoldSec: 150,
       hardStopPct: 4,
@@ -706,7 +706,7 @@ describe('v0.10 production long-option market-maker policy', () => {
       shadowConfirmBounceTicks: 1,
       shadowConfirmTimeoutMs: 5_000,
       shadowLiveOrderTtlMs: 3_000,
-      shadowRetryCooldownMs: 45_000,
+      shadowRetryCooldownMs: 20_000,
       maxEntrySubmissionsPerDay: 60,
       paperQueueAheadLots: 2,
       defensiveCooldownSec: 300,

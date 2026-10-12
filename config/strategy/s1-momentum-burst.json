@@ -4,17 +4,17 @@
   "enabled": true,
   "params": {
     "impulsePct": 0.00035,
-    "confirmTicks": 4,
+    "confirmTicks": 3,
     "minImbalance": 0,
     "lots": 1,
     "ttlMs": 1500,
     "tickSizePaise": 5,
-    "timeStopSec": 150,
+    "timeStopSec": 90,
     "hardStopPremiumPct": 25,
     "breakevenAtPct": 12,
     "trailStepPct": 8,
     "trailLockPct": 50,
-    "atrMult": 0,
+    "atrMult": 1,
     "cooldownSec": 60
   }
 }
