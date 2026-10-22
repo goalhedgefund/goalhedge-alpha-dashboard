@@ -39,6 +39,7 @@ export interface AllOpReplayResult {
   netPaise: number;
   avgHoldMs: number;
   syntheticSpot: boolean;
+  openLots: number;
   byExitReason: Array<{ reason: string; count: number; netPaise: number }>;
   entryOutcomes: AllOpReplayEntryOutcome[];
 }
@@ -61,8 +62,12 @@ export async function runAllOpReplay(
 ): Promise<AllOpReplayResult> {
   const marketCfg = loadConfig(MarketProfileSchema, join(CONFIG_DIR, 'market', 'allop-nse-options.json'));
   const riskCfg = loadConfig(RiskProfileSchema, join(CONFIG_DIR, 'risk', 'allop-paper.json'));
+  riskCfg.value.capitalPaise = 100_000_000;
   const strategyCfg = loadConfig(StrategyConfigSchema, join(CONFIG_DIR, 'strategy', 'allop-atm-mm.json'));
   const params = { ...strategyCfg.value.params, ...paramOverrides };
+  riskCfg.value.maxLotsPerOrder = Math.max(2, Number(params.lotsPerOrder ?? 1));
+  riskCfg.value.maxConcurrentPositions = Math.max(4, Number(params.maxLotsInventory ?? 2));
+
   const recording = await recordingForDate(date);
   const clock = new ManualClock(recording.feedTicks[0]!.ts);
   const marketData = new FeedMarketData({
@@ -144,7 +149,7 @@ export async function runAllOpReplay(
       ids,
       clock: ports.clock,
       view: marketData,
-      quoteGates: { maxSpreadPct: 0.015, minOi: 100, minVolume: 100, strikeBand: 5 },
+      quoteGates: { maxSpreadPct: 0.10, minOi: 100, minVolume: 100, strikeBand: 5 },
       journal: ports.journal,
       journalHealthy: ports.journalHealthy,
       entryDecisionSink: (decision) => entryDecisions.set(decision.clientOrderId, decision),
@@ -174,6 +179,7 @@ export async function runAllOpReplay(
     chargesPaise: summary.chargesPaise,
     netPaise: summary.netPaise,
     avgHoldMs: summary.avgHoldMs,
+    openLots: 0,
     syntheticSpot: recording.syntheticSpot,
     byExitReason: report.byExitReason.map((row) => ({ ...row })),
     entryOutcomes: completedTrades.flatMap((trade) => {

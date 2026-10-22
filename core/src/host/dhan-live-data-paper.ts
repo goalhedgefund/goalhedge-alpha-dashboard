@@ -608,11 +608,21 @@ async function main(): Promise<void> {
   });
 
   let tickChain = Promise.resolve();
+  let liveRecentreDone = gotInitialSpot;
   build.feed.setTickHandler((tick: Tick) => {
     // Advance the preflight freshness timestamp on arrival, before the tick is
     // queued. Ingestion is serialized through `tickChain`; feed freshness is a
     // liveness signal and must not wait behind it.
     build.noteSpotArrival(tick);
+    // If preflight timed out (no live spot before market open), recentre the
+    // option chain on the first live spot tick that arrives after the market
+    // opens. Without this, S1/ALL_OP stay subscribed to the stale median-strike
+    // band and reject every trade as STRIKE_BAND / NO_QUOTABLE_MARKET.
+    if (!liveRecentreDone && tick.ltpPaise > 0 && tick.instrumentId === build.subscriptions[0]?.instrumentId) {
+      liveRecentreDone = true;
+      console.log(`[scalper] first live spot tick after market open: ${formatPaise(tick.ltpPaise)} — recentring option chain`);
+      build.recentreSubscriptions();
+    }
     tickChain = tickChain
       .then(() => build.host.ingestTick(tick))
       .catch((err: unknown) => {
