@@ -2,7 +2,7 @@
   "profileId": "allop-paper",
   "version": 1,
   "mode": "paper",
-  "capitalPaise": 10000000,
+  "capitalPaise": 100000000,
   "perTradeRiskPct": 0.5,
   "dailyMaxLossPct": 1,
   "giveBack": { "armAtPct": 3, "retainPct": 50 },
