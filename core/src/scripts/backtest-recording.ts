@@ -210,9 +210,19 @@ export function discoverPlainRecording(ticks: readonly Tick[], scripMasterPath: 
     const row = rowsById.get(tick.instrumentId);
     if (row?.optionType === 'CE' || row?.optionType === 'PE') {
       specs.set(tick.instrumentId, { instrumentId: tick.instrumentId, strikePaise: row.strikePaise, right: row.optionType, expiry: row.expiryDate });
+    } else if (row?.instrumentName === 'FUTIDX' || (tick.volume > 0 && spotInstrumentId === undefined)) {
+      spotInstrumentId = tick.instrumentId;
     } else if (spotInstrumentId === undefined) {
       spotInstrumentId = tick.instrumentId;
     }
+  }
+  // If a futures instrument is present in ticks with trading volume, prioritize it over index (e.g. NSE:13)
+  const futTick = ticks.find((t) => {
+    const row = rowsById.get(t.instrumentId);
+    return row?.instrumentName === 'FUTIDX' || row?.tradingSymbol?.includes('-FUT');
+  });
+  if (futTick !== undefined) {
+    spotInstrumentId = futTick.instrumentId;
   }
   if (spotInstrumentId === undefined || specs.size === 0) throw new Error('Could not resolve native spot/options from recording');
   return { spotInstrumentId, optionSpecs: [...specs.values()], feedTicks: [...ticks], syntheticSpot: false };

@@ -628,8 +628,20 @@ export class QuotingEngine {
       ? scalpLots.filter((lot) => bid <= lot.entryPricePaise * (1 - this.params.hardStopPct / 100))
       : [];
     const hardIds = new Set(hardStops.map((lot) => lot.lotId));
+    const currentAtmStrike = input.atmCe?.strikePaise ?? input.atmPe?.strikePaise;
+    const currentExpiry = input.atmCe?.expiry ?? input.atmPe?.expiry;
+    const strikeMigrated = currentAtmStrike !== undefined &&
+      row?.strikePaise !== undefined &&
+      Math.abs(row.strikePaise - currentAtmStrike) >= this.market.contract.strikeStepPaise;
+    const expiryMigrated = currentExpiry !== undefined &&
+      row?.expiry !== undefined &&
+      row.expiry !== currentExpiry;
+    const migrationTimeoutSec = Math.min(this.params.maxHoldSec, 15);
     const timedOut = scalpLots.filter(
-      (lot) => !hardIds.has(lot.lotId) && input.nowMs - lot.openedTs >= this.params.maxHoldSec * 1_000,
+      (lot) => !hardIds.has(lot.lotId) && (
+        input.nowMs - lot.openedTs >= this.params.maxHoldSec * 1_000 ||
+        ((strikeMigrated || expiryMigrated) && input.nowMs - lot.openedTs >= migrationTimeoutSec * 1_000)
+      ),
     );
     const defensiveIds = new Set([...hardStops, ...timedOut].map((lot) => lot.lotId));
     const exits = [
@@ -655,16 +667,17 @@ export class QuotingEngine {
     const normalLots = scalpLots.filter(
       (lot) => lot.lotId !== candidateLotId && !defensiveIds.has(lot.lotId),
     );
-    const lot = normalLots[0];
-    if (lot === undefined) return exits;
-    // Freeze the target when the lot opens. Chasing a rising midpoint turns a
-    // take-profit into a moving target and converts reachable wins into timeouts.
-    const targetPct = this.params.takeProfitCostMultiple * this.roundTripCostPct(lot.entryPricePaise);
-    const price = ceilTick(lot.entryPricePaise * (1 + targetPct / 100), tick);
-    if (price <= 0) return exits;
     const reservingRunner = candidateLotId !== undefined && lots.some((x) => x.lotId === candidateLotId);
-    exits.push(sellLots(book.instrumentId, [lot], price, reservingRunner ? 'SCALP_EXIT' : 'QUOTE_ASK'));
+    for (const lot of normalLots) {
+      // Freeze the target when the lot opens. Chasing a rising midpoint turns a
+      // take-profit into a moving target and converts reachable wins into timeouts.
+      const targetPct = this.params.takeProfitCostMultiple * this.roundTripCostPct(lot.entryPricePaise);
+      const price = ceilTick(lot.entryPricePaise * (1 + targetPct / 100), tick);
+      if (price <= 0) continue;
+      exits.push(sellLots(book.instrumentId, [lot], price, reservingRunner ? 'SCALP_EXIT' : 'QUOTE_ASK'));
+    }
     return exits;
+
   }
 
   private urgentSellLot(

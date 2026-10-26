@@ -670,35 +670,33 @@ describe('maxLotsPerSide cap (clustering defence)', () => {
   });
 });
 
-describe('v0.11 production long-option market-maker policy', () => {
-  it('is frozen at one shadow-armed lot with favorable payoff and a session-wide cluster brake', () => {
-    expect(strategy.version).toBe('0.11.0');
+describe('v0.12 production long-option market-maker policy', () => {
+  it('quotes both CE and PE 1 lot at 3x cost spread with 3x cost profit target', () => {
+    expect(strategy.version).toBe('0.12.0');
     expect(new AllOpAtmMm().version).toBe(strategy.version);
     expect(strategy.params).toEqual(expect.objectContaining({
-      spreadCostMultiple: 16,
-      takeProfitCostMultiple: 9,
-      maxLotsInventory: 1,
-      maxScalpLots: 1,
+      spreadCostMultiple: 3,
+      takeProfitCostMultiple: 3,
+      maxLotsInventory: 2,
+      maxScalpLots: 2,
       maxLotsPerSide: 1,
       runnerLots: 0,
       ladderLevels: 1,
-      // v0.6: neutral (chop) is the desk's edge — quote both sides there and rely on
-      // the TREND defence to drop only the against-trend right during real trends.
       directionalOnly: false,
-      trendPct: 0.25,
-      trendResumePct: 0.12,
-      minRequoteMs: 5_000,
-      maxHoldSec: 150,
-      hardStopPct: 4,
-      entryRejectCooldownSec: 15,
+      trendPct: 0.5,
+      trendResumePct: 0.25,
+      minRequoteMs: 2_000,
+      maxHoldSec: 300,
+      hardStopPct: 15,
+      entryRejectCooldownSec: 5,
       entryMomentumLookbackSec: 5,
-      maxEntryFallPct: 0.2,
-      maxEntrySpreadPct: 1.5,
+      maxEntryFallPct: 0,
+      maxEntrySpreadPct: 10.0,
       minEntryImbalance: -1,
       entrySwitchScoreMargin: 0.1,
-      entrySwitchConfirmMs: 1_500,
-      maxEntryReplacementsPerMin: 12,
-      shadowEntryEnabled: true,
+      entrySwitchConfirmMs: 0,
+      maxEntryReplacementsPerMin: 20,
+      shadowEntryEnabled: false,
       shadowQuoteTtlMs: 30_000,
       shadowTriggerTicks: 2,
       shadowProtectionTicks: 2,
@@ -707,13 +705,13 @@ describe('v0.11 production long-option market-maker policy', () => {
       shadowConfirmTimeoutMs: 5_000,
       shadowLiveOrderTtlMs: 3_000,
       shadowRetryCooldownMs: 20_000,
-      maxEntrySubmissionsPerDay: 60,
+      maxEntrySubmissionsPerDay: 200,
       paperQueueAheadLots: 2,
-      defensiveCooldownSec: 300,
+      defensiveCooldownSec: 60,
       globalDefensiveCooldownSec: 0,
-      globalLossClusterCount: 2,
+      globalLossClusterCount: 3,
       globalLossClusterWindowSec: 1_800,
-      globalLossClusterCooldownSec: 21_600,
+      globalLossClusterCooldownSec: 3_600,
     }));
   });
 

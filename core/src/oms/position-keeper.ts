@@ -72,9 +72,24 @@ export class PositionKeeper {
     }
     const openedTs = existing?.position.openedTs ?? fill.ts;
     const positionId = existing?.position.positionId ?? this.ids.positionId();
-    const lots = [
-      ...(existing?.lots ?? []),
-      {
+    const lotSize = this.marketProfile.contract.lotSize;
+    const isMmStrategy = order.tag.startsWith('allop');
+    const newLots: OpenPositionLot[] = [];
+    if (isMmStrategy && lotSize > 0 && fill.qty > lotSize && fill.qty % lotSize === 0) {
+      const count = fill.qty / lotSize;
+      for (let i = 0; i < count; i++) {
+        newLots.push({
+          lotId: `${fill.fillId}#${i}`,
+          instrumentId: order.instrumentId,
+          qty: lotSize,
+          pricePaise: fill.pricePaise,
+          ts: fill.ts,
+          clientOrderId: fill.clientOrderId,
+          ...(order.side === 'SELL' ? { entrySide: 'SELL' as const } : {}),
+        });
+      }
+    } else {
+      newLots.push({
         lotId: fill.fillId,
         instrumentId: order.instrumentId,
         qty: fill.qty,
@@ -82,8 +97,13 @@ export class PositionKeeper {
         ts: fill.ts,
         clientOrderId: fill.clientOrderId,
         ...(order.side === 'SELL' ? { entrySide: 'SELL' as const } : {}),
-      },
+      });
+    }
+    const lots = [
+      ...(existing?.lots ?? []),
+      ...newLots,
     ];
+
     const qty = lots.reduce((s, l) => s + l.qty, 0);
     const avgEntryPricePaise = Math.round(lots.reduce((s, l) => s + l.qty * l.pricePaise, 0) / qty);
     const position: Position = {

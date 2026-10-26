@@ -1,6 +1,15 @@
 import type { InstrumentId } from './ids.js';
 import type { OptionRight } from './instrument.js';
 
+export interface DepthLevel {
+  bidQty: number;
+  askQty: number;
+  bidOrders?: number;
+  askOrders?: number;
+  bidPaise: number;
+  askPaise: number;
+}
+
 /**
  * Unified normalized feed event: last trade plus current top-of-book.
  * `qty` is 0 for quote-only updates.
@@ -23,6 +32,8 @@ export interface Tick {
   askPaise: number;
   bidQty: number;
   askQty: number;
+  /** 5-level market depth when supplied by upstream packet (e.g. Dhan Code 8). */
+  depth?: DepthLevel[];
 }
 
 export type Timeframe = '1s' | '1m';

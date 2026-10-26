@@ -72,4 +72,34 @@ describe('FeedMarketData', () => {
     expect(md.spotPaise()).toBe(ATM);
     expect(md.strategyView(FLOOR + 1_000).underlyingFeatures?.vwapPaise).toBe(ATM);
   });
+
+  it('updates strikes list and resolves new nearest option when addOptions is called', () => {
+    const md = new FeedMarketData({
+      spotInstrumentId: SPOT_ID,
+      options: [
+        { instrumentId: CE_ID, strikePaise: 24_000_00, right: 'CE', expiry: '2026-07-07' },
+      ],
+      strikeStepPaise: 5_000,
+    });
+
+    const NEW_CE_ID: InstrumentId = makeInstrumentId('NSE', 'CE_22600');
+    const NEW_PE_ID: InstrumentId = makeInstrumentId('NSE', 'PE_22600');
+
+    const added = md.addOptions([
+      { instrumentId: NEW_CE_ID, strikePaise: 22_600_00, right: 'CE', expiry: '2026-07-07' },
+      { instrumentId: NEW_PE_ID, strikePaise: 22_600_00, right: 'PE', expiry: '2026-07-07' },
+    ]);
+    expect(added).toHaveLength(2);
+
+    // Feed spot tick at 22,600
+    md.ingest(tick(SPOT_ID, 1_000, 22_600_00));
+    md.ingest(tick(NEW_CE_ID, 1_000, 15_000));
+    md.ingest(tick(NEW_PE_ID, 1_000, 14_000));
+
+    const view = md.strategyView(1_000);
+    expect(view.atmStrikePaise).toBe(22_600_00);
+    const ce = view.atmOption('CE');
+    expect(ce?.instrumentId).toBe(NEW_CE_ID);
+    expect(ce?.row.strikePaise).toBe(22_600_00);
+  });
 });

@@ -67,7 +67,19 @@ export function dhanPacketToTick(
     ltpPaise,
     qty: q.qty,
     volume: q.volume,
-    ...(q.code === 8 ? { oi: (q as DhanFullPacket).oi } : {}),
+    ...(q.code === 8
+      ? {
+          oi: (q as DhanFullPacket).oi,
+          depth: (q as DhanFullPacket).depth?.map((d) => ({
+            bidQty: d.bidQty,
+            askQty: d.askQty,
+            bidOrders: d.bidOrders,
+            askOrders: d.askOrders,
+            bidPaise: Math.round(d.bidPrice * 100),
+            askPaise: Math.round(d.askPrice * 100),
+          })),
+        }
+      : {}),
     bidPaise,
     askPaise,
     bidQty: q.code === 8 && top !== undefined ? top.bidQty : q.buyQty,

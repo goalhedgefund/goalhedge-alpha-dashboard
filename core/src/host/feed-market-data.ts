@@ -50,7 +50,7 @@ export class FeedMarketData implements MarketViewProvider {
   private readonly chain: OptionChainState;
   private readonly optionIds: Set<InstrumentId>;
   private readonly byStrikeRight = new Map<string, InstrumentId>();
-  private readonly strikes: number[];
+  private strikes: number[];
   private readonly ringSize: number;
   private readonly optionRingSize: number;
   private readonly spotTicks: Tick[] = [];
@@ -130,6 +130,9 @@ export class FeedMarketData implements MarketViewProvider {
       this.byStrikeRight.set(key(o.strikePaise, o.right), o.instrumentId);
       this.optionTicks.set(o.instrumentId, []);
       added.push(o);
+    }
+    if (added.length > 0) {
+      this.strikes = [...new Set([...this.strikes, ...added.map((o) => o.strikePaise)])].sort((a, b) => a - b);
     }
     return added;
   }

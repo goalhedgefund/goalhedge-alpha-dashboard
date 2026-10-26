@@ -58,7 +58,7 @@ interface DhanLiveDataPaperBuild {
   initialSpotPaise: number;
   disabledStrategyConfig: boolean;
   /** Recentre the option subscription band on the actual live spot after preflight. */
-  recentreSubscriptions: () => void;
+  recentreSubscriptions: (liveSpotPaise?: number) => void;
 }
 
 const IST_OFFSET_MS = 330 * 60_000;
@@ -491,11 +491,11 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     selectedStrikes,
     initialSpotPaise,
     disabledStrategyConfig: !strategyCfg.value.enabled,
-    recentreSubscriptions: (): void => {
+    recentreSubscriptions: (liveSpotPaise?: number): void => {
       // After the first live spot tick arrives, the ATM may differ from the
       // static median used at build time. Resubscribe any strikes that fall
       // in the live ATM band but weren't in the original subscription set.
-      const liveSpot = marketData.spotPaise();
+      const liveSpot = liveSpotPaise ?? marketData.spotPaise();
       if (liveSpot === undefined || liveSpot <= 0) return;
       const liveStrikes = getChainStrikes(weekly.chain, liveSpot, env.chainDepth);
       const { options: liveOptions, subscriptions: liveSubs } = buildOptionSpecs(
@@ -621,7 +621,7 @@ async function main(): Promise<void> {
     if (!liveRecentreDone && tick.ltpPaise > 0 && tick.instrumentId === build.subscriptions[0]?.instrumentId) {
       liveRecentreDone = true;
       console.log(`[scalper] first live spot tick after market open: ${formatPaise(tick.ltpPaise)} — recentring option chain`);
-      build.recentreSubscriptions();
+      build.recentreSubscriptions(tick.ltpPaise);
     }
     tickChain = tickChain
       .then(() => build.host.ingestTick(tick))
