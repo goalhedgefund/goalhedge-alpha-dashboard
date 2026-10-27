@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urljoin
@@ -21,6 +21,9 @@ ROOT_DIR = Path(__file__).resolve().parent
 RAW_DIR = ROOT_DIR / "data" / "raw"
 PROCESSED_DIR = ROOT_DIR / "data" / "processed"
 NSE_BASE = "https://www.nseindia.com"
+
+# NSE Bhavcopy reports are typically published after 18:30 IST
+NSE_EOD_CUTOFF_TIME = time(18, 30)
 
 
 @dataclass(frozen=True)
@@ -87,11 +90,34 @@ def configure_logging() -> None:
     )
 
 
+def previous_trading_date(target_date: date) -> date:
+    current = target_date - timedelta(days=1)
+    while current.weekday() >= 5:  # Skip Saturday (5) and Sunday (6)
+        current -= timedelta(days=1)
+    return current
+
+
 def parse_run_date(value: str | None) -> date:
     if value:
         return datetime.strptime(value, "%Y-%m-%d").date()
     ist = timezone(timedelta(hours=5, minutes=30))
-    return datetime.now(ist).date()
+    now_ist = datetime.now(ist)
+
+    # If it is before the EOD publication cutoff time (18:30 IST) or on a weekend,
+    # the target date must be the previous trading day.
+    if now_ist.time() < NSE_EOD_CUTOFF_TIME:
+        LOGGER.info(
+            "Current time (%s IST) is before EOD cutoff (%s IST). Using previous trading day.",
+            now_ist.strftime("%H:%M"),
+            NSE_EOD_CUTOFF_TIME.strftime("%H:%M"),
+        )
+        return previous_trading_date(now_ist.date())
+
+    current_date = now_ist.date()
+    if current_date.weekday() >= 5:
+        return previous_trading_date(current_date)
+
+    return current_date
 
 
 def candidate_dates(target_date: date, lookback_days: int) -> Iterable[date]:
@@ -99,13 +125,6 @@ def candidate_dates(target_date: date, lookback_days: int) -> Iterable[date]:
         current = target_date - timedelta(days=offset)
         if current.weekday() < 5:
             yield current
-
-
-def previous_trading_date(target_date: date) -> date:
-    current = target_date - timedelta(days=1)
-    while current.weekday() >= 5:
-        current -= timedelta(days=1)
-    return current
 
 
 def retained_dates(target_date: date, keep_previous_day: bool) -> set[date]:
@@ -321,7 +340,7 @@ def run_pipeline(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download and process NSE EOD reports.")
-    parser.add_argument("--date", help="Target report date in YYYY-MM-DD format. Defaults to today in IST.")
+    parser.add_argument("--date", help="Target report date in YYYY-MM-DD format. Defaults to today (if >= 18:30 IST) or previous trading day.")
     parser.add_argument("--lookback-days", type=int, default=0, help="Previous weekdays to try if the target date has no reports.")
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
     parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
@@ -334,6 +353,7 @@ def main() -> None:
 
     configure_logging()
     report_date = parse_run_date(args.date)
+    LOGGER.info("Effective target date: %s", report_date.isoformat())
     completed_date = run_pipeline(
         report_date,
         args.lookback_days,
