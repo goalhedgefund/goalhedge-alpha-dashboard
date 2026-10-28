@@ -3,17 +3,17 @@
   "version": "0.1.0",
   "enabled": true,
   "params": {
-    "impulsePct": 0.00035,
+    "impulsePct": 0.0006,
     "confirmTicks": 3,
     "minImbalance": 0,
     "lots": 1,
     "ttlMs": 1500,
     "tickSizePaise": 5,
     "timeStopSec": 90,
-    "hardStopPremiumPct": 25,
-    "breakevenAtPct": 12,
-    "trailStepPct": 8,
-    "trailLockPct": 50,
+    "hardStopPremiumPct": 12,
+    "breakevenAtPct": 6,
+    "trailStepPct": 6,
+    "trailLockPct": 70,
     "atrMult": 1,
     "cooldownSec": 60
   }
