@@ -96,6 +96,8 @@ export interface MmParams {
   maxLotsPerSide: number;
   quoteFrom: string;
   bidCutoff: string;
+  /** Disable the 15-second emergency market dump when strike/expiry migrates. */
+  migrationPanicExit: boolean;
 }
 
 function strParam(params: StrategyParams, key: string, dflt: string): string {
@@ -167,6 +169,7 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     maxLotsPerSide: Math.floor(boundedParam(params, 'maxLotsPerSide', 2, 1, 100)),
     quoteFrom: strParam(params, 'quoteFrom', '09:20'),
     bidCutoff: strParam(params, 'bidCutoff', '15:10'),
+    migrationPanicExit: boolParam(params, 'migrationPanicExit', false),
   };
 }
 
@@ -636,7 +639,9 @@ export class QuotingEngine {
     const expiryMigrated = currentExpiry !== undefined &&
       row?.expiry !== undefined &&
       row.expiry !== currentExpiry;
-    const migrationTimeoutSec = Math.min(this.params.maxHoldSec, 15);
+    const migrationTimeoutSec = this.params.migrationPanicExit
+      ? Math.min(this.params.maxHoldSec, 15)
+      : this.params.maxHoldSec;
     const timedOut = scalpLots.filter(
       (lot) => !hardIds.has(lot.lotId) && (
         input.nowMs - lot.openedTs >= this.params.maxHoldSec * 1_000 ||

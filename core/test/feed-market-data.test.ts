@@ -100,6 +100,6 @@ describe('FeedMarketData', () => {
     expect(view.atmStrikePaise).toBe(22_600_00);
     const ce = view.atmOption('CE');
     expect(ce?.instrumentId).toBe(NEW_CE_ID);
-    expect(ce?.row.strikePaise).toBe(22_600_00);
+    expect(ce?.row?.strikePaise).toBe(22_600_00);
   });
 });

@@ -56,6 +56,7 @@
     "escalatedCooldownSec": 300,
     "minDaysToExpiry": 1,
     "quoteFrom": "09:20",
-    "bidCutoff": "15:10"
+    "bidCutoff": "15:05",
+    "migrationPanicExit": false
   }
 }
