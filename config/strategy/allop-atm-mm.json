@@ -5,13 +5,13 @@
   "params": {
     "spreadCostMultiple": 3,
     "takeProfitCostMultiple": 3,
-    "maxLotsInventory": 2,
-    "maxScalpLots": 2,
+    "maxLotsInventory": 6,
+    "maxScalpLots": 4,
     "runnerLots": 0,
     "lotsPerOrder": 1,
     "ladderLevels": 1,
     "ladderGapPct": 2.0,
-    "maxLotsPerSide": 1,
+    "maxLotsPerSide": 3,
     "repriceTicks": 2,
     "quoteTtlSec": 30,
     "minRequoteMs": 2000,
@@ -35,7 +35,7 @@
     "shadowConfirmTimeoutMs": 5000,
     "shadowLiveOrderTtlMs": 3000,
     "shadowRetryCooldownMs": 20000,
-    "maxEntrySubmissionsPerDay": 200,
+    "maxEntrySubmissionsPerDay": 1500,
     "paperQueueAheadLots": 2,
     "defensiveCooldownSec": 60,
     "globalDefensiveCooldownSec": 0,
@@ -57,6 +57,11 @@
     "minDaysToExpiry": 1,
     "quoteFrom": "09:20",
     "bidCutoff": "15:05",
-    "migrationPanicExit": false
+    "migrationPanicExit": false,
+    "wingArchitectureEnabled": true,
+    "wingStepPoints": 50,
+    "wingHoldLots": 1,
+    "wingScalpLots": 1,
+    "wingSpreadPct": 1.0
   }
 }

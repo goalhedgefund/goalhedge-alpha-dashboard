@@ -98,6 +98,12 @@ export interface MmParams {
   bidCutoff: string;
   /** Disable the 15-second emergency market dump when strike/expiry migrates. */
   migrationPanicExit: boolean;
+  /** Wing Scalp + Hold Architecture (combined CE + PE). */
+  wingArchitectureEnabled: boolean;
+  wingStepPoints: number;
+  wingHoldLots: number;
+  wingScalpLots: number;
+  wingSpreadPct: number;
 }
 
 function strParam(params: StrategyParams, key: string, dflt: string): string {
@@ -170,6 +176,11 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     quoteFrom: strParam(params, 'quoteFrom', '09:20'),
     bidCutoff: strParam(params, 'bidCutoff', '15:10'),
     migrationPanicExit: boolParam(params, 'migrationPanicExit', false),
+    wingArchitectureEnabled: boolParam(params, 'wingArchitectureEnabled', false),
+    wingStepPoints: Math.floor(boundedParam(params, 'wingStepPoints', 50, 10, 500)),
+    wingHoldLots: Math.floor(boundedParam(params, 'wingHoldLots', 1, 0, 10)),
+    wingScalpLots: Math.floor(boundedParam(params, 'wingScalpLots', 1, 0, 10)),
+    wingSpreadPct: boundedParam(params, 'wingSpreadPct', 1.0, 0.1, 10.0),
   };
 }
 
@@ -204,6 +215,18 @@ export interface MmQuoteInput {
   spotPaise?: number;
   atmCe?: OptionChainRow;
   atmPe?: OptionChainRow;
+  wingCe?: OptionChainRow;
+  wingPe?: OptionChainRow;
+  wingHoldCeLotId?: string;
+  wingHoldPeLotId?: string;
+  wingState?: {
+    ceBaseStrikePaise?: number | undefined;
+    ceWingStrikePaise?: number | undefined;
+    ceTargetSpotPaise?: number | undefined;
+    peBaseStrikePaise?: number | undefined;
+    peWingStrikePaise?: number | undefined;
+    peTargetSpotPaise?: number | undefined;
+  };
   books: readonly MmBookInput[];
   latchedStop: boolean;
   runner?: MmActiveRunnerInput;
@@ -221,7 +244,9 @@ export type MmDesiredReason =
   | 'HARD_STOP'
   | 'RUNNER_TRAIL'
   | 'RUNNER_TIMEOUT'
-  | 'RISK_EXIT';
+  | 'RISK_EXIT'
+  | 'WING_HOLD_BUY'
+  | 'WING_ROLL_EXIT';
 
 export interface MmDesiredOrder {
   instrumentId: InstrumentId;
@@ -465,10 +490,72 @@ export class QuotingEngine {
     const qualityRejects = new Map<OptionRight, { spreadPct: number; imbalance: number }>();
     const eligibleEntryInstruments = new Set<InstrumentId>();
 
+    // Wing Hold acquisitions: delta shock absorber 1 lot on OTM wing strike
+    if (p.wingArchitectureEnabled && p.wingHoldLots > 0) {
+      if (
+        input.wingHoldCeLotId === undefined &&
+        input.wingCe !== undefined &&
+        input.wingCe.bidPaise > 0 &&
+        input.wingCe.askPaise > 0 &&
+        !input.entryBlockedInstruments?.has(input.wingCe.instrumentId) &&
+        heldByRight['CE'] + plannedByRight['CE'] < p.maxLotsPerSide &&
+        remainingLots >= p.wingHoldLots
+      ) {
+        const wingCePrice = input.wingCe.askPaise;
+        desired.push({
+          instrumentId: input.wingCe.instrumentId,
+          side: 'BUY',
+          qty: p.wingHoldLots * lotSize,
+          type: 'LIMIT',
+          limitPricePaise: wingCePrice,
+          purpose: 'ENTRY',
+          reason: 'WING_HOLD_BUY',
+          stopPlan: {
+            hardStopPremiumPaise: Math.max(tick, Math.round(wingCePrice * 0.5)),
+            timeStopSec: 86_400,
+          },
+        });
+        plannedByRight['CE'] += p.wingHoldLots;
+        remainingLots -= p.wingHoldLots;
+        eligibleEntryInstruments.add(input.wingCe.instrumentId);
+      }
+      if (
+        input.wingHoldPeLotId === undefined &&
+        input.wingPe !== undefined &&
+        input.wingPe.bidPaise > 0 &&
+        input.wingPe.askPaise > 0 &&
+        !input.entryBlockedInstruments?.has(input.wingPe.instrumentId) &&
+        heldByRight['PE'] + plannedByRight['PE'] < p.maxLotsPerSide &&
+        remainingLots >= p.wingHoldLots
+      ) {
+        const wingPePrice = input.wingPe.askPaise;
+        desired.push({
+          instrumentId: input.wingPe.instrumentId,
+          side: 'BUY',
+          qty: p.wingHoldLots * lotSize,
+          type: 'LIMIT',
+          limitPricePaise: wingPePrice,
+          purpose: 'ENTRY',
+          reason: 'WING_HOLD_BUY',
+          stopPlan: {
+            hardStopPremiumPaise: Math.max(tick, Math.round(wingPePrice * 0.5)),
+            timeStopSec: 86_400,
+          },
+        });
+        plannedByRight['PE'] += p.wingHoldLots;
+        remainingLots -= p.wingHoldLots;
+        eligibleEntryInstruments.add(input.wingPe.instrumentId);
+      }
+    }
+
     const rights: Array<{ right: OptionRight; row?: OptionChainRow }> = [
       { right: 'CE', ...(input.atmCe !== undefined ? { row: input.atmCe } : {}) },
       { right: 'PE', ...(input.atmPe !== undefined ? { row: input.atmPe } : {}) },
     ];
+    if (p.wingArchitectureEnabled && p.wingScalpLots > 0) {
+      if (input.wingCe !== undefined) rights.push({ right: 'CE', row: input.wingCe });
+      if (input.wingPe !== undefined) rights.push({ right: 'PE', row: input.wingPe });
+    }
 
     for (const { right, row } of rights) {
       if (
@@ -493,7 +580,7 @@ export class QuotingEngine {
     // A one-lot desk keeps its selected right until a materially better lane
     // remains ahead for long enough. Raw L1 depth flickers on asynchronous CE
     // and PE packets; switching on every score change destroys queue position.
-    if (remainingLots === p.lotsPerOrder) {
+    if (!p.wingArchitectureEnabled && remainingLots === p.lotsPerOrder) {
       this.rankEntryCandidates(rights, eligibleEntryInstruments, input);
     }
 
@@ -620,7 +707,10 @@ export class QuotingEngine {
     const row = book.row;
     const lots = this.bookLots(book);
     const runner = input.runner?.instrumentId === book.instrumentId ? input.runner : undefined;
-    const scalpLots = lots.filter((lot) => lot.lotId !== runner?.lotId);
+    const wingHoldLots = new Set<string>();
+    if (input.wingHoldCeLotId) wingHoldLots.add(input.wingHoldCeLotId);
+    if (input.wingHoldPeLotId) wingHoldLots.add(input.wingHoldPeLotId);
+    const scalpLots = lots.filter((lot) => lot.lotId !== runner?.lotId && !wingHoldLots.has(lot.lotId));
     const bid = row?.bidPaise ?? 0;
 
     if (input.latchedStop) {
@@ -668,6 +758,30 @@ export class QuotingEngine {
       }
     }
 
+    // Wing Hold rolls: when spot reaches target strike, roll by exiting hold lot at market/bid
+    if (input.wingHoldCeLotId) {
+      const holdLot = lots.find((l) => l.lotId === input.wingHoldCeLotId);
+      if (
+        holdLot !== undefined &&
+        input.spotPaise !== undefined &&
+        input.wingState?.ceTargetSpotPaise !== undefined &&
+        input.spotPaise >= input.wingState.ceTargetSpotPaise
+      ) {
+        exits.push(this.urgentSellLot(book.instrumentId, holdLot, bid, 'WING_ROLL_EXIT', tick));
+      }
+    }
+    if (input.wingHoldPeLotId) {
+      const holdLot = lots.find((l) => l.lotId === input.wingHoldPeLotId);
+      if (
+        holdLot !== undefined &&
+        input.spotPaise !== undefined &&
+        input.wingState?.peTargetSpotPaise !== undefined &&
+        input.spotPaise <= input.wingState.peTargetSpotPaise
+      ) {
+        exits.push(this.urgentSellLot(book.instrumentId, holdLot, bid, 'WING_ROLL_EXIT', tick));
+      }
+    }
+
     if (row === undefined) return exits;
     const normalLots = scalpLots.filter(
       (lot) => lot.lotId !== candidateLotId && !defensiveIds.has(lot.lotId),
@@ -676,7 +790,9 @@ export class QuotingEngine {
     for (const lot of normalLots) {
       // Freeze the target when the lot opens. Chasing a rising midpoint turns a
       // take-profit into a moving target and converts reachable wins into timeouts.
-      const targetPct = this.params.takeProfitCostMultiple * this.roundTripCostPct(lot.entryPricePaise);
+      const targetPct = this.params.wingArchitectureEnabled
+        ? this.params.wingSpreadPct
+        : this.params.takeProfitCostMultiple * this.roundTripCostPct(lot.entryPricePaise);
       const price = ceilTick(lot.entryPricePaise * (1 + targetPct / 100), tick);
       if (price <= 0) continue;
       exits.push(sellLots(book.instrumentId, [lot], price, reservingRunner ? 'SCALP_EXIT' : 'QUOTE_ASK'));

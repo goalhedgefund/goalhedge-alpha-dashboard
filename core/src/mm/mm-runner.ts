@@ -116,6 +116,17 @@ export class MmRunner {
   private entryReplacementTs: number[] = [];
   private shadowEntry: ShadowEntryState | undefined;
   private entrySubmissionsToday = 0;
+  // Dual-Side Wing Scalp + Hold tracking
+  private ceBaseStrikePaise: number | undefined;
+  private ceWingStrikePaise: number | undefined;
+  private ceTargetSpotPaise: number | undefined;
+  private peBaseStrikePaise: number | undefined;
+  private peWingStrikePaise: number | undefined;
+  private peTargetSpotPaise: number | undefined;
+  private wingHoldCeLotId: string | undefined;
+  private wingHoldPeLotId: string | undefined;
+  private ceRollsToday = 0;
+  private peRollsToday = 0;
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -224,6 +235,29 @@ export class MmRunner {
         ...(defence.drawdownPct !== undefined ? { drawdownPct: defence.drawdownPct } : {}),
         ...(defence.untilTs !== undefined ? { untilTs: defence.untilTs } : {}),
       })),
+      wing: {
+        enabled: Boolean(this.params.wingArchitectureEnabled ?? true),
+        ce: {
+          baseStrikePaise: this.ceBaseStrikePaise ?? 0,
+          wingStrikePaise: this.ceWingStrikePaise ?? 0,
+          targetSpotPaise: this.ceTargetSpotPaise ?? 0,
+          holdActive: this.wingHoldCeLotId !== undefined,
+          ...(this.wingHoldCeLotId !== undefined
+            ? { holdInstrumentId: String(lots.find((l) => l.lotId === this.wingHoldCeLotId)?.instrumentId) }
+            : {}),
+          rollsToday: this.ceRollsToday,
+        },
+        pe: {
+          baseStrikePaise: this.peBaseStrikePaise ?? 0,
+          wingStrikePaise: this.peWingStrikePaise ?? 0,
+          targetSpotPaise: this.peTargetSpotPaise ?? 0,
+          holdActive: this.wingHoldPeLotId !== undefined,
+          ...(this.wingHoldPeLotId !== undefined
+            ? { holdInstrumentId: String(lots.find((l) => l.lotId === this.wingHoldPeLotId)?.instrumentId) }
+            : {}),
+          rollsToday: this.peRollsToday,
+        },
+      },
     };
   }
 
@@ -818,13 +852,97 @@ export class MmRunner {
     const view = this.opts.view;
     const rows = view.optionRows();
     const atm = view.atmStrikePaise();
+    const spot = view.spotPaise();
+    const step = this.params.wingStepPoints
+      ? Number(this.params.wingStepPoints) * 100
+      : this.opts.market.contract.strikeStepPaise;
+
+    // Initialize & manage Wing Scalp + Hold strikes and roll triggers
+    if (spot !== undefined && spot > 0) {
+      if (this.ceBaseStrikePaise === undefined) {
+        this.ceBaseStrikePaise = Math.floor(spot / step) * step;
+        this.ceTargetSpotPaise = this.ceBaseStrikePaise + step;
+        this.ceWingStrikePaise = this.ceTargetSpotPaise;
+      }
+      if (this.peBaseStrikePaise === undefined) {
+        this.peBaseStrikePaise = Math.ceil(spot / step) * step;
+        this.peTargetSpotPaise = this.peBaseStrikePaise - step;
+        this.peWingStrikePaise = this.peTargetSpotPaise;
+      }
+      // Check rolls: spot reached target strike
+      if (this.ceTargetSpotPaise !== undefined && spot >= this.ceTargetSpotPaise) {
+        this.ceBaseStrikePaise = this.ceTargetSpotPaise;
+        this.ceTargetSpotPaise = this.ceBaseStrikePaise + step;
+        this.ceWingStrikePaise = this.ceTargetSpotPaise;
+        this.ceRollsToday++;
+        this.wingHoldCeLotId = undefined;
+        this.journal('mm.state', {
+          event: 'WING_ROLL',
+          instrumentId: 'CE',
+          right: 'CE',
+          detail: `rolled to base=${this.ceBaseStrikePaise / 100}, wing=${this.ceWingStrikePaise / 100}, target=${this.ceTargetSpotPaise / 100}, rolls=${this.ceRollsToday}`,
+        });
+      }
+      if (this.peTargetSpotPaise !== undefined && spot <= this.peTargetSpotPaise) {
+        this.peBaseStrikePaise = this.peTargetSpotPaise;
+        this.peTargetSpotPaise = this.peBaseStrikePaise - step;
+        this.peWingStrikePaise = this.peTargetSpotPaise;
+        this.peRollsToday++;
+        this.wingHoldPeLotId = undefined;
+        this.journal('mm.state', {
+          event: 'WING_ROLL',
+          instrumentId: 'PE',
+          right: 'PE',
+          detail: `rolled to base=${this.peBaseStrikePaise / 100}, wing=${this.peWingStrikePaise / 100}, target=${this.peTargetSpotPaise / 100}, rolls=${this.peRollsToday}`,
+        });
+      }
+    }
+
     let atmCe: OptionChainRow | undefined;
+    let wingCe: OptionChainRow | undefined;
     let atmPe: OptionChainRow | undefined;
+    let wingPe: OptionChainRow | undefined;
     for (const row of rows.values()) {
       this.rightById.set(row.instrumentId, row.right);
-      if (atm === undefined || row.strikePaise !== atm) continue;
-      if (row.right === 'CE') atmCe = row;
-      else atmPe = row;
+      if (row.right === 'CE') {
+        if (this.ceBaseStrikePaise !== undefined && row.strikePaise === this.ceBaseStrikePaise) {
+          atmCe = row;
+        } else if (atm !== undefined && row.strikePaise === atm && atmCe === undefined) {
+          atmCe = row;
+        }
+        if (this.ceWingStrikePaise !== undefined && row.strikePaise === this.ceWingStrikePaise) {
+          wingCe = row;
+        }
+      } else if (row.right === 'PE') {
+        if (this.peBaseStrikePaise !== undefined && row.strikePaise === this.peBaseStrikePaise) {
+          atmPe = row;
+        } else if (atm !== undefined && row.strikePaise === atm && atmPe === undefined) {
+          atmPe = row;
+        }
+        if (this.peWingStrikePaise !== undefined && row.strikePaise === this.peWingStrikePaise) {
+          wingPe = row;
+        }
+      }
+    }
+
+    // Discover & maintain open wing hold lots
+    const allOpenLots = this.opts.oms.getOpenLots();
+    if (this.wingHoldCeLotId !== undefined && !allOpenLots.some((l) => l.lotId === this.wingHoldCeLotId)) {
+      this.wingHoldCeLotId = undefined;
+    }
+    if (this.wingHoldPeLotId !== undefined && !allOpenLots.some((l) => l.lotId === this.wingHoldPeLotId)) {
+      this.wingHoldPeLotId = undefined;
+    }
+    for (const lot of allOpenLots) {
+      const order = this.opts.oms.getOrder(lot.clientOrderId);
+      if (order?.tag.endsWith(':wing_hold_buy')) {
+        const right = rows.get(lot.instrumentId)?.right ?? this.rightById.get(lot.instrumentId);
+        if (right === 'CE' && this.wingHoldCeLotId === undefined) {
+          this.wingHoldCeLotId = lot.lotId;
+        } else if (right === 'PE' && this.wingHoldPeLotId === undefined) {
+          this.wingHoldPeLotId = lot.lotId;
+        }
+      }
     }
 
     const books: MmBookInput[] = [];
@@ -852,7 +970,6 @@ export class MmRunner {
       });
     }
 
-    const spot = view.spotPaise();
     const latchedStop = this.opts.sessionRisk.current().latchedStop !== undefined;
     const entryBlockedInstruments = new Set<InstrumentId>();
     for (const [instrumentId, untilMs] of this.entryBlockedUntil) {
@@ -865,6 +982,18 @@ export class MmRunner {
       ...(spot !== undefined ? { spotPaise: spot } : {}),
       ...(atmCe !== undefined ? { atmCe } : {}),
       ...(atmPe !== undefined ? { atmPe } : {}),
+      ...(wingCe !== undefined ? { wingCe } : {}),
+      ...(wingPe !== undefined ? { wingPe } : {}),
+      ...(this.wingHoldCeLotId !== undefined ? { wingHoldCeLotId: this.wingHoldCeLotId } : {}),
+      ...(this.wingHoldPeLotId !== undefined ? { wingHoldPeLotId: this.wingHoldPeLotId } : {}),
+      wingState: {
+        ceBaseStrikePaise: this.ceBaseStrikePaise,
+        ceWingStrikePaise: this.ceWingStrikePaise,
+        ceTargetSpotPaise: this.ceTargetSpotPaise,
+        peBaseStrikePaise: this.peBaseStrikePaise,
+        peWingStrikePaise: this.peWingStrikePaise,
+        peTargetSpotPaise: this.peTargetSpotPaise,
+      },
       books,
       latchedStop,
       allowRunnerCandidate: !latchedStop && this.opts.journalHealthy?.() !== false,
@@ -1048,7 +1177,7 @@ function entryResidenceStart(order: Order): number {
 
 function isUrgentExit(reason: MmDesiredOrder['reason']): boolean {
   return reason === 'HARD_STOP' || reason === 'SCALP_TIMEOUT' || reason === 'RUNNER_TRAIL' ||
-    reason === 'RUNNER_TIMEOUT' || reason === 'RISK_EXIT';
+    reason === 'RUNNER_TIMEOUT' || reason === 'RISK_EXIT' || reason === 'WING_ROLL_EXIT';
 }
 
 function reasonMatches(order: Order, candidate: MmDesiredOrder): boolean {

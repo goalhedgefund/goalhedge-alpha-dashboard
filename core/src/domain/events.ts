@@ -33,7 +33,7 @@ export interface JournalPayloads {
   };
   'strategy.noTrade': { strategyId: string; reason: string; detail?: string };
   'mm.state': {
-    event: 'RUNNER_PENDING' | 'RUNNER_ACTIVE' | 'RUNNER_CLOSED' | 'DEFENSIVE_EXIT';
+    event: 'RUNNER_PENDING' | 'RUNNER_ACTIVE' | 'RUNNER_CLOSED' | 'DEFENSIVE_EXIT' | 'WING_ROLL';
     instrumentId?: string;
     right?: 'CE' | 'PE';
     lotId?: string;

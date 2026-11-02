@@ -7,7 +7,7 @@
   "dailyMaxLossPct": 1,
   "giveBack": { "armAtPct": 3, "retainPct": 50 },
   "lossStreak": { "count": 5, "cooldownMin": 15 },
-  "maxTradesPerDay": 200,
-  "maxConcurrentPositions": 2,
+  "maxTradesPerDay": 1500,
+  "maxConcurrentPositions": 6,
   "maxLotsPerOrder": 1
 }

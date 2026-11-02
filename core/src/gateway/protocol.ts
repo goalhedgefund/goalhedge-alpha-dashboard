@@ -43,6 +43,15 @@ export interface GatewayMmDefenceState {
   untilTs?: number;
 }
 
+export interface GatewayMmWingSideState {
+  baseStrikePaise: number;
+  wingStrikePaise: number;
+  targetSpotPaise: number;
+  holdActive: boolean;
+  holdInstrumentId?: string;
+  rollsToday: number;
+}
+
 export interface GatewayMmState {
   quotePhase: string;
   direction?: 'LONG' | 'SHORT';
@@ -76,6 +85,11 @@ export interface GatewayMmState {
     activatedTs: number;
   };
   defences: GatewayMmDefenceState[];
+  wing?: {
+    enabled: boolean;
+    ce?: GatewayMmWingSideState;
+    pe?: GatewayMmWingSideState;
+  };
 }
 
 export interface GatewayAlgoState {
