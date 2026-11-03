@@ -424,6 +424,7 @@ describe('MmRunner reconciliation through gate → OMS', () => {
     const tightRisk: RiskProfile = {
       ...riskProfile,
       capitalPaise: 10_000_000,
+      perTradeRiskPct: 0.4,
     };
     r = rig(tightRisk, {
       ...PARAMS,

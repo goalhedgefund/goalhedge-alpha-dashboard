@@ -2,12 +2,12 @@
   "profileId": "allop-paper",
   "version": 1,
   "mode": "paper",
-  "capitalPaise": 100000000,
-  "perTradeRiskPct": 0.5,
-  "dailyMaxLossPct": 1,
-  "giveBack": { "armAtPct": 3, "retainPct": 50 },
-  "lossStreak": { "count": 5, "cooldownMin": 15 },
-  "maxTradesPerDay": 1500,
-  "maxConcurrentPositions": 8,
-  "maxLotsPerOrder": 2
+  "capitalPaise": 1000000000,
+  "perTradeRiskPct": 5,
+  "dailyMaxLossPct": 10,
+  "giveBack": { "armAtPct": 10, "retainPct": 50 },
+  "lossStreak": { "count": 10, "cooldownMin": 5 },
+  "maxTradesPerDay": 5000,
+  "maxConcurrentPositions": 20,
+  "maxLotsPerOrder": 10
 }

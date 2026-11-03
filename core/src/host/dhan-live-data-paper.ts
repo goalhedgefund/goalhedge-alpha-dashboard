@@ -21,6 +21,7 @@ import {
   loadScripMaster,
   resolveNiftyCurrentFuture,
   resolveNiftyOptionChain,
+  resolveNiftyOptionChainByTargetExpiry,
   toInstrument,
   type ScripRow,
   type WeeklyChainResult,
@@ -281,7 +282,11 @@ function buildDhanLiveDataPaper(env: DhanLiveDataPaperEnv): DhanLiveDataPaperBui
     typeof strategyCfg.value.params.minDaysToExpiry === 'number'
       ? Math.max(0, Math.floor(strategyCfg.value.params.minDaysToExpiry))
       : 0;
-  const weekly = latestWeeklyChain(scripRows, date, env.underlyingSymbol, minDaysToExpiry);
+  const explicitExpiry = process.env.DHAN_EXPIRY_DATE?.trim();
+  const weekly = explicitExpiry
+    ? (resolveNiftyOptionChainByTargetExpiry(scripRows, explicitExpiry) ??
+       latestWeeklyChain(scripRows, date, env.underlyingSymbol, minDaysToExpiry))
+    : latestWeeklyChain(scripRows, date, env.underlyingSymbol, minDaysToExpiry);
   const market = marketWithLiveChainFacts(marketCfg.value, weekly);
   // Every strategy trades the market profile's own window. S1 previously
   // overrode it (09:20–15:25, square-off 15:30) which pushed square-off onto

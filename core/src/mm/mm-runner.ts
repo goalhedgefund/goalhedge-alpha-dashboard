@@ -127,6 +127,8 @@ export class MmRunner {
   private wingHoldPeLotId: string | undefined;
   private ceRollsToday = 0;
   private peRollsToday = 0;
+  private pendingRollBase: number | undefined;
+  private rollingActive = false;
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -860,53 +862,64 @@ export class MmRunner {
     // Initialize & manage Wing Scalp + Hold strikes and roll triggers
     let wingRollTriggered = false;
     if (spot !== undefined && spot > 0) {
-      if (this.ceBaseStrikePaise === undefined) {
-        this.ceBaseStrikePaise = Math.floor(spot / step) * step;
-        this.ceTargetSpotPaise = this.ceBaseStrikePaise + step;
-        this.ceWingStrikePaise = this.ceTargetSpotPaise;
+      if (this.ceBaseStrikePaise === undefined || this.peBaseStrikePaise === undefined) {
+        const base = Math.floor(spot / step) * step;
+        this.ceBaseStrikePaise = base;
+        this.peBaseStrikePaise = base;
+        this.ceTargetSpotPaise = base + step;
+        this.peTargetSpotPaise = base - step;
+        this.ceWingStrikePaise = base + step;
+        this.peWingStrikePaise = base - step;
       }
-      if (this.peBaseStrikePaise === undefined) {
-        this.peBaseStrikePaise = Math.ceil(spot / step) * step;
-        this.peTargetSpotPaise = this.peBaseStrikePaise - step;
-        this.peWingStrikePaise = this.peTargetSpotPaise;
-      }
-      // Check rolls: spot reached target strike (+-50 points)
-      if (this.ceTargetSpotPaise !== undefined && spot >= this.ceTargetSpotPaise) {
-        wingRollTriggered = true;
-        const newBase = this.ceTargetSpotPaise;
-        this.ceBaseStrikePaise = newBase;
-        this.peBaseStrikePaise = newBase;
-        this.ceTargetSpotPaise = newBase + step;
-        this.peTargetSpotPaise = newBase - step;
-        this.ceWingStrikePaise = newBase + step;
-        this.peWingStrikePaise = newBase - step;
-        this.ceRollsToday++;
-        this.wingHoldCeLotId = undefined;
-        this.wingHoldPeLotId = undefined;
-        this.journal('mm.state', {
-          event: 'WING_ROLL',
-          instrumentId: 'CE',
-          right: 'CE',
-          detail: `spot ${spot / 100} shifted +50. Rolled base to ${newBase / 100}, CE wing ${this.ceWingStrikePaise / 100}, PE wing ${this.peWingStrikePaise / 100}, rolls=${this.ceRollsToday}`,
-        });
-      }
-      if (this.peTargetSpotPaise !== undefined && spot <= this.peTargetSpotPaise) {
-        wingRollTriggered = true;
-        const newBase = this.peTargetSpotPaise;
-        this.ceBaseStrikePaise = newBase;
-        this.peBaseStrikePaise = newBase;
-        this.ceTargetSpotPaise = newBase + step;
-        this.peTargetSpotPaise = newBase - step;
-        this.ceWingStrikePaise = newBase + step;
-        this.peWingStrikePaise = newBase - step;
-        this.peRollsToday++;
-        this.wingHoldPeLotId = undefined;
-        this.journal('mm.state', {
-          event: 'WING_ROLL',
-          instrumentId: 'PE',
-          right: 'PE',
-          detail: `spot ${spot / 100} shifted -50. Rolled base to ${newBase / 100}, CE wing ${this.ceWingStrikePaise / 100}, PE wing ${this.peWingStrikePaise / 100}, rolls=${this.peRollsToday}`,
-        });
+      const openLots = this.opts.oms.getOpenLots();
+      // Check if a roll is already in progress: must wait until flat before advancing strikes
+      if (this.rollingActive && this.pendingRollBase !== undefined) {
+        if (openLots.length === 0) {
+          // 100% flat: complete the transition to the new base
+          const newBase = this.pendingRollBase;
+          this.ceBaseStrikePaise = newBase;
+          this.peBaseStrikePaise = newBase;
+          this.ceTargetSpotPaise = newBase + step;
+          this.peTargetSpotPaise = newBase - step;
+          this.ceWingStrikePaise = newBase + step;
+          this.peWingStrikePaise = newBase - step;
+          this.wingHoldCeLotId = undefined;
+          this.wingHoldPeLotId = undefined;
+          this.rollingActive = false;
+          this.pendingRollBase = undefined;
+          this.journal('mm.state', {
+            event: 'WING_ROLL',
+            detail: `Flattened previous strike. Advanced base to ${newBase / 100}, CE wing ${this.ceWingStrikePaise / 100}, PE wing ${this.peWingStrikePaise / 100}`,
+          });
+        } else {
+          // Still flattening: maintain roll exit state
+          wingRollTriggered = true;
+        }
+      } else {
+        // Check rolls: spot reached target strike (+-100 points)
+        if (this.ceTargetSpotPaise !== undefined && spot >= this.ceTargetSpotPaise) {
+          wingRollTriggered = true;
+          this.rollingActive = true;
+          this.pendingRollBase = this.ceTargetSpotPaise;
+          this.ceRollsToday++;
+          this.journal('mm.state', {
+            event: 'WING_ROLL',
+            instrumentId: 'CE',
+            right: 'CE',
+            detail: `spot ${spot / 100} shifted +100. Initiating roll to base ${this.pendingRollBase / 100}, flattening open lots (${openLots.length}), rolls=${this.ceRollsToday}`,
+          });
+        } else if (this.peTargetSpotPaise !== undefined && spot <= this.peTargetSpotPaise) {
+          wingRollTriggered = true;
+          this.rollingActive = true;
+          this.pendingRollBase = this.peTargetSpotPaise;
+          this.peRollsToday++;
+          this.journal('mm.state', {
+            event: 'WING_ROLL',
+            instrumentId: 'PE',
+            right: 'PE',
+            detail: `spot ${spot / 100} shifted -100. Initiating roll to base ${this.pendingRollBase / 100}, flattening open lots (${openLots.length}), rolls=${this.peRollsToday}`,
+          });
+        }
       }
     }
 

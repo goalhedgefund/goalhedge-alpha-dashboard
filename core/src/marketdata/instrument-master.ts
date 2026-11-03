@@ -282,6 +282,8 @@ export function resolveNiftyWeeklyChain(
   };
 }
 
+
+
 /** Resolve the nearest eligible NIFTY chain for live Dhan option quoting. */
 export function resolveNiftyOptionChain(
   rows: ScripRow[],
@@ -302,6 +304,8 @@ export function resolveNiftyOptionChain(
     rowCount: niftyOptions.filter((r) => r.expiryDate === expiryDate).length,
   };
 }
+
+
 
 /**
  * Resolve a NIFTY option chain a fixed number of listed expiries after a
@@ -327,5 +331,23 @@ export function resolveNiftyOptionChainByExpiryOffset(
     lotSize: first ? Math.round(first.lotSize) : 65,
     tickSizePaise: first ? first.tickSizePaise : 5,
     rowCount: niftyOptions.filter((r) => r.expiryDate === expiryDate).length,
+  };
+}
+
+/** Resolve a specific target expiry date for live Dhan option quoting. */
+export function resolveNiftyOptionChainByTargetExpiry(
+  rows: ScripRow[],
+  targetExpiryDate: string,
+): WeeklyChainResult | undefined {
+  const niftyOptions = filterOptions(rows, 'NIFTY');
+  const chain = buildOptionChain(niftyOptions, targetExpiryDate);
+  const first = niftyOptions.find((r) => r.expiryDate === targetExpiryDate);
+  if (first === undefined || chain.size === 0) return undefined;
+  return {
+    expiryDate: targetExpiryDate,
+    chain,
+    lotSize: Math.round(first.lotSize) || 65,
+    tickSizePaise: first.tickSizePaise || 5,
+    rowCount: niftyOptions.filter((r) => r.expiryDate === targetExpiryDate).length,
   };
 }

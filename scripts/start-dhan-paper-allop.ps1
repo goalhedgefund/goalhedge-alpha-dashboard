@@ -1,6 +1,11 @@
 param(
   [string]$RepoRoot = "D:\Claude\workstation\services\scalper",
   [string]$EnvPath = "D:\Claude\workstation\secrets\dhan\.env",
+  [string]$ExpiryDate = $(if ($env:DHAN_EXPIRY_DATE) { $env:DHAN_EXPIRY_DATE } else { "" }),
+  [string]$GatewayPort = $(if ($env:DHAN_GATEWAY_PORT) { $env:DHAN_GATEWAY_PORT } else { "8703" }),
+  [string]$JournalRoot = $(if ($env:DHAN_JOURNAL_ROOT) { $env:DHAN_JOURNAL_ROOT } else { "journals\allop-atm-mm" }),
+  [string]$RecorderRoot = $(if ($env:DHAN_RECORDER_ROOT) { $env:DHAN_RECORDER_ROOT } else { "data\dhan\ticks-allop-atm-mm" }),
+  [string]$ConsumerId = $(if ($env:SHARED_MARKET_HUB_CONSUMER_ID) { $env:SHARED_MARKET_HUB_CONSUMER_ID } else { "all-op" }),
   [switch]$SkipBuild,
   [switch]$SkipLaunchWindow
 )
@@ -71,10 +76,15 @@ if ($totpMode) {
 
 $env:DHAN_ENV_PATH = $EnvPath
 $env:DHAN_STRATEGY_ID = "allop-atm-mm"
-$env:SHARED_MARKET_HUB_CONSUMER_ID = "all-op"
-$env:DHAN_GATEWAY_PORT = "8703"
-$env:DHAN_JOURNAL_ROOT = "journals\allop-atm-mm"
-$env:DHAN_RECORDER_ROOT = "data\dhan\ticks-allop-atm-mm"
+$env:SHARED_MARKET_HUB_CONSUMER_ID = $ConsumerId
+$env:DHAN_GATEWAY_PORT = $GatewayPort
+$env:DHAN_JOURNAL_ROOT = $JournalRoot
+$env:DHAN_RECORDER_ROOT = $RecorderRoot
+if ($ExpiryDate) {
+  $env:DHAN_EXPIRY_DATE = $ExpiryDate
+} else {
+  Remove-Item env:\DHAN_EXPIRY_DATE -ErrorAction SilentlyContinue
+}
 $env:DHAN_AUTO_ARM = "true"
 # Dhan WS takes ~12-15s to deliver the first spot tick after connect; give preflight 20s.
 $env:DHAN_FEED_STALE_MS = "20000"
@@ -84,13 +94,14 @@ Write-LaunchLog "Consumer ID forced to $env:SHARED_MARKET_HUB_CONSUMER_ID."
 Write-LaunchLog "Gateway port forced to $env:DHAN_GATEWAY_PORT."
 Write-LaunchLog "Journal root forced to $env:DHAN_JOURNAL_ROOT."
 Write-LaunchLog "Recorder root forced to $env:DHAN_RECORDER_ROOT."
+Write-LaunchLog "Expiry Date forced to $env:DHAN_EXPIRY_DATE."
 Write-LaunchLog "Auto-arm forced to $env:DHAN_AUTO_ARM."
 Write-LaunchLog "Feed stale threshold: $env:DHAN_FEED_STALE_MS ms."
 
 # A paper-only runner cannot safely re-adopt a simulated position after a
 # crashed launch. Preserve the failed session for audit, then start clean.
 $today = Get-Date -Format "yyyy-MM-dd"
-$sessionDir = Join-Path $RepoRoot "journals\allop-atm-mm\$today\dhan-live-data-paper"
+$sessionDir = Join-Path $RepoRoot "$JournalRoot\$today\dhan-live-data-paper"
 $eventsPath = Join-Path $sessionDir "events.jsonl"
 if (Test-Path -LiteralPath $eventsPath) {
   $recoveryHalt = Select-String -LiteralPath $eventsPath -SimpleMatch 'RECOVERED_OPEN_POSITION' | Select-Object -Last 1

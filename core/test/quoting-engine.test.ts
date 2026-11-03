@@ -713,7 +713,7 @@ describe('v0.12 production long-option market-maker policy', () => {
       globalLossClusterWindowSec: 1_800,
       globalLossClusterCooldownSec: 3_600,
       wingArchitectureEnabled: true,
-      wingStepPoints: 50,
+      wingStepPoints: 100,
       wingHoldLots: 1,
       wingScalpLots: 1,
       wingSpreadPct: 1.0,
