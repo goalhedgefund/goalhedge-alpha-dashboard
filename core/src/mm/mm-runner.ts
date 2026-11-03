@@ -352,7 +352,7 @@ export class MmRunner {
       let shadowPolicy: ShadowPolicyResult | undefined;
 
       if (this.opts.journalHealthy?.() === false) {
-        desired = desired.filter((order) => order.side === 'SELL');
+        desired = desired.filter((order) => order.purpose === 'EXIT');
         if (this.shadowEntry?.phase !== 'LIVE') this.shadowEntry = undefined;
         this.noTrade('JOURNAL_UNHEALTHY');
       } else if (evaluation.pauseReason !== undefined) {
@@ -363,7 +363,7 @@ export class MmRunner {
       } else {
         shadowPolicy = this.applyShadowEntryPolicy(desired, evaluation, nowMs);
         desired = shadowPolicy.desired;
-        if (desired.some((order) => order.side === 'BUY')) {
+        if (desired.some((order) => order.purpose === 'ENTRY')) {
           this.lastNoTradeReason = undefined;
         } else if (shadowPolicy.waitReason !== undefined) {
           this.noTrade(shadowPolicy.waitReason, shadowPolicy.waitDetail);
@@ -525,7 +525,7 @@ export class MmRunner {
     const verdict = this.opts.gate.evaluate(intent, this.gateContext(nowMs));
     this.journal('risk.verdict', { verdict });
     if (!verdict.approved) {
-      if (order.side === 'BUY') {
+      if (order.purpose === 'ENTRY') {
         const cooldownMs = this.engine.activeParams().entryRejectCooldownSec * 1_000;
         this.entryBlockedUntil.set(order.instrumentId, nowMs + cooldownMs);
         this.noTrade(`GATE_${verdict.reason ?? 'REJECTED'}`);
@@ -858,6 +858,7 @@ export class MmRunner {
       : this.opts.market.contract.strikeStepPaise;
 
     // Initialize & manage Wing Scalp + Hold strikes and roll triggers
+    let wingRollTriggered = false;
     if (spot !== undefined && spot > 0) {
       if (this.ceBaseStrikePaise === undefined) {
         this.ceBaseStrikePaise = Math.floor(spot / step) * step;
@@ -869,31 +870,42 @@ export class MmRunner {
         this.peTargetSpotPaise = this.peBaseStrikePaise - step;
         this.peWingStrikePaise = this.peTargetSpotPaise;
       }
-      // Check rolls: spot reached target strike
+      // Check rolls: spot reached target strike (+-50 points)
       if (this.ceTargetSpotPaise !== undefined && spot >= this.ceTargetSpotPaise) {
-        this.ceBaseStrikePaise = this.ceTargetSpotPaise;
-        this.ceTargetSpotPaise = this.ceBaseStrikePaise + step;
-        this.ceWingStrikePaise = this.ceTargetSpotPaise;
+        wingRollTriggered = true;
+        const newBase = this.ceTargetSpotPaise;
+        this.ceBaseStrikePaise = newBase;
+        this.peBaseStrikePaise = newBase;
+        this.ceTargetSpotPaise = newBase + step;
+        this.peTargetSpotPaise = newBase - step;
+        this.ceWingStrikePaise = newBase + step;
+        this.peWingStrikePaise = newBase - step;
         this.ceRollsToday++;
         this.wingHoldCeLotId = undefined;
+        this.wingHoldPeLotId = undefined;
         this.journal('mm.state', {
           event: 'WING_ROLL',
           instrumentId: 'CE',
           right: 'CE',
-          detail: `rolled to base=${this.ceBaseStrikePaise / 100}, wing=${this.ceWingStrikePaise / 100}, target=${this.ceTargetSpotPaise / 100}, rolls=${this.ceRollsToday}`,
+          detail: `spot ${spot / 100} shifted +50. Rolled base to ${newBase / 100}, CE wing ${this.ceWingStrikePaise / 100}, PE wing ${this.peWingStrikePaise / 100}, rolls=${this.ceRollsToday}`,
         });
       }
       if (this.peTargetSpotPaise !== undefined && spot <= this.peTargetSpotPaise) {
-        this.peBaseStrikePaise = this.peTargetSpotPaise;
-        this.peTargetSpotPaise = this.peBaseStrikePaise - step;
-        this.peWingStrikePaise = this.peTargetSpotPaise;
+        wingRollTriggered = true;
+        const newBase = this.peTargetSpotPaise;
+        this.ceBaseStrikePaise = newBase;
+        this.peBaseStrikePaise = newBase;
+        this.ceTargetSpotPaise = newBase + step;
+        this.peTargetSpotPaise = newBase - step;
+        this.ceWingStrikePaise = newBase + step;
+        this.peWingStrikePaise = newBase - step;
         this.peRollsToday++;
         this.wingHoldPeLotId = undefined;
         this.journal('mm.state', {
           event: 'WING_ROLL',
           instrumentId: 'PE',
           right: 'PE',
-          detail: `rolled to base=${this.peBaseStrikePaise / 100}, wing=${this.peWingStrikePaise / 100}, target=${this.peTargetSpotPaise / 100}, rolls=${this.peRollsToday}`,
+          detail: `spot ${spot / 100} shifted -50. Rolled base to ${newBase / 100}, CE wing ${this.ceWingStrikePaise / 100}, PE wing ${this.peWingStrikePaise / 100}, rolls=${this.peRollsToday}`,
         });
       }
     }
@@ -958,6 +970,7 @@ export class MmRunner {
           qty: lot.qty,
           entryPricePaise: lot.pricePaise,
           openedTs: lot.ts,
+          ...(lot.entrySide !== undefined ? { entrySide: lot.entrySide } : {}),
         }));
       books.push({
         instrumentId: position.instrumentId,
@@ -986,6 +999,7 @@ export class MmRunner {
       ...(wingPe !== undefined ? { wingPe } : {}),
       ...(this.wingHoldCeLotId !== undefined ? { wingHoldCeLotId: this.wingHoldCeLotId } : {}),
       ...(this.wingHoldPeLotId !== undefined ? { wingHoldPeLotId: this.wingHoldPeLotId } : {}),
+      ...(wingRollTriggered ? { wingRollTriggered: true } : {}),
       wingState: {
         ceBaseStrikePaise: this.ceBaseStrikePaise,
         ceWingStrikePaise: this.ceWingStrikePaise,
@@ -1218,10 +1232,10 @@ function blockOrderAllocation(
   order: Order,
   broad: Set<string>,
   lots: Set<string>,
-  allocatedSellInstruments: Set<string>,
+  allocatedExitInstruments: Set<string>,
 ): void {
-  if (order.side === 'SELL' && (order.closeLotIds?.length ?? 0) > 0) {
-    allocatedSellInstruments.add(String(order.instrumentId));
+  if ((order.closeLotIds?.length ?? 0) > 0) {
+    allocatedExitInstruments.add(String(order.instrumentId));
     for (const lotId of order.closeLotIds ?? []) lots.add(lotLane(order.instrumentId, lotId));
     return;
   }
@@ -1232,12 +1246,14 @@ function allocationBlocked(
   order: MmDesiredOrder,
   broad: ReadonlySet<string>,
   lots: ReadonlySet<string>,
-  allocatedSellInstruments: ReadonlySet<string>,
+  allocatedExitInstruments: ReadonlySet<string>,
 ): boolean {
-  if (broad.has(broadLane(order))) return true;
-  if (order.side !== 'SELL') return false;
-  if ((order.closeLotIds?.length ?? 0) === 0) {
-    return allocatedSellInstruments.has(String(order.instrumentId));
+  if ((order.closeLotIds?.length ?? 0) > 0) {
+    return (order.closeLotIds ?? []).some((lotId) => lots.has(lotLane(order.instrumentId, lotId)));
   }
-  return (order.closeLotIds ?? []).some((lotId) => lots.has(lotLane(order.instrumentId, lotId)));
+  if (broad.has(broadLane(order))) return true;
+  if (order.purpose === 'EXIT') {
+    return allocatedExitInstruments.has(String(order.instrumentId));
+  }
+  return false;
 }

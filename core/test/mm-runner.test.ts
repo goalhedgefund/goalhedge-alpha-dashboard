@@ -421,7 +421,11 @@ describe('MmRunner reconciliation through gate → OMS', () => {
   });
 
   it('backs off a risk-rejected preferred entry and tries the other right', async () => {
-    r = rig(riskProfile, {
+    const tightRisk: RiskProfile = {
+      ...riskProfile,
+      capitalPaise: 10_000_000,
+    };
+    r = rig(tightRisk, {
       ...PARAMS,
       maxLotsInventory: 1,
       maxScalpLots: 1,
@@ -751,6 +755,7 @@ describe('MmRunner reconciliation through gate → OMS', () => {
   it('a completed trade that trips the session stop flattens the other book in the same cycle', async () => {
     const sensitiveRisk: RiskProfile = {
       ...testRiskProfile,
+      capitalPaise: 10_000_000,
       giveBack: { armAtPct: 0.1, retainPct: 99 },
     };
     r = rig(sensitiveRisk);
