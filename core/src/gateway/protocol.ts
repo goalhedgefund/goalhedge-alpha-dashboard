@@ -46,9 +46,13 @@ export interface GatewayMmDefenceState {
 export interface GatewayMmWingSideState {
   baseStrikePaise: number;
   wingStrikePaise: number;
+  scaleInSpotPaise?: number;
   targetSpotPaise: number;
+  trendStrikePaise?: number;
   holdActive: boolean;
+  holdLots?: number;
   holdInstrumentId?: string;
+  stage?: string;
   rollsToday: number;
 }
 
