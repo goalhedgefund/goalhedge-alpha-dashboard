@@ -291,7 +291,10 @@ export function resolveNiftyOptionChain(
   minDaysToExpiry = 0,
 ): WeeklyChainResult | undefined {
   const niftyOptions = filterOptions(rows, 'NIFTY');
-  const expiryDate = nextOptionExpiry(niftyOptions, asOfDate, minDaysToExpiry);
+  // Strictly prioritize true weekly options (expiryFlag === 'W'). Only fall back if no 'W' exists.
+  const expiryDate =
+    nextWeeklyExpiry(niftyOptions, asOfDate, minDaysToExpiry) ??
+    nextOptionExpiry(niftyOptions, asOfDate, minDaysToExpiry);
   if (expiryDate === undefined) return undefined;
 
   const chain = buildOptionChain(niftyOptions, expiryDate);

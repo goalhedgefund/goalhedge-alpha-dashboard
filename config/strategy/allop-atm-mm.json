@@ -5,13 +5,13 @@
   "params": {
     "spreadCostMultiple": 3,
     "takeProfitCostMultiple": 3,
-    "maxLotsInventory": 6,
-    "maxScalpLots": 4,
+    "maxLotsInventory": 10,
+    "maxScalpLots": 10,
     "runnerLots": 0,
     "lotsPerOrder": 1,
     "ladderLevels": 1,
     "ladderGapPct": 2.0,
-    "maxLotsPerSide": 3,
+    "maxLotsPerSide": 6,
     "repriceTicks": 2,
     "quoteTtlSec": 30,
     "minRequoteMs": 2000,
@@ -54,14 +54,17 @@
     "directionalOnly": false,
     "lossStreakEscalation": 3,
     "escalatedCooldownSec": 300,
-    "minDaysToExpiry": 4,
+    "minDaysToExpiry": 1,
     "quoteFrom": "09:20",
     "bidCutoff": "15:05",
     "migrationPanicExit": false,
     "wingArchitectureEnabled": true,
-    "wingStepPoints": 100,
-    "wingHoldLots": 1,
+    "wingStepPoints": 50,
+    "wingScaleInPoints": 25,
+    "wingHoldLots": 2,
     "wingScalpLots": 1,
-    "wingSpreadPct": 1.0
+    "wingSpreadPct": 1.0,
+    "wingNoStopLossOnBase": true,
+    "trendScalpStopNiftyPoints": 50
   }
 }
