@@ -677,9 +677,9 @@ describe('v0.12 production long-option market-maker policy', () => {
     expect(strategy.params).toEqual(expect.objectContaining({
       spreadCostMultiple: 3,
       takeProfitCostMultiple: 3,
-      maxLotsInventory: 6,
-      maxScalpLots: 4,
-      maxLotsPerSide: 3,
+      maxLotsInventory: 10,
+      maxScalpLots: 10,
+      maxLotsPerSide: 6,
       runnerLots: 0,
       ladderLevels: 1,
       directionalOnly: false,
@@ -713,10 +713,13 @@ describe('v0.12 production long-option market-maker policy', () => {
       globalLossClusterWindowSec: 1_800,
       globalLossClusterCooldownSec: 3_600,
       wingArchitectureEnabled: true,
-      wingStepPoints: 100,
-      wingHoldLots: 1,
+      wingStepPoints: 50,
+      wingScaleInPoints: 25,
+      wingHoldLots: 2,
       wingScalpLots: 1,
       wingSpreadPct: 1.0,
+      wingNoStopLossOnBase: true,
+      trendScalpStopNiftyPoints: 50,
     }));
   });
 
