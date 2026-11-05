@@ -107,6 +107,10 @@ export interface MmParams {
   wingSpreadPct: number;
   wingNoStopLossOnBase: boolean;
   trendScalpStopNiftyPoints: number;
+  /** Eliminate base straddle drag via credit-floor guard, with-trend short scaling, and breakout unwind/flip. */
+  wingAvoidStraddleDrag: boolean;
+  /** Minimum credit buffer (in points) required between Base Short Ask and Wing Hold reference price. */
+  wingMinCreditPoints: number;
 }
 
 function strParam(params: StrategyParams, key: string, dflt: string): string {
@@ -188,6 +192,8 @@ export function resolveMmParams(params: StrategyParams): MmParams {
     wingSpreadPct: boundedParam(params, 'wingSpreadPct', 1.0, 0.1, 10.0),
     wingNoStopLossOnBase: boolParam(params, 'wingNoStopLossOnBase', true),
     trendScalpStopNiftyPoints: Math.floor(boundedParam(params, 'trendScalpStopNiftyPoints', 50, 10, 500)),
+    wingAvoidStraddleDrag: boolParam(params, 'wingAvoidStraddleDrag', false),
+    wingMinCreditPoints: boundedParam(params, 'wingMinCreditPoints', 10, 0, 200),
   };
 }
 
@@ -539,51 +545,12 @@ export class QuotingEngine {
       const wingCeHoldSet = new Set(holdCeLots);
       const wingPeHoldSet = new Set(holdPeLots);
 
-      // Target stationary wing lots: Stage 0: 1 lot, Stage 1/2/Trend: 2 lots, Pullback: 1 or 0 lots
-      let targetStationaryCeLots = 1;
-      if (ceStage === 'STAGE_1_SCALE_IN' || ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
-        targetStationaryCeLots = 2;
-      } else if (ceStage === 'PATH_1_PULLBACK') {
-        const s0 = input.wingState?.ceBaseStrikePaise ?? 0;
-        const scaleInSpot = input.wingState?.ceScaleInSpotPaise ?? (s0 + 2500);
-        if (input.spotPaise !== undefined && input.spotPaise <= s0) {
-          targetStationaryCeLots = 0;
-        } else if (input.spotPaise !== undefined && input.spotPaise <= scaleInSpot) {
-          targetStationaryCeLots = 1;
-        } else {
-          targetStationaryCeLots = 2;
-        }
-      }
-
-      let targetStationaryPeLots = 1;
-      if (peStage === 'STAGE_1_SCALE_IN' || peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
-        targetStationaryPeLots = 2;
-      } else if (peStage === 'PATH_1_PULLBACK') {
-        const s0 = input.wingState?.peBaseStrikePaise ?? 0;
-        const scaleInSpot = input.wingState?.peScaleInSpotPaise ?? (s0 - 2500);
-        if (input.spotPaise !== undefined && input.spotPaise >= s0) {
-          targetStationaryPeLots = 0;
-        } else if (input.spotPaise !== undefined && input.spotPaise >= scaleInSpot) {
-          targetStationaryPeLots = 1;
-        } else {
-          targetStationaryPeLots = 2;
-        }
-      }
-
-      // Target short straddle lots: matching target stationary lots
-      let targetShortCeLots = 1;
-      if (ceStage === 'STAGE_1_SCALE_IN' || ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
-        targetShortCeLots = 2;
-      } else if (ceStage === 'PATH_1_PULLBACK') {
-        targetShortCeLots = targetStationaryCeLots;
-      }
-
-      let targetShortPeLots = 1;
-      if (peStage === 'STAGE_1_SCALE_IN' || peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
-        targetShortPeLots = 2;
-      } else if (peStage === 'PATH_1_PULLBACK') {
-        targetShortPeLots = targetStationaryPeLots;
-      }
+      const {
+        targetStationaryCeLots,
+        targetStationaryPeLots,
+        targetShortCeLots,
+        targetShortPeLots,
+      } = this.computeWingTargets(input);
 
       // Books and lots
       const baseCeBook = input.atmCe ? input.books.find((b) => b.instrumentId === input.atmCe?.instrumentId) : undefined;
@@ -593,14 +560,33 @@ export class QuotingEngine {
       const contCeBook = input.contCe ? input.books.find((b) => b.instrumentId === input.contCe?.instrumentId) : undefined;
       const contPeBook = input.contPe ? input.books.find((b) => b.instrumentId === input.contPe?.instrumentId) : undefined;
 
-      const baseCeShortLots = (baseCeBook ? this.bookLots(baseCeBook) : []).filter((l) => l.entrySide === 'SELL');
-      const basePeShortLots = (basePeBook ? this.bookLots(basePeBook) : []).filter((l) => l.entrySide === 'SELL');
+      const baseCeLots = baseCeBook ? this.bookLots(baseCeBook) : [];
+      const basePeLots = basePeBook ? this.bookLots(basePeBook) : [];
+      const baseCeShortLots = baseCeLots.filter((l) => l.entrySide === 'SELL');
+      const basePeShortLots = basePeLots.filter((l) => l.entrySide === 'SELL');
+      const baseCeLongLots = baseCeLots.filter((l) => l.entrySide !== 'SELL');
+      const basePeLongLots = basePeLots.filter((l) => l.entrySide !== 'SELL');
       const wingCeLots = wingCeBook ? this.bookLots(wingCeBook) : [];
       const wingPeLots = wingPeBook ? this.bookLots(wingPeBook) : [];
+      const wingCeHoldLotObjs = wingCeLots.filter((l) => wingCeHoldSet.has(l.lotId));
+      const wingPeHoldLotObjs = wingPeLots.filter((l) => wingPeHoldSet.has(l.lotId));
       const wingCeScalpLots = wingCeLots.filter((l) => !wingCeHoldSet.has(l.lotId));
       const wingPeScalpLots = wingPeLots.filter((l) => !wingPeHoldSet.has(l.lotId));
       const contCeLots = contCeBook ? this.bookLots(contCeBook) : [];
       const contPeLots = contPeBook ? this.bookLots(contPeBook) : [];
+
+      // Credit-floor guard reference prices for Base Short entries
+      const wingCeRefPaise = wingCeHoldLotObjs.length > 0
+        ? Math.round(wingCeHoldLotObjs.reduce((s, l) => s + l.entryPricePaise, 0) / wingCeHoldLotObjs.length)
+        : (input.wingCe?.askPaise ?? 0);
+      const wingPeRefPaise = wingPeHoldLotObjs.length > 0
+        ? Math.round(wingPeHoldLotObjs.reduce((s, l) => s + l.entryPricePaise, 0) / wingPeHoldLotObjs.length)
+        : (input.wingPe?.askPaise ?? 0);
+      const minCreditPaise = Math.round(p.wingMinCreditPoints * 100);
+      const ceCreditFloorOk = !p.wingAvoidStraddleDrag || wingCeRefPaise <= 0 ||
+        (input.atmCe !== undefined && input.atmCe.askPaise >= wingCeRefPaise + minCreditPaise);
+      const peCreditFloorOk = !p.wingAvoidStraddleDrag || wingPeRefPaise <= 0 ||
+        (input.atmPe !== undefined && input.atmPe.askPaise >= wingPeRefPaise + minCreditPaise);
 
       // Check CE side
       if (!skip['CE']) {
@@ -633,9 +619,10 @@ export class QuotingEngine {
           eligibleEntryInstruments.add(input.wingCe.instrumentId);
         }
 
-        // 2. Base ATM CE Short:
+        // 2. Base ATM CE Short (with Credit-Floor Guard when wingAvoidStraddleDrag is active):
         if (
           baseCeShortLots.length < targetShortCeLots &&
+          ceCreditFloorOk &&
           input.atmCe !== undefined &&
           input.atmCe.bidPaise > 0 &&
           input.atmCe.askPaise > 0 &&
@@ -663,9 +650,41 @@ export class QuotingEngine {
           eligibleEntryInstruments.add(input.atmCe.instrumentId);
         }
 
-        // 3. Stage 2 Wing Scalp (1 lot BFSL on wing strike):
+        // 2b. Base ATM CE Trend-Flip BFSL (when wingAvoidStraddleDrag unwinds short CE on breakout):
         if (
-          ceStage === 'STAGE_2_WING' &&
+          p.wingAvoidStraddleDrag &&
+          (ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') &&
+          baseCeShortLots.length === 0 &&
+          baseCeLongLots.length === 0 &&
+          input.atmCe !== undefined &&
+          input.atmCe.bidPaise > 0 &&
+          input.atmCe.askPaise > 0 &&
+          !input.entryBlockedInstruments?.has(input.atmCe.instrumentId) &&
+          remainingLots >= 1
+        ) {
+          const price = input.atmCe.bidPaise;
+          const hardStop = Math.max(tick, Math.round(price * (1 - p.hardStopPct / 100)));
+          desired.push({
+            instrumentId: input.atmCe.instrumentId,
+            side: 'BUY',
+            qty: 1 * lotSize,
+            type: 'LIMIT',
+            limitPricePaise: price,
+            purpose: 'ENTRY',
+            reason: 'QUOTE_BID',
+            stopPlan: {
+              hardStopPremiumPaise: hardStop,
+              timeStopSec: 86_400,
+            },
+          });
+          plannedByRight['CE'] += 1;
+          remainingLots -= 1;
+          eligibleEntryInstruments.add(input.atmCe.instrumentId);
+        }
+
+        // 3. Stage 2 / Path 2 Wing Scalp (1 lot BFSL on wing strike):
+        if (
+          (ceStage === 'STAGE_2_WING' || (p.wingAvoidStraddleDrag && ceStage === 'PATH_2_TREND')) &&
           wingCeScalpLots.length === 0 &&
           input.wingCe !== undefined &&
           input.wingCe.bidPaise > 0 &&
@@ -754,9 +773,10 @@ export class QuotingEngine {
           eligibleEntryInstruments.add(input.wingPe.instrumentId);
         }
 
-        // 2. Base ATM PE Short:
+        // 2. Base ATM PE Short (with Credit-Floor Guard when wingAvoidStraddleDrag is active):
         if (
           basePeShortLots.length < targetShortPeLots &&
+          peCreditFloorOk &&
           input.atmPe !== undefined &&
           input.atmPe.bidPaise > 0 &&
           input.atmPe.askPaise > 0 &&
@@ -784,9 +804,41 @@ export class QuotingEngine {
           eligibleEntryInstruments.add(input.atmPe.instrumentId);
         }
 
-        // 3. Stage 2 Wing Scalp (1 lot BFSL on wing strike):
+        // 2b. Base ATM PE Trend-Flip BFSL (when wingAvoidStraddleDrag unwinds short PE on breakout):
         if (
-          peStage === 'STAGE_2_WING' &&
+          p.wingAvoidStraddleDrag &&
+          (peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') &&
+          basePeShortLots.length === 0 &&
+          basePeLongLots.length === 0 &&
+          input.atmPe !== undefined &&
+          input.atmPe.bidPaise > 0 &&
+          input.atmPe.askPaise > 0 &&
+          !input.entryBlockedInstruments?.has(input.atmPe.instrumentId) &&
+          remainingLots >= 1
+        ) {
+          const price = input.atmPe.bidPaise;
+          const hardStop = Math.max(tick, Math.round(price * (1 - p.hardStopPct / 100)));
+          desired.push({
+            instrumentId: input.atmPe.instrumentId,
+            side: 'BUY',
+            qty: 1 * lotSize,
+            type: 'LIMIT',
+            limitPricePaise: price,
+            purpose: 'ENTRY',
+            reason: 'QUOTE_BID',
+            stopPlan: {
+              hardStopPremiumPaise: hardStop,
+              timeStopSec: 86_400,
+            },
+          });
+          plannedByRight['PE'] += 1;
+          remainingLots -= 1;
+          eligibleEntryInstruments.add(input.atmPe.instrumentId);
+        }
+
+        // 3. Stage 2 / Path 3 Wing Scalp (1 lot BFSL on wing strike):
+        if (
+          (peStage === 'STAGE_2_WING' || (p.wingAvoidStraddleDrag && peStage === 'PATH_3_TREND')) &&
           wingPeScalpLots.length === 0 &&
           input.wingPe !== undefined &&
           input.wingPe.bidPaise > 0 &&
@@ -991,6 +1043,106 @@ export class QuotingEngine {
     };
   }
 
+  private computeWingTargets(input: MmQuoteInput): {
+    targetStationaryCeLots: number;
+    targetStationaryPeLots: number;
+    targetShortCeLots: number;
+    targetShortPeLots: number;
+  } {
+    const ceStage = input.ceLadderStage ?? 'STAGE_0';
+    const peStage = input.peLadderStage ?? 'STAGE_0';
+    const avoidDrag = this.params.wingAvoidStraddleDrag;
+
+    let targetStationaryCeLots = 1;
+    if (ceStage === 'STAGE_1_SCALE_IN' || ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
+      targetStationaryCeLots = 2;
+    } else if (ceStage === 'PATH_1_PULLBACK') {
+      const s0 = input.wingState?.ceBaseStrikePaise ?? 0;
+      const scaleInSpot = input.wingState?.ceScaleInSpotPaise ?? (s0 + 2500);
+      if (input.spotPaise !== undefined && input.spotPaise <= s0) {
+        targetStationaryCeLots = 0;
+      } else if (input.spotPaise !== undefined && input.spotPaise <= scaleInSpot) {
+        targetStationaryCeLots = 1;
+      } else {
+        targetStationaryCeLots = 2;
+      }
+    }
+
+    let targetStationaryPeLots = 1;
+    if (peStage === 'STAGE_1_SCALE_IN' || peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
+      targetStationaryPeLots = 2;
+    } else if (peStage === 'PATH_1_PULLBACK') {
+      const s0 = input.wingState?.peBaseStrikePaise ?? 0;
+      const scaleInSpot = input.wingState?.peScaleInSpotPaise ?? (s0 - 2500);
+      if (input.spotPaise !== undefined && input.spotPaise >= s0) {
+        targetStationaryPeLots = 0;
+      } else if (input.spotPaise !== undefined && input.spotPaise >= scaleInSpot) {
+        targetStationaryPeLots = 1;
+      } else {
+        targetStationaryPeLots = 2;
+      }
+    }
+
+    if (!avoidDrag) {
+      let targetShortCeLots = 1;
+      if (ceStage === 'STAGE_1_SCALE_IN' || ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
+        targetShortCeLots = 2;
+      } else if (ceStage === 'PATH_1_PULLBACK') {
+        targetShortCeLots = targetStationaryCeLots;
+      }
+
+      let targetShortPeLots = 1;
+      if (peStage === 'STAGE_1_SCALE_IN' || peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
+        targetShortPeLots = 2;
+      } else if (peStage === 'PATH_1_PULLBACK') {
+        targetShortPeLots = targetStationaryPeLots;
+      }
+
+      return {
+        targetStationaryCeLots,
+        targetStationaryPeLots,
+        targetShortCeLots,
+        targetShortPeLots,
+      };
+    }
+
+    // Straddle-Drag-Elimination mode:
+    // 1. Cut opposite stationary wing when breakout reaches Wing Strike (STAGE_2_WING / PATH_2_TREND / PATH_3_TREND)
+    if (ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
+      targetStationaryPeLots = 0;
+    }
+    if (peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
+      targetStationaryCeLots = 0;
+    }
+
+    // 2. Never scale into the adverse short leg; instead scale the winning/decaying OTM short leg,
+    //    and auto-unwind the adverse short leg at Wing Strike arrival (STAGE_2_WING / PATH_2_TREND / PATH_3_TREND).
+    let targetShortCeLots = 1;
+    if (ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
+      targetShortCeLots = 0;
+    } else if (peStage === 'STAGE_1_SCALE_IN' || peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
+      targetShortCeLots = 2;
+    } else if (ceStage === 'PATH_1_PULLBACK') {
+      targetShortCeLots = Math.min(1, targetStationaryCeLots);
+    }
+
+    let targetShortPeLots = 1;
+    if (peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
+      targetShortPeLots = 0;
+    } else if (ceStage === 'STAGE_1_SCALE_IN' || ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
+      targetShortPeLots = 2;
+    } else if (peStage === 'PATH_1_PULLBACK') {
+      targetShortPeLots = Math.min(1, targetStationaryPeLots);
+    }
+
+    return {
+      targetStationaryCeLots,
+      targetStationaryPeLots,
+      targetShortCeLots,
+      targetShortPeLots,
+    };
+  }
+
   private exitsForBook(
     book: MmBookInput,
     input: MmQuoteInput,
@@ -1051,19 +1203,18 @@ export class QuotingEngine {
       }
     }
 
-    // Pullback (Path 1) Unwind Exits for Stationary Wings & Base Straddles
+    // Pullback (Path 1) & Breakout Unwind Exits for Stationary Wings & Base Straddles
     const pullbackExits: MmDesiredOrder[] = [];
     if (this.params.wingArchitectureEnabled) {
+      const {
+        targetStationaryCeLots: targetCe,
+        targetStationaryPeLots: targetPe,
+        targetShortCeLots: targetShortCe,
+        targetShortPeLots: targetShortPe,
+      } = this.computeWingTargets(input);
+
       if (input.wingCe && book.instrumentId === input.wingCe.instrumentId) {
         const holdCeLots = input.wingHoldCeLotIds ?? (input.wingHoldCeLotId ? [input.wingHoldCeLotId] : []);
-        let targetCe = 1;
-        if (input.ceLadderStage === 'STAGE_1_SCALE_IN' || input.ceLadderStage === 'STAGE_2_WING' || input.ceLadderStage === 'PATH_2_TREND') {
-          targetCe = 2;
-        } else if (input.ceLadderStage === 'PATH_1_PULLBACK') {
-          const s0 = input.wingState?.ceBaseStrikePaise ?? 0;
-          const scaleInSpot = input.wingState?.ceScaleInSpotPaise ?? (s0 + 2500);
-          targetCe = (input.spotPaise !== undefined && input.spotPaise <= s0) ? 0 : ((input.spotPaise !== undefined && input.spotPaise <= scaleInSpot) ? 1 : 2);
-        }
         if (holdCeLots.length > targetCe) {
           const excessCount = holdCeLots.length - targetCe;
           const lotsToExit = lots.filter((l) => holdCeLots.includes(l.lotId)).slice(0, excessCount);
@@ -1073,14 +1224,6 @@ export class QuotingEngine {
         }
       } else if (input.wingPe && book.instrumentId === input.wingPe.instrumentId) {
         const holdPeLots = input.wingHoldPeLotIds ?? (input.wingHoldPeLotId ? [input.wingHoldPeLotId] : []);
-        let targetPe = 1;
-        if (input.peLadderStage === 'STAGE_1_SCALE_IN' || input.peLadderStage === 'STAGE_2_WING' || input.peLadderStage === 'PATH_3_TREND') {
-          targetPe = 2;
-        } else if (input.peLadderStage === 'PATH_1_PULLBACK') {
-          const s0 = input.wingState?.peBaseStrikePaise ?? 0;
-          const scaleInSpot = input.wingState?.peScaleInSpotPaise ?? (s0 - 2500);
-          targetPe = (input.spotPaise !== undefined && input.spotPaise >= s0) ? 0 : ((input.spotPaise !== undefined && input.spotPaise >= scaleInSpot) ? 1 : 2);
-        }
         if (holdPeLots.length > targetPe) {
           const excessCount = holdPeLots.length - targetPe;
           const lotsToExit = lots.filter((l) => holdPeLots.includes(l.lotId)).slice(0, excessCount);
@@ -1089,14 +1232,6 @@ export class QuotingEngine {
           }
         }
       } else if (input.atmCe && book.instrumentId === input.atmCe.instrumentId) {
-        let targetShortCe = 1;
-        if (input.ceLadderStage === 'STAGE_1_SCALE_IN' || input.ceLadderStage === 'STAGE_2_WING' || input.ceLadderStage === 'PATH_2_TREND') {
-          targetShortCe = 2;
-        } else if (input.ceLadderStage === 'PATH_1_PULLBACK') {
-          const s0 = input.wingState?.ceBaseStrikePaise ?? 0;
-          const scaleInSpot = input.wingState?.ceScaleInSpotPaise ?? (s0 + 2500);
-          targetShortCe = (input.spotPaise !== undefined && input.spotPaise <= s0) ? 0 : ((input.spotPaise !== undefined && input.spotPaise <= scaleInSpot) ? 1 : 2);
-        }
         const shortCeLots = lots.filter((l) => l.entrySide === 'SELL');
         if (shortCeLots.length > targetShortCe) {
           const excessCount = shortCeLots.length - targetShortCe;
@@ -1105,14 +1240,6 @@ export class QuotingEngine {
           }
         }
       } else if (input.atmPe && book.instrumentId === input.atmPe.instrumentId) {
-        let targetShortPe = 1;
-        if (input.peLadderStage === 'STAGE_1_SCALE_IN' || input.peLadderStage === 'STAGE_2_WING' || input.peLadderStage === 'PATH_3_TREND') {
-          targetShortPe = 2;
-        } else if (input.peLadderStage === 'PATH_1_PULLBACK') {
-          const s0 = input.wingState?.peBaseStrikePaise ?? 0;
-          const scaleInSpot = input.wingState?.peScaleInSpotPaise ?? (s0 - 2500);
-          targetShortPe = (input.spotPaise !== undefined && input.spotPaise >= s0) ? 0 : ((input.spotPaise !== undefined && input.spotPaise >= scaleInSpot) ? 1 : 2);
-        }
         const shortPeLots = lots.filter((l) => l.entrySide === 'SELL');
         if (shortPeLots.length > targetShortPe) {
           const excessCount = shortPeLots.length - targetShortPe;

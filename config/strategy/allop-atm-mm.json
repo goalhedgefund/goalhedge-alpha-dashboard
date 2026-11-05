@@ -65,6 +65,8 @@
     "wingScalpLots": 1,
     "wingSpreadPct": 1.0,
     "wingNoStopLossOnBase": true,
-    "trendScalpStopNiftyPoints": 50
+    "trendScalpStopNiftyPoints": 50,
+    "wingAvoidStraddleDrag": true,
+    "wingMinCreditPoints": 10
   }
 }

@@ -138,6 +138,8 @@ export class MmRunner {
   private peRollsToday = 0;
   private pendingRollBase: number | undefined;
   private rollingActive = false;
+  private baseStrikeLocked = false;
+  private readonly lotEntrySpotPaise = new Map<string, number>();
 
   constructor(private readonly opts: MmRunnerOptions) {
     this.params = { ...opts.params };
@@ -879,11 +881,17 @@ export class MmRunner {
       ? Number(this.params.wingScaleInPoints) * 100
       : Math.round(step / 2);
 
+    const nowHHMM = formatHHMMIst(nowMs);
+    const activeParams = this.engine.activeParams();
+
     // Initialize & manage Adaptive 50pt Ladder & Wing strikes
     let wingRollTriggered = false;
     if (spot !== undefined && spot > 0) {
-      if (this.ceBaseStrikePaise === undefined || this.peBaseStrikePaise === undefined) {
-        const base = Math.floor(spot / step) * step;
+      const canLockBase = nowHHMM >= activeParams.quoteFrom;
+      if (this.ceBaseStrikePaise === undefined || this.peBaseStrikePaise === undefined || (!this.baseStrikeLocked && !canLockBase)) {
+        const base = activeParams.wingAvoidStraddleDrag
+          ? Math.round(spot / step) * step
+          : Math.floor(spot / step) * step;
         this.initialBaseStrikePaise = base;
         this.ceBaseStrikePaise = base;
         this.peBaseStrikePaise = base;
@@ -895,51 +903,83 @@ export class MmRunner {
         this.peTargetSpotPaise = base - step;
         this.ceContinuationStrikePaise = base + step * 2;
         this.peContinuationStrikePaise = base - step * 2;
+        if (canLockBase) {
+          this.baseStrikeLocked = true;
+        }
+      } else if (!this.baseStrikeLocked && canLockBase) {
+        const base = activeParams.wingAvoidStraddleDrag
+          ? Math.round(spot / step) * step
+          : Math.floor(spot / step) * step;
+        this.initialBaseStrikePaise = base;
+        this.ceBaseStrikePaise = base;
+        this.peBaseStrikePaise = base;
+        this.ceScaleInSpotPaise = base + scaleInStep;
+        this.peScaleInSpotPaise = base - scaleInStep;
+        this.ceWingStrikePaise = base + step;
+        this.peWingStrikePaise = base - step;
+        this.ceTargetSpotPaise = base + step;
+        this.peTargetSpotPaise = base - step;
+        this.ceContinuationStrikePaise = base + step * 2;
+        this.peContinuationStrikePaise = base - step * 2;
+        this.baseStrikeLocked = true;
       }
 
-      // Update ladder stages based on current spot
+      // Update ladder stages based on current spot once active
       const base = this.ceBaseStrikePaise;
       const scaleInCe = this.ceScaleInSpotPaise ?? (base + scaleInStep);
       const wingCe = this.ceWingStrikePaise ?? (base + step);
       const contCe = this.ceContinuationStrikePaise ?? (base + step * 2);
 
-      if (spot >= contCe) {
-        this.ceLadderStage = 'PATH_2_TREND';
-      } else if (spot >= wingCe) {
-        this.ceLadderStage = 'STAGE_2_WING';
-      } else if (spot >= scaleInCe) {
-        if (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'PATH_1_PULLBACK') {
-          this.ceLadderStage = 'PATH_1_PULLBACK';
+      if (!canLockBase) {
+        this.ceLadderStage = 'STAGE_0';
+        this.peLadderStage = 'STAGE_0';
+      } else {
+        if (spot >= contCe) {
+          this.ceLadderStage = 'PATH_2_TREND';
+        } else if (spot >= wingCe) {
+          this.ceLadderStage = 'STAGE_2_WING';
+        } else if (spot >= scaleInCe) {
+          if (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'PATH_2_TREND' || this.ceLadderStage === 'PATH_1_PULLBACK') {
+            this.ceLadderStage = 'PATH_1_PULLBACK';
+          } else {
+            this.ceLadderStage = 'STAGE_1_SCALE_IN';
+          }
+        } else if (spot > base) {
+          if (this.ceLadderStage !== 'STAGE_0') {
+            this.ceLadderStage = 'PATH_1_PULLBACK';
+          }
         } else {
-          this.ceLadderStage = 'STAGE_1_SCALE_IN';
+          if (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'PATH_2_TREND' || this.ceLadderStage === 'STAGE_1_SCALE_IN' || this.ceLadderStage === 'PATH_1_PULLBACK') {
+            this.ceLadderStage = 'PATH_1_PULLBACK';
+          } else {
+            this.ceLadderStage = 'STAGE_0';
+          }
         }
-      } else if (spot <= base) {
-        if (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'STAGE_1_SCALE_IN' || this.ceLadderStage === 'PATH_1_PULLBACK') {
-          this.ceLadderStage = 'PATH_1_PULLBACK';
-        } else {
-          this.ceLadderStage = 'STAGE_0';
-        }
-      }
 
-      const scaleInPe = this.peScaleInSpotPaise ?? (base - scaleInStep);
-      const wingPe = this.peWingStrikePaise ?? (base - step);
-      const contPe = this.peContinuationStrikePaise ?? (base - step * 2);
+        const scaleInPe = this.peScaleInSpotPaise ?? (base - scaleInStep);
+        const wingPe = this.peWingStrikePaise ?? (base - step);
+        const contPe = this.peContinuationStrikePaise ?? (base - step * 2);
 
-      if (spot <= contPe) {
-        this.peLadderStage = 'PATH_3_TREND';
-      } else if (spot <= wingPe) {
-        this.peLadderStage = 'STAGE_2_WING';
-      } else if (spot <= scaleInPe) {
-        if (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'PATH_1_PULLBACK') {
-          this.peLadderStage = 'PATH_1_PULLBACK';
+        if (spot <= contPe) {
+          this.peLadderStage = 'PATH_3_TREND';
+        } else if (spot <= wingPe) {
+          this.peLadderStage = 'STAGE_2_WING';
+        } else if (spot <= scaleInPe) {
+          if (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'PATH_3_TREND' || this.peLadderStage === 'PATH_1_PULLBACK') {
+            this.peLadderStage = 'PATH_1_PULLBACK';
+          } else {
+            this.peLadderStage = 'STAGE_1_SCALE_IN';
+          }
+        } else if (spot < base) {
+          if (this.peLadderStage !== 'STAGE_0') {
+            this.peLadderStage = 'PATH_1_PULLBACK';
+          }
         } else {
-          this.peLadderStage = 'STAGE_1_SCALE_IN';
-        }
-      } else if (spot >= base) {
-        if (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'STAGE_1_SCALE_IN' || this.peLadderStage === 'PATH_1_PULLBACK') {
-          this.peLadderStage = 'PATH_1_PULLBACK';
-        } else {
-          this.peLadderStage = 'STAGE_0';
+          if (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'PATH_3_TREND' || this.peLadderStage === 'STAGE_1_SCALE_IN' || this.peLadderStage === 'PATH_1_PULLBACK') {
+            this.peLadderStage = 'PATH_1_PULLBACK';
+          } else {
+            this.peLadderStage = 'STAGE_0';
+          }
         }
       }
 
@@ -1014,11 +1054,16 @@ export class MmRunner {
       }
     }
 
-    // Discover & maintain open wing hold lots
+    // Discover & maintain open wing hold lots & persist lot entry spot
     const allOpenLots = this.opts.oms.getOpenLots();
+    const openLotIdSet = new Set<string>();
     const currentHoldCeLots: string[] = [];
     const currentHoldPeLots: string[] = [];
     for (const lot of allOpenLots) {
+      openLotIdSet.add(lot.lotId);
+      if (!this.lotEntrySpotPaise.has(lot.lotId) && spot !== undefined && spot > 0) {
+        this.lotEntrySpotPaise.set(lot.lotId, spot);
+      }
       const order = this.opts.oms.getOrder(lot.clientOrderId);
       if (order?.tag.endsWith(':wing_hold_buy')) {
         const right = rows.get(lot.instrumentId)?.right ?? this.rightById.get(lot.instrumentId);
@@ -1027,6 +1072,11 @@ export class MmRunner {
         } else if (right === 'PE') {
           currentHoldPeLots.push(lot.lotId);
         }
+      }
+    }
+    for (const trackedLotId of this.lotEntrySpotPaise.keys()) {
+      if (!openLotIdSet.has(trackedLotId)) {
+        this.lotEntrySpotPaise.delete(trackedLotId);
       }
     }
     this.wingHoldCeLotIds = currentHoldCeLots;
@@ -1044,6 +1094,7 @@ export class MmRunner {
         .filter((lot) => !this.reservedLotIds.has(lot.lotId))
         .map((lot) => {
           const order = this.opts.oms.getOrder(lot.clientOrderId);
+          const entrySpotPaise = this.lotEntrySpotPaise.get(lot.lotId) ?? spot;
           return {
             lotId: lot.lotId,
             qty: lot.qty,
@@ -1051,7 +1102,7 @@ export class MmRunner {
             openedTs: lot.ts,
             ...(lot.entrySide !== undefined ? { entrySide: lot.entrySide } : {}),
             ...(order?.tag !== undefined ? { tag: order.tag } : {}),
-            ...(spot !== undefined ? { entrySpotPaise: spot } : {}),
+            ...(entrySpotPaise !== undefined ? { entrySpotPaise } : {}),
           };
         });
       books.push({
@@ -1073,7 +1124,7 @@ export class MmRunner {
     }
     return {
       nowMs,
-      nowHHMM: formatHHMMIst(nowMs),
+      nowHHMM,
       ...(spot !== undefined ? { spotPaise: spot } : {}),
       ...(atmCe !== undefined ? { atmCe } : {}),
       ...(atmPe !== undefined ? { atmPe } : {}),

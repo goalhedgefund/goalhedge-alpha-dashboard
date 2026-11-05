@@ -370,4 +370,95 @@ describe('Adaptive 50pt Ladder & Wing Architecture Quoting Engine', () => {
     const rollExits = out.desired.filter((o) => o.reason === 'WING_ROLL_EXIT');
     expect(rollExits).toHaveLength(2);
   });
+
+  it('wingAvoidStraddleDrag: blocks ratchet-down short below credit floor, unwinds adverse short & opposite wing on breakout, and flips base to BFSL', () => {
+    const engine = new QuotingEngine(MARKET, {
+      wingArchitectureEnabled: true,
+      wingAvoidStraddleDrag: true,
+      wingMinCreditPoints: 10,
+      wingStepPoints: 50,
+      wingScaleInPoints: 25,
+      wingSpreadPct: 1.0,
+    });
+
+    const nowMs = 1784178600000;
+
+    // 1. Credit-Floor Guard: Base CE Ask (75.00) < Wing CE Entry (70.00) + 10.00 credit buffer -> blocks re-shorting Base CE
+    const stage0Input: MmQuoteInput = {
+      nowMs,
+      nowHHMM: '09:32',
+      spotPaise: 2300000,
+      atmCe: makeRow(BASE_CE_ID, 2300000, 'CE', 7480, 7500),
+      wingCe: makeRow(WING_CE_ID, 2305000, 'CE', 6980, 7000),
+      atmPe: makeRow(BASE_PE_ID, 2300000, 'PE', 9000, 9020),
+      wingPe: makeRow(WING_PE_ID, 2295000, 'PE', 6000, 6020),
+      wingHoldCeLotIds: ['wing-hold-ce-1'],
+      wingHoldPeLotIds: ['wing-hold-pe-1'],
+      ceLadderStage: 'STAGE_0',
+      peLadderStage: 'STAGE_0',
+      books: [
+        {
+          instrumentId: WING_CE_ID,
+          right: 'CE',
+          qty: 65,
+          avgEntryPricePaise: 7000,
+          openedTs: nowMs,
+          row: makeRow(WING_CE_ID, 2305000, 'CE', 6980, 7000),
+          lots: [{ lotId: 'wing-hold-ce-1', qty: 65, entryPricePaise: 7000, openedTs: nowMs, entrySide: 'BUY' }],
+        },
+        {
+          instrumentId: WING_PE_ID,
+          right: 'PE',
+          qty: 65,
+          avgEntryPricePaise: 6000,
+          openedTs: nowMs,
+          row: makeRow(WING_PE_ID, 2295000, 'PE', 6000, 6020),
+          lots: [{ lotId: 'wing-hold-pe-1', qty: 65, entryPricePaise: 6000, openedTs: nowMs, entrySide: 'BUY' }],
+        },
+      ],
+      latchedStop: false,
+    };
+
+    const stage0Out = engine.evaluate(stage0Input);
+    expect(stage0Out.desired.find((o) => o.instrumentId === BASE_CE_ID && o.reason === 'QUOTE_ASK')).toBeUndefined();
+    expect(stage0Out.desired.find((o) => o.instrumentId === BASE_PE_ID && o.reason === 'QUOTE_ASK')).toBeDefined();
+
+    // 2. Stage 2 Breakout (Spot = 23,050): unwinds open Short Base CE, unwinds opposite PE Wing Hold, scales Short Base PE to 2 lots
+    const breakoutInput: MmQuoteInput = {
+      ...stage0Input,
+      spotPaise: 2305000,
+      ceLadderStage: 'STAGE_2_WING',
+      peLadderStage: 'STAGE_0',
+      wingHoldCeLotIds: ['wing-hold-ce-1', 'wing-hold-ce-2'],
+      wingHoldPeLotIds: ['wing-hold-pe-1'],
+      books: [
+        {
+          instrumentId: BASE_CE_ID,
+          right: 'CE',
+          qty: 65,
+          avgEntryPricePaise: 10000,
+          openedTs: nowMs,
+          row: makeRow(BASE_CE_ID, 2300000, 'CE', 13000, 13020),
+          lots: [{ lotId: 'base-short-ce-1', qty: 65, entryPricePaise: 10000, openedTs: nowMs, entrySide: 'SELL' }],
+        },
+        {
+          instrumentId: WING_PE_ID,
+          right: 'PE',
+          qty: 65,
+          avgEntryPricePaise: 6000,
+          openedTs: nowMs,
+          row: makeRow(WING_PE_ID, 2295000, 'PE', 4200, 4220),
+          lots: [{ lotId: 'wing-hold-pe-1', qty: 65, entryPricePaise: 6000, openedTs: nowMs, entrySide: 'BUY' }],
+        },
+      ],
+    };
+
+    const breakoutOut = engine.evaluate(breakoutInput);
+    // Unwinds adverse Short Base CE
+    expect(breakoutOut.desired.find((o) => o.instrumentId === BASE_CE_ID && o.reason === 'SCALP_EXIT' && o.side === 'BUY')).toBeDefined();
+    // Unwinds dormant opposite PE Wing Hold
+    expect(breakoutOut.desired.find((o) => o.instrumentId === WING_PE_ID && o.reason === 'WING_HOLD_SELL' && o.side === 'SELL')).toBeDefined();
+    // Scales decaying Short Base PE to 2 lots (130 qty)
+    expect(breakoutOut.desired.find((o) => o.instrumentId === BASE_PE_ID && o.reason === 'QUOTE_ASK')?.qty).toBe(130);
+  });
 });
