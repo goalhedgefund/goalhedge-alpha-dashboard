@@ -520,6 +520,23 @@ export class MmRunner {
   }
 
   private async place(order: MmDesiredOrder, nowMs: number): Promise<ClientOrderId | undefined> {
+    if (order.purpose === 'ENTRY') {
+      const openPos = this.opts.oms
+        .getPositions()
+        .find((p) => p.instrumentId === order.instrumentId && p.state === 'OPEN');
+      if (openPos !== undefined && openPos.side !== order.side) {
+        return undefined;
+      }
+      const hasConflictingLive = this.liveOrders().some(
+        (live) =>
+          live.instrumentId === order.instrumentId &&
+          ((live.purpose === 'ENTRY' && live.side !== order.side) ||
+            (live.purpose === 'EXIT' && live.side === order.side)),
+      );
+      if (hasConflictingLive) {
+        return undefined;
+      }
+    }
     const activeParams = this.engine.activeParams();
     const intent: OrderIntent = {
       intentId: this.opts.ids.intentId(),
@@ -934,22 +951,48 @@ export class MmRunner {
         this.ceLadderStage = 'STAGE_0';
         this.peLadderStage = 'STAGE_0';
       } else {
+        const hyst = activeParams.wingAvoidStraddleDrag ? 1000 : 0;
         if (spot >= contCe) {
           this.ceLadderStage = 'PATH_2_TREND';
-        } else if (spot >= wingCe) {
+        } else if (
+          spot >= wingCe ||
+          (hyst > 0 &&
+            (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'PATH_2_TREND') &&
+            spot >= wingCe - hyst)
+        ) {
           this.ceLadderStage = 'STAGE_2_WING';
-        } else if (spot >= scaleInCe) {
-          if (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'PATH_2_TREND' || this.ceLadderStage === 'PATH_1_PULLBACK') {
+        } else if (
+          spot >= scaleInCe ||
+          (hyst > 0 && this.ceLadderStage === 'STAGE_1_SCALE_IN' && spot >= scaleInCe - hyst)
+        ) {
+          if (
+            this.ceLadderStage === 'STAGE_2_WING' ||
+            this.ceLadderStage === 'PATH_2_TREND' ||
+            this.ceLadderStage === 'PATH_1_PULLBACK'
+          ) {
             this.ceLadderStage = 'PATH_1_PULLBACK';
           } else {
             this.ceLadderStage = 'STAGE_1_SCALE_IN';
           }
         } else if (spot > base) {
-          if (this.ceLadderStage !== 'STAGE_0') {
+          if (
+            activeParams.wingAvoidStraddleDrag &&
+            spot <= scaleInCe - hyst &&
+            this.wingHoldCeLotIds.length <= 1
+          ) {
+            this.ceLadderStage = 'STAGE_0';
+          } else if (this.ceLadderStage !== 'STAGE_0') {
             this.ceLadderStage = 'PATH_1_PULLBACK';
           }
         } else {
-          if (this.ceLadderStage === 'STAGE_2_WING' || this.ceLadderStage === 'PATH_2_TREND' || this.ceLadderStage === 'STAGE_1_SCALE_IN' || this.ceLadderStage === 'PATH_1_PULLBACK') {
+          if (activeParams.wingAvoidStraddleDrag && this.wingHoldCeLotIds.length <= 1) {
+            this.ceLadderStage = 'STAGE_0';
+          } else if (
+            this.ceLadderStage === 'STAGE_2_WING' ||
+            this.ceLadderStage === 'PATH_2_TREND' ||
+            this.ceLadderStage === 'STAGE_1_SCALE_IN' ||
+            this.ceLadderStage === 'PATH_1_PULLBACK'
+          ) {
             this.ceLadderStage = 'PATH_1_PULLBACK';
           } else {
             this.ceLadderStage = 'STAGE_0';
@@ -962,20 +1005,45 @@ export class MmRunner {
 
         if (spot <= contPe) {
           this.peLadderStage = 'PATH_3_TREND';
-        } else if (spot <= wingPe) {
+        } else if (
+          spot <= wingPe ||
+          (hyst > 0 &&
+            (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'PATH_3_TREND') &&
+            spot <= wingPe + hyst)
+        ) {
           this.peLadderStage = 'STAGE_2_WING';
-        } else if (spot <= scaleInPe) {
-          if (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'PATH_3_TREND' || this.peLadderStage === 'PATH_1_PULLBACK') {
+        } else if (
+          spot <= scaleInPe ||
+          (hyst > 0 && this.peLadderStage === 'STAGE_1_SCALE_IN' && spot <= scaleInPe + hyst)
+        ) {
+          if (
+            this.peLadderStage === 'STAGE_2_WING' ||
+            this.peLadderStage === 'PATH_3_TREND' ||
+            this.peLadderStage === 'PATH_1_PULLBACK'
+          ) {
             this.peLadderStage = 'PATH_1_PULLBACK';
           } else {
             this.peLadderStage = 'STAGE_1_SCALE_IN';
           }
         } else if (spot < base) {
-          if (this.peLadderStage !== 'STAGE_0') {
+          if (
+            activeParams.wingAvoidStraddleDrag &&
+            spot >= scaleInPe + hyst &&
+            this.wingHoldPeLotIds.length <= 1
+          ) {
+            this.peLadderStage = 'STAGE_0';
+          } else if (this.peLadderStage !== 'STAGE_0') {
             this.peLadderStage = 'PATH_1_PULLBACK';
           }
         } else {
-          if (this.peLadderStage === 'STAGE_2_WING' || this.peLadderStage === 'PATH_3_TREND' || this.peLadderStage === 'STAGE_1_SCALE_IN' || this.peLadderStage === 'PATH_1_PULLBACK') {
+          if (activeParams.wingAvoidStraddleDrag && this.wingHoldPeLotIds.length <= 1) {
+            this.peLadderStage = 'STAGE_0';
+          } else if (
+            this.peLadderStage === 'STAGE_2_WING' ||
+            this.peLadderStage === 'PATH_3_TREND' ||
+            this.peLadderStage === 'STAGE_1_SCALE_IN' ||
+            this.peLadderStage === 'PATH_1_PULLBACK'
+          ) {
             this.peLadderStage = 'PATH_1_PULLBACK';
           } else {
             this.peLadderStage = 'STAGE_0';

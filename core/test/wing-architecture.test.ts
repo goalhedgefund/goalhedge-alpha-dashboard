@@ -461,4 +461,101 @@ describe('Adaptive 50pt Ladder & Wing Architecture Quoting Engine', () => {
     // Scales decaying Short Base PE to 2 lots (130 qty)
     expect(breakoutOut.desired.find((o) => o.instrumentId === BASE_PE_ID && o.reason === 'QUOTE_ASK')?.qty).toBe(130);
   });
+
+  it('prevents duplicate exit intents (INVALID_CLOSE_ALLOCATION), prevents opposite-side Base collision (RECON_MISMATCH), and anchors 1st Wing at S0 during pullback', () => {
+    const engine = new QuotingEngine(MARKET, {
+      wingArchitectureEnabled: true,
+      wingAvoidStraddleDrag: true,
+      wingMinCreditPoints: 10,
+      wingStepPoints: 50,
+      wingScaleInPoints: 25,
+      wingSpreadPct: 1.0,
+    });
+
+    const nowMs = 1784178600000;
+
+    // 1. No duplicate exit intents for the same lotId when breakout unwinds Short Base CE
+    const breakoutInput: MmQuoteInput = {
+      nowMs,
+      nowHHMM: '09:35',
+      spotPaise: 2305000,
+      atmCe: makeRow(BASE_CE_ID, 2300000, 'CE', 13000, 13020),
+      wingCe: makeRow(WING_CE_ID, 2305000, 'CE', 9000, 9020),
+      atmPe: makeRow(BASE_PE_ID, 2300000, 'PE', 6000, 6020),
+      wingPe: makeRow(WING_PE_ID, 2295000, 'PE', 4000, 4020),
+      ceLadderStage: 'STAGE_2_WING',
+      peLadderStage: 'STAGE_0',
+      wingHoldCeLotIds: ['wing-hold-ce-1', 'wing-hold-ce-2'],
+      wingHoldPeLotIds: [],
+      books: [
+        {
+          instrumentId: BASE_CE_ID,
+          right: 'CE',
+          qty: 65,
+          avgEntryPricePaise: 10000,
+          openedTs: nowMs,
+          row: makeRow(BASE_CE_ID, 2300000, 'CE', 13000, 13020),
+          lots: [{ lotId: 'base-short-ce-1', qty: 65, entryPricePaise: 10000, openedTs: nowMs, entrySide: 'SELL' }],
+        },
+      ],
+      latchedStop: false,
+    };
+
+    const breakoutOut = engine.evaluate(breakoutInput);
+    const exitsForShortLot = breakoutOut.desired.filter(
+      (o) => o.purpose === 'EXIT' && o.closeLotIds?.includes('base-short-ce-1'),
+    );
+    expect(exitsForShortLot).toHaveLength(1);
+    expect(exitsForShortLot[0]?.reason).toBe('SCALP_EXIT');
+
+    // 2. When Spot pulls back from STAGE_2_WING while a Long (BUY) BFSL lot is open on Base CE:
+    //    - Must NOT propose a SELL ENTRY (QUOTE_ASK) on Base CE while the BUY lot is still open
+    //    - Must emit an urgent SCALP_EXIT to unwind the Long BFSL lot first
+    //    - Must keep 1 lot Stationary Wing on CE even when Spot returns to S0 (23,000) in PATH_1_PULLBACK
+    const pullbackWithLongBaseInput: MmQuoteInput = {
+      ...breakoutInput,
+      spotPaise: 2300000, // Back at S0
+      ceLadderStage: 'PATH_1_PULLBACK',
+      wingState: {
+        ceBaseStrikePaise: 2300000,
+        ceScaleInSpotPaise: 2302500,
+        ceWingStrikePaise: 2305000,
+        ceContinuationStrikePaise: 2310000,
+      },
+      wingHoldCeLotIds: ['wing-hold-ce-1'],
+      books: [
+        {
+          instrumentId: BASE_CE_ID,
+          right: 'CE',
+          qty: 65,
+          avgEntryPricePaise: 13000,
+          openedTs: nowMs,
+          row: makeRow(BASE_CE_ID, 2300000, 'CE', 10000, 10020),
+          lots: [{ lotId: 'base-long-ce-1', qty: 65, entryPricePaise: 13000, openedTs: nowMs, entrySide: 'BUY' }],
+        },
+        {
+          instrumentId: WING_CE_ID,
+          right: 'CE',
+          qty: 65,
+          avgEntryPricePaise: 7000,
+          openedTs: nowMs,
+          row: makeRow(WING_CE_ID, 2305000, 'CE', 7000, 7020),
+          lots: [{ lotId: 'wing-hold-ce-1', qty: 65, entryPricePaise: 7000, openedTs: nowMs, entrySide: 'BUY' }],
+        },
+      ],
+    };
+
+    const pullbackOut = engine.evaluate(pullbackWithLongBaseInput);
+    // Must NOT propose SELL ENTRY on Base CE while BUY lot is open
+    expect(pullbackOut.desired.find((o) => o.instrumentId === BASE_CE_ID && o.purpose === 'ENTRY' && o.side === 'SELL')).toBeUndefined();
+    // Must unwind the open BUY lot on Base CE with a single SCALP_EXIT
+    const baseLongExits = pullbackOut.desired.filter(
+      (o) => o.instrumentId === BASE_CE_ID && o.purpose === 'EXIT' && o.closeLotIds?.includes('base-long-ce-1'),
+    );
+    expect(baseLongExits).toHaveLength(1);
+    expect(baseLongExits[0]?.reason).toBe('SCALP_EXIT');
+    expect(baseLongExits[0]?.side).toBe('SELL');
+    // Must NOT dump the 1st Stationary Wing Hold lot at S0 (no WING_HOLD_SELL on WING_CE_ID)
+    expect(pullbackOut.desired.find((o) => o.instrumentId === WING_CE_ID && o.reason === 'WING_HOLD_SELL')).toBeUndefined();
+  });
 });

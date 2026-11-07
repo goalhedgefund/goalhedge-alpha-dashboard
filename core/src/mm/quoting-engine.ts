@@ -622,6 +622,7 @@ export class QuotingEngine {
         // 2. Base ATM CE Short (with Credit-Floor Guard when wingAvoidStraddleDrag is active):
         if (
           baseCeShortLots.length < targetShortCeLots &&
+          baseCeLongLots.length === 0 &&
           ceCreditFloorOk &&
           input.atmCe !== undefined &&
           input.atmCe.bidPaise > 0 &&
@@ -776,6 +777,7 @@ export class QuotingEngine {
         // 2. Base ATM PE Short (with Credit-Floor Guard when wingAvoidStraddleDrag is active):
         if (
           basePeShortLots.length < targetShortPeLots &&
+          basePeLongLots.length === 0 &&
           peCreditFloorOk &&
           input.atmPe !== undefined &&
           input.atmPe.bidPaise > 0 &&
@@ -1107,6 +1109,35 @@ export class QuotingEngine {
     }
 
     // Straddle-Drag-Elimination mode:
+    // Keep 1st Stationary Wing Hold lot anchored across STAGE_0 / PATH_1_PULLBACK around S0 (prevent sawtooth churn).
+    if (ceStage === 'STAGE_1_SCALE_IN' || ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
+      targetStationaryCeLots = 2;
+    } else if (ceStage === 'PATH_1_PULLBACK') {
+      const s0 = input.wingState?.ceBaseStrikePaise ?? 0;
+      const scaleInSpot = input.wingState?.ceScaleInSpotPaise ?? (s0 + 2500);
+      if (input.spotPaise !== undefined && input.spotPaise <= scaleInSpot - 1000) {
+        targetStationaryCeLots = 1;
+      } else {
+        targetStationaryCeLots = 2;
+      }
+    } else {
+      targetStationaryCeLots = 1;
+    }
+
+    if (peStage === 'STAGE_1_SCALE_IN' || peStage === 'STAGE_2_WING' || peStage === 'PATH_3_TREND') {
+      targetStationaryPeLots = 2;
+    } else if (peStage === 'PATH_1_PULLBACK') {
+      const s0 = input.wingState?.peBaseStrikePaise ?? 0;
+      const scaleInSpot = input.wingState?.peScaleInSpotPaise ?? (s0 - 2500);
+      if (input.spotPaise !== undefined && input.spotPaise >= scaleInSpot + 1000) {
+        targetStationaryPeLots = 1;
+      } else {
+        targetStationaryPeLots = 2;
+      }
+    } else {
+      targetStationaryPeLots = 1;
+    }
+
     // 1. Cut opposite stationary wing when breakout reaches Wing Strike (STAGE_2_WING / PATH_2_TREND / PATH_3_TREND)
     if (ceStage === 'STAGE_2_WING' || ceStage === 'PATH_2_TREND') {
       targetStationaryPeLots = 0;
@@ -1239,11 +1270,23 @@ export class QuotingEngine {
             pullbackExits.push(this.urgentExitLot(book.instrumentId, lot, row, 'SCALP_EXIT', tick));
           }
         }
+        if (this.params.wingAvoidStraddleDrag && targetShortCe > 0) {
+          const longCeLots = scalpLots.filter((l) => l.entrySide !== 'SELL');
+          for (const lot of longCeLots) {
+            pullbackExits.push(this.urgentExitLot(book.instrumentId, lot, row, 'SCALP_EXIT', tick));
+          }
+        }
       } else if (input.atmPe && book.instrumentId === input.atmPe.instrumentId) {
         const shortPeLots = lots.filter((l) => l.entrySide === 'SELL');
         if (shortPeLots.length > targetShortPe) {
           const excessCount = shortPeLots.length - targetShortPe;
           for (const lot of shortPeLots.slice(0, excessCount)) {
+            pullbackExits.push(this.urgentExitLot(book.instrumentId, lot, row, 'SCALP_EXIT', tick));
+          }
+        }
+        if (this.params.wingAvoidStraddleDrag && targetShortPe > 0) {
+          const longPeLots = scalpLots.filter((l) => l.entrySide !== 'SELL');
+          for (const lot of longPeLots) {
             pullbackExits.push(this.urgentExitLot(book.instrumentId, lot, row, 'SCALP_EXIT', tick));
           }
         }
@@ -1271,7 +1314,13 @@ export class QuotingEngine {
             ((strikeMigrated || expiryMigrated) && input.nowMs - lot.openedTs >= migrationTimeoutSec * 1_000)
           ),
         );
-    const defensiveIds = new Set([...hardStops, ...trendStops, ...timedOut].map((lot) => lot.lotId));
+    const pullbackIds = pullbackExits.flatMap((o) => o.closeLotIds ?? []);
+    const defensiveIds = new Set([
+      ...pullbackIds,
+      ...hardStops.map((lot) => lot.lotId),
+      ...trendStops.map((lot) => lot.lotId),
+      ...timedOut.map((lot) => lot.lotId),
+    ]);
     const exits = [
       ...pullbackExits,
       ...hardStops.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'HARD_STOP', tick)),

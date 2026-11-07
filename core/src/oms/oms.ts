@@ -83,6 +83,14 @@ export class Oms {
    */
   async submit(intent: OrderIntent, verdict: RiskVerdict, onSent?: () => void): Promise<SubmitResult> {
     if (!verdict.approved) return { order: this.draftOrder(intent), accepted: false, reason: verdict.reason ?? 'RISK_REJECTED' };
+    if (intent.purpose === 'ENTRY') {
+      const openPos = this.positionKeeper
+        .getPositions()
+        .find((p) => p.instrumentId === intent.instrumentId && p.state === 'OPEN');
+      if (openPos !== undefined && openPos.side !== intent.side) {
+        return { order: this.draftOrder(intent), accepted: false, reason: 'CONFLICTING_POSITION_SIDE' };
+      }
+    }
     const allocationError = this.closeAllocationError(intent);
     if (allocationError !== undefined) {
       return { order: this.draftOrder(intent), accepted: false, reason: allocationError };
