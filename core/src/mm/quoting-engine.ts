@@ -1235,8 +1235,10 @@ export class QuotingEngine {
     }
 
     // Pullback (Path 1) & Breakout Unwind Exits for Stationary Wings & Base Straddles
+    // STRICT SUPPRESSION: When wingNoStopLossOnBase is active, stationary wings are immutable hedges
+    // and Base Straddles have zero stop-losses; they exit only at take-profit (QUOTE_BID) or 15:20 EOD (WING_ROLL_EXIT).
     const pullbackExits: MmDesiredOrder[] = [];
-    if (this.params.wingArchitectureEnabled) {
+    if (this.params.wingArchitectureEnabled && !this.params.wingNoStopLossOnBase) {
       const {
         targetStationaryCeLots: targetCe,
         targetStationaryPeLots: targetPe,
@@ -1314,18 +1316,21 @@ export class QuotingEngine {
             ((strikeMigrated || expiryMigrated) && input.nowMs - lot.openedTs >= migrationTimeoutSec * 1_000)
           ),
         );
-    const pullbackIds = pullbackExits.flatMap((o) => o.closeLotIds ?? []);
+    const pullbackIdSet = new Set(pullbackExits.flatMap((o) => o.closeLotIds ?? []));
+    const activeHardStops = hardStops.filter((lot) => !pullbackIdSet.has(lot.lotId));
+    const activeTrendStops = trendStops.filter((lot) => !pullbackIdSet.has(lot.lotId));
+    const activeTimedOut = timedOut.filter((lot) => !pullbackIdSet.has(lot.lotId));
     const defensiveIds = new Set([
-      ...pullbackIds,
-      ...hardStops.map((lot) => lot.lotId),
-      ...trendStops.map((lot) => lot.lotId),
-      ...timedOut.map((lot) => lot.lotId),
+      ...pullbackIdSet,
+      ...activeHardStops.map((lot) => lot.lotId),
+      ...activeTrendStops.map((lot) => lot.lotId),
+      ...activeTimedOut.map((lot) => lot.lotId),
     ]);
     const exits = [
       ...pullbackExits,
-      ...hardStops.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'HARD_STOP', tick)),
-      ...trendStops.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'TREND_SL_EXIT', tick)),
-      ...timedOut.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'SCALP_TIMEOUT', tick)),
+      ...activeHardStops.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'HARD_STOP', tick)),
+      ...activeTrendStops.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'TREND_SL_EXIT', tick)),
+      ...activeTimedOut.map((lot) => this.urgentExitLot(book.instrumentId, lot, row, 'SCALP_TIMEOUT', tick)),
     ];
 
     if (runner !== undefined) {
@@ -1452,6 +1457,11 @@ export class QuotingEngine {
   private computeDefences(input: MmQuoteInput): MmDefenceState[] {
     const adverse = new Map<OptionRight, MmDefenceState>();
     for (const book of input.books) {
+      if (this.params.wingArchitectureEnabled && this.params.wingNoStopLossOnBase) {
+        const isBase = book.instrumentId === input.atmCe?.instrumentId || book.instrumentId === input.atmPe?.instrumentId;
+        const isWing = book.instrumentId === input.wingCe?.instrumentId || book.instrumentId === input.wingPe?.instrumentId;
+        if (isBase || isWing) continue;
+      }
       const bid = book.row?.bidPaise ?? 0;
       if (bid <= 0) continue;
       for (const lot of this.bookLots(book)) {

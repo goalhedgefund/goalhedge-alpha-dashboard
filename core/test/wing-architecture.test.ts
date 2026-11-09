@@ -217,10 +217,11 @@ describe('Adaptive 50pt Ladder & Wing Architecture Quoting Engine', () => {
     expect(scalpBid?.limitPricePaise).toBe(9500); // Touch Bid
   });
 
-  it('Path 1 (Pullback from Wing): settles 1 lot wing on 25-pt drop and 2nd wing on 50-pt drop', () => {
+  it('Path 1 (Pullback from Wing with wingNoStopLossOnBase: false): settles 1 lot wing on 25-pt drop and 2nd wing on 50-pt drop', () => {
     const engine = new QuotingEngine(MARKET, {
       wingArchitectureEnabled: true,
       wingStepPoints: 50,
+      wingNoStopLossOnBase: false,
     });
 
     const nowMs = 1784178600000;
@@ -277,6 +278,70 @@ describe('Adaptive 50pt Ladder & Wing Architecture Quoting Engine', () => {
     const shortSettle = out.desired.find((o) => o.reason === 'SCALP_EXIT' && o.instrumentId === BASE_CE_ID);
     expect(shortSettle).toBeDefined();
     expect(shortSettle?.side).toBe('BUY');
+  });
+
+  it('Path 1 (Pullback with wingNoStopLossOnBase: true): preserves stationary wings and base short straddle lots as immutable hedges', () => {
+    const engine = new QuotingEngine(MARKET, {
+      wingArchitectureEnabled: true,
+      wingStepPoints: 50,
+      wingNoStopLossOnBase: true,
+    });
+
+    const nowMs = 1784178600000;
+    const input: MmQuoteInput = {
+      nowMs,
+      nowHHMM: '09:35',
+      spotPaise: 2302000, // Dropped back to 23,020 (below 23,025)
+      atmCe: makeRow(BASE_CE_ID, 2300000, 'CE', 10500, 10520),
+      wingCe: makeRow(WING_CE_ID, 2305000, 'CE', 7600, 7620),
+      wingHoldCeLotIds: ['wing-hold-ce-1', 'wing-hold-ce-2'], // Holding 2 lots
+      ceLadderStage: 'PATH_1_PULLBACK',
+      wingState: {
+        ceBaseStrikePaise: 2300000,
+        ceScaleInSpotPaise: 2302500,
+        ceWingStrikePaise: 2305000,
+      },
+      books: [
+        {
+          instrumentId: WING_CE_ID,
+          right: 'CE',
+          qty: 130,
+          avgEntryPricePaise: 7500,
+          openedTs: nowMs,
+          row: makeRow(WING_CE_ID, 2305000, 'CE', 7600, 7620),
+          lots: [
+            { lotId: 'wing-hold-ce-1', qty: 65, entryPricePaise: 7000, openedTs: nowMs, entrySide: 'BUY' },
+            { lotId: 'wing-hold-ce-2', qty: 65, entryPricePaise: 8000, openedTs: nowMs, entrySide: 'BUY' },
+          ],
+        },
+        {
+          instrumentId: BASE_CE_ID,
+          right: 'CE',
+          qty: 130,
+          avgEntryPricePaise: 10500,
+          openedTs: nowMs,
+          row: makeRow(BASE_CE_ID, 2300000, 'CE', 10500, 10520),
+          lots: [
+            { lotId: 'base-short-ce-1', qty: 65, entryPricePaise: 10000, openedTs: nowMs, entrySide: 'SELL' },
+            { lotId: 'base-short-ce-2', qty: 65, entryPricePaise: 11000, openedTs: nowMs, entrySide: 'SELL' },
+          ],
+        },
+      ],
+      latchedStop: false,
+    };
+
+    const out = engine.evaluate(input);
+
+    // Stationary wings are NOT dumped on pullback (no WING_HOLD_SELL)
+    const wingSettle = out.desired.find((o) => o.reason === 'WING_HOLD_SELL' && o.instrumentId === WING_CE_ID);
+    expect(wingSettle).toBeUndefined();
+
+    // Base Straddle shorts are NOT dumped on pullback (no SCALP_EXIT); they quote limit take-profit QUOTE_BID
+    const shortSettle = out.desired.find((o) => o.reason === 'SCALP_EXIT' && o.instrumentId === BASE_CE_ID);
+    expect(shortSettle).toBeUndefined();
+
+    const shortLimitExit = out.desired.filter((o) => o.reason === 'QUOTE_BID' && o.instrumentId === BASE_CE_ID);
+    expect(shortLimitExit.length).toBeGreaterThanOrEqual(1);
   });
 
   it('Path 2 (Continuation Upwards): holds initial sets (NO STOP LOSS) and quotes ATM+100 scalp with 50-pt SL', () => {
@@ -375,6 +440,7 @@ describe('Adaptive 50pt Ladder & Wing Architecture Quoting Engine', () => {
     const engine = new QuotingEngine(MARKET, {
       wingArchitectureEnabled: true,
       wingAvoidStraddleDrag: true,
+      wingNoStopLossOnBase: false,
       wingMinCreditPoints: 10,
       wingStepPoints: 50,
       wingScaleInPoints: 25,
@@ -466,6 +532,7 @@ describe('Adaptive 50pt Ladder & Wing Architecture Quoting Engine', () => {
     const engine = new QuotingEngine(MARKET, {
       wingArchitectureEnabled: true,
       wingAvoidStraddleDrag: true,
+      wingNoStopLossOnBase: false,
       wingMinCreditPoints: 10,
       wingStepPoints: 50,
       wingScaleInPoints: 25,
