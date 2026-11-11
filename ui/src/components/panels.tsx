@@ -81,7 +81,25 @@ export function HealthHud({
 
 export function RiskMeters({ state }: { state: GatewayState }): JSX.Element {
   const { snapshot, limits } = state.risk;
-  const lossUsed = Math.max(0, -snapshot.realizedNetPnlPaise);
+  const open = state.positions.filter((p) => p.state !== 'CLOSED' && p.qty > 0);
+  const chainById = new Map(state.chain.map((r) => [r.instrumentId, r]));
+  const unrealizedNetPnlPaise = open.reduce((sum, p) => {
+    const row = chainById.get(p.instrumentId);
+    const markPaise = row
+      ? row.bidPaise > 0 && row.askPaise > 0
+        ? (row.bidPaise + row.askPaise) / 2
+        : row.ltpPaise > 0
+          ? row.ltpPaise
+          : p.avgEntryPricePaise
+      : p.avgEntryPricePaise;
+    const pnlPerUnit = p.side === 'SELL'
+      ? p.avgEntryPricePaise - markPaise
+      : markPaise - p.avgEntryPricePaise;
+    return sum + Math.round(p.qty * pnlPerUnit);
+  }, 0);
+  const totalNetPnlPaise = snapshot.realizedNetPnlPaise + unrealizedNetPnlPaise;
+  const livePeakNetPnlPaise = Math.max(snapshot.peakNetPnlPaise, totalNetPnlPaise);
+  const lossUsed = Math.max(0, -totalNetPnlPaise);
   const lossFrac = Math.min(1, limits.dailyMaxLossPaise > 0 ? lossUsed / limits.dailyMaxLossPaise : 0);
   const tradesFrac = Math.min(1, snapshot.tradesTaken / Math.max(1, limits.maxTradesPerDay));
   return (
@@ -96,10 +114,16 @@ export function RiskMeters({ state }: { state: GatewayState }): JSX.Element {
       </h2>
       <div className="meter-row">
         <span>day P&L</span>
-        <b className={snapshot.realizedNetPnlPaise < 0 ? 'neg' : 'pos'}>
-          {rupees(snapshot.realizedNetPnlPaise)}
+        <b className={totalNetPnlPaise < 0 ? 'neg' : 'pos'}>
+          {rupees(totalNetPnlPaise)}
         </b>
       </div>
+      {open.length > 0 && (
+        <div style={{ fontSize: '11px', display: 'flex', justifyContent: 'space-between', padding: '0 4px 6px', color: '#888' }}>
+          <span>realized: <b className={snapshot.realizedNetPnlPaise < 0 ? 'neg' : 'pos'}>{rupees(snapshot.realizedNetPnlPaise)}</b></span>
+          <span>open: <b className={unrealizedNetPnlPaise < 0 ? 'neg' : 'pos'}>{unrealizedNetPnlPaise < 0 ? '−' : '+'}{rupees(Math.abs(unrealizedNetPnlPaise))}</b></span>
+        </div>
+      )}
       <div className="meter">
         <div className="meter-fill loss" style={{ width: `${lossFrac * 100}%` }} />
         <span className="meter-label">
@@ -114,7 +138,7 @@ export function RiskMeters({ state }: { state: GatewayState }): JSX.Element {
       </div>
       <div className="kv">
         <span>peak</span>
-        <b>{rupees(snapshot.peakNetPnlPaise)}</b>
+        <b>{rupees(livePeakNetPnlPaise)}</b>
         <span>loss streak</span>
         <b>{snapshot.lossStreak}</b>
         <span>per-trade cap</span>
