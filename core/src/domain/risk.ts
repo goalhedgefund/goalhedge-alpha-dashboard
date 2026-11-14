@@ -29,4 +29,4 @@ export interface StopState {
   lastMoveTs: number;
 }
 
-export type SessionStopKind = 'DAILY_LOSS' | 'GIVE_BACK' | 'LOSS_STREAK' | 'MAX_TRADES';
+export type SessionStopKind = 'DAILY_LOSS' | 'PROFIT_TARGET' | 'GIVE_BACK' | 'LOSS_STREAK' | 'MAX_TRADES';

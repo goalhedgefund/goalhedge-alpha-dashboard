@@ -57,6 +57,10 @@ export const RiskProfileSchema = z.object({
   /** Max rupee risk per trade as % of capital, enforced against the stopPlan. */
   perTradeRiskPct: z.number().positive().max(5),
   dailyMaxLossPct: z.number().positive().max(10),
+  /** Hard cap floor in paise for daily loss (overrides dailyMaxLossPct if provided). */
+  dailyMaxLossPaise: z.number().int().positive().optional(),
+  /** Profit target lock in paise; halts quoting and squares off once day P&L exceeds this. */
+  dailyProfitTargetPaise: z.number().int().positive().optional(),
   giveBack: z.object({
     /** Give-back stop arms once day P&L peak exceeds this % of capital. */
     armAtPct: z.number().positive(),

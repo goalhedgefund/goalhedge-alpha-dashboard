@@ -212,7 +212,7 @@ export function loadDhanLiveDataPaperEnv(source: NodeJS.ProcessEnv = process.env
     journalRoot: getString(vars, 'DHAN_JOURNAL_ROOT', 'journals'),
     recorderRoot: getString(vars, 'DHAN_RECORDER_ROOT', 'data/dhan/ticks'),
     chainDepth: getInt(vars, 'DHAN_CHAIN_DEPTH', 5, 0),
-    feedStaleMs: getInt(vars, 'DHAN_FEED_STALE_MS', 5_000, 1),
+    feedStaleMs: getInt(vars, 'DHAN_FEED_STALE_MS', 15_000, 1),
     timerIntervalMs: getInt(vars, 'DHAN_TIMER_INTERVAL_MS', 250, 1),
     autoArm: getBool(vars, 'DHAN_AUTO_ARM', false),
     maxSpreadPct: getNumber(vars, 'DHAN_MAX_SPREAD_PCT', 0.015, 0),

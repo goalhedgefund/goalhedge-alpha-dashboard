@@ -93,7 +93,7 @@ function initialGatewayState(
     risk: {
       snapshot: { realizedNetPnlPaise: 0, peakNetPnlPaise: 0, lossStreak: 0, tradesTaken: 0 },
       limits: {
-        dailyMaxLossPaise: Math.round(riskProfile.capitalPaise * (riskProfile.dailyMaxLossPct / 100)),
+        dailyMaxLossPaise: riskProfile.dailyMaxLossPaise ?? Math.round(riskProfile.capitalPaise * (riskProfile.dailyMaxLossPct / 100)),
         perTradeRiskPaise: Math.round(riskProfile.capitalPaise * (riskProfile.perTradeRiskPct / 100)),
         maxTradesPerDay: riskProfile.maxTradesPerDay,
         maxConcurrentPositions: riskProfile.maxConcurrentPositions,

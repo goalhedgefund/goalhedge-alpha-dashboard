@@ -5,6 +5,8 @@
   "capitalPaise": 1000000000,
   "perTradeRiskPct": 5,
   "dailyMaxLossPct": 10,
+  "dailyMaxLossPaise": 1000000,
+  "dailyProfitTargetPaise": 1000000,
   "giveBack": { "armAtPct": 10, "retainPct": 50 },
   "lossStreak": { "count": 10, "cooldownMin": 5 },
   "maxTradesPerDay": 5000,

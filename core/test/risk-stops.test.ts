@@ -197,6 +197,14 @@ describe('SessionRiskState latches', () => {
     expect(state.current().latchedStop).toBeUndefined();
     expect(state.current().lossStreak).toBe(0);
 
+    const profitLock = new SessionRiskState({ ...risk, dailyProfitTargetPaise: 1_000_000 });
+    profitLock.recordTrade(999_999);
+    expect(profitLock.current().latchedStop).toBeUndefined();
+    profitLock.recordTrade(1);
+    expect(profitLock.current().latchedStop).toBe('PROFIT_TARGET');
+    profitLock.operatorReset();
+    expect(profitLock.current().latchedStop).toBeUndefined();
+
     const streak = new SessionRiskState(risk);
     streak.recordTrade(-1);
     streak.recordTrade(-1);

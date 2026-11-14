@@ -104,8 +104,16 @@ export class SessionRiskState {
   private evaluateLatches(): void {
     if (this.snapshot.latchedStop !== undefined) return;
     const capital = this.profile.capitalPaise;
-    if (this.snapshot.realizedNetPnlPaise <= -Math.round(capital * (this.profile.dailyMaxLossPct / 100))) {
+    const maxLossPaise = this.profile.dailyMaxLossPaise ?? Math.round(capital * (this.profile.dailyMaxLossPct / 100));
+    if (this.snapshot.realizedNetPnlPaise <= -maxLossPaise) {
       this.latch('DAILY_LOSS');
+      return;
+    }
+    if (
+      this.profile.dailyProfitTargetPaise !== undefined &&
+      this.snapshot.realizedNetPnlPaise >= this.profile.dailyProfitTargetPaise
+    ) {
+      this.latch('PROFIT_TARGET');
       return;
     }
     const armAt = Math.round(capital * (this.profile.giveBack.armAtPct / 100));
