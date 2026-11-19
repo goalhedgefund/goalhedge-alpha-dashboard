@@ -7,8 +7,8 @@
   "currency": "INR",
   "timezone": "Asia/Kolkata",
   "session": { "open": "09:15", "close": "15:30" },
-  "entryOpen": "10:00",
-  "entryCutoff": "14:30",
+  "entryOpen": "09:45",
+  "entryCutoff": "11:30",
   "hardSquareOff": "15:12",
   "tickSizePaise": 5,
   "contract": {

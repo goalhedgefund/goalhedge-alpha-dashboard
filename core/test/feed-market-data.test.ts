@@ -102,4 +102,29 @@ describe('FeedMarketData', () => {
     expect(ce?.instrumentId).toBe(NEW_CE_ID);
     expect(ce?.row?.strikePaise).toBe(22_600_00);
   });
+
+  it('resolves ITM strikes when strikeOffsetSteps is negative', () => {
+    const CE_ITM = makeInstrumentId('NSE', 'CE_24450');
+    const PE_ITM = makeInstrumentId('NSE', 'PE_24550');
+    const md = new FeedMarketData({
+      spotInstrumentId: SPOT_ID,
+      options: [
+        { instrumentId: CE_ITM, strikePaise: ATM - 5_000, right: 'CE', expiry: '2026-07-07' },
+        { instrumentId: CE_ID, strikePaise: ATM, right: 'CE', expiry: '2026-07-07' },
+        { instrumentId: PE_ID, strikePaise: ATM, right: 'PE', expiry: '2026-07-07' },
+        { instrumentId: PE_ITM, strikePaise: ATM + 5_000, right: 'PE', expiry: '2026-07-07' },
+      ],
+      strikeStepPaise: 5_000,
+    });
+
+    md.ingest(tick(SPOT_ID, 1_000, ATM));
+    md.ingest(tick(CE_ITM, 1_000, 18_000));
+    md.ingest(tick(CE_ID, 1_000, 15_000));
+    md.ingest(tick(PE_ID, 1_000, 14_000));
+    md.ingest(tick(PE_ITM, 1_000, 17_000));
+
+    const view = md.strategyView(1_000);
+    expect(view.atmOption('CE', -1)?.instrumentId).toBe(CE_ITM);
+    expect(view.atmOption('PE', -1)?.instrumentId).toBe(PE_ITM);
+  });
 });

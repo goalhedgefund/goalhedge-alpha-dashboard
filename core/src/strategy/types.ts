@@ -26,7 +26,7 @@ export interface StrategyView {
   underlyingFeatures?: UnderlyingFeatures;
   atmStrikePaise?: number;
   /** Resolve the current ATM option for a side (undefined if no quote yet). */
-  atmOption(right: OptionRight): OptionView | undefined;
+  atmOption(right: OptionRight, strikeOffsetSteps?: number): OptionView | undefined;
   position?: Position;
   params: StrategyParams;
 }

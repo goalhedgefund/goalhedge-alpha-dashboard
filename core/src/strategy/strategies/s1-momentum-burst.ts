@@ -21,6 +21,9 @@ export class S1MomentumBurst implements IStrategy {
 
   private confirmCount = 0;
   private lastDir: 'CE' | 'PE' | undefined;
+  /** Not cleared by reset(): an operator re-arm must not skip a feed-gap warm-up. */
+  private lastDecideMs: number | undefined;
+  private warmUntilMs: number | undefined;
 
   reset(): void {
     this.confirmCount = 0;
@@ -31,6 +34,18 @@ export class S1MomentumBurst implements IStrategy {
     const p = view.params;
     const impulsePct = numParam(p, 'impulsePct', 0.0008);
     const confirmTicks = numParam(p, 'confirmTicks', 3);
+
+    const gapMs = numParam(p, 'feedGapResetMs', 3_000);
+    if (this.lastDecideMs !== undefined && view.nowMs - this.lastDecideMs > gapMs) {
+      this.confirmCount = 0;
+      this.lastDir = undefined;
+      this.warmUntilMs = view.nowMs + numParam(p, 'feedGapWarmMs', 5_000);
+    }
+    this.lastDecideMs = view.nowMs;
+    if (this.warmUntilMs !== undefined) {
+      if (view.nowMs < this.warmUntilMs) return none('FEED_GAP_REBASELINE');
+      this.warmUntilMs = undefined;
+    }
 
     const f = view.underlyingFeatures;
     if (f?.ret5s === undefined) return none('WARMUP');
@@ -47,7 +62,8 @@ export class S1MomentumBurst implements IStrategy {
       this.confirmCount = 0;
     }
 
-    const opt = view.atmOption(dir);
+    const strikeOffsetSteps = numParam(p, 'strikeOffsetSteps', 0);
+    const opt = view.atmOption(dir, strikeOffsetSteps);
     if (opt?.row === undefined || opt.row.askPaise <= 0) return none('NO_OPTION_QUOTE');
 
     const velocity = opt.features?.premiumVelocityPaisePerSec;

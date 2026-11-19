@@ -131,4 +131,24 @@ describe('S1 momentum burst', () => {
     };
     expect(s.decide(view)).toMatchObject({ kind: 'NONE', reason: 'NO_CONFIRM' });
   });
+
+  it('passes strikeOffsetSteps to atmOption and targetPct to stopPlan', () => {
+    const s = new S1MomentumBurst();
+    const seenOffsets: Array<number | undefined> = [];
+    const base = mkView({ params: { ...PARAMS, strikeOffsetSteps: -1, targetPct: 15 }, features: mkFeatures({ ret5s: 0.002 }) });
+    const view = {
+      ...base,
+      atmOption: (right: 'CE' | 'PE', strikeOffsetSteps?: number) => {
+        seenOffsets.push(strikeOffsetSteps);
+        return base.atmOption(right, strikeOffsetSteps);
+      },
+    };
+    s.decide(view);
+    const d = s.decide(view);
+    expect(seenOffsets).toEqual([-1, -1]);
+    expect(d.kind).toBe('ENTRY');
+    if (d.kind === 'ENTRY') {
+      expect(d.stopPlan.targetPaise).toBe(17_250);
+    }
+  });
 });

@@ -183,7 +183,7 @@ export class FeedMarketData implements MarketViewProvider {
       ...(spot !== undefined ? { spotPaise: spot } : {}),
       underlyingFeatures: features,
       ...(this.atmStrike !== undefined ? { atmStrikePaise: this.atmStrike } : {}),
-      atmOption: (right) => this.atmOption(right),
+      atmOption: (right, strikeOffsetSteps) => this.atmOption(right, strikeOffsetSteps),
     };
   }
 
@@ -216,9 +216,20 @@ export class FeedMarketData implements MarketViewProvider {
     return this.spotTicks[this.spotTicks.length - 1]?.ts ?? 0;
   }
 
-  private atmOption(right: OptionRight): OptionView | undefined {
-    const strike = this.atmStrike ?? this.nearestStrike();
-    if (strike === undefined) return undefined;
+  private atmOption(right: OptionRight, strikeOffsetSteps = 0): OptionView | undefined {
+    const baseStrike = this.atmStrike ?? this.nearestStrike();
+    if (baseStrike === undefined) return undefined;
+    let strike = baseStrike;
+    if (strikeOffsetSteps !== 0) {
+      const idx = this.strikes.indexOf(baseStrike);
+      if (idx !== -1) {
+        // Negative offset selects ITM: lower strike for CE, higher strike for PE.
+        const targetIdx = right === 'CE' ? idx + strikeOffsetSteps : idx - strikeOffsetSteps;
+        if (targetIdx >= 0 && targetIdx < this.strikes.length) {
+          strike = this.strikes[targetIdx]!;
+        }
+      }
+    }
     const id = this.byStrikeRight.get(key(strike, right)) ?? this.nearestId(strike, right);
     if (id === undefined) return undefined;
     const row = this.chain.row(id);
